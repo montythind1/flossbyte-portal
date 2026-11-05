@@ -5,9 +5,23 @@
 // picking one fills street, city, state, and ZIP in the same location
 // block. Every field stays manually editable, and if the lookup is
 // unreachable the form simply works without suggestions.
+// The map data has no suite/unit numbers, so when the person typed one
+// (for example "350 Fifth Avenue Suite 2100" or "88 King St #400"),
+// picking a suggestion keeps it: the filled street address becomes
+// "350 Fifth Avenue, Suite 2100".
 (function () {
   function groupOf(input) { return input.closest("[data-loc]") || document; }
   function field(group, cls) { return group.querySelector("." + cls); }
+  function unitFrom(text) {
+    var m = String(text || "").match(/\b(suite|ste|unit|apt|apartment)\b\.?\s*#?\s*([A-Za-z0-9][A-Za-z0-9-]*)/i);
+    if (m) {
+      var word = m[1].toLowerCase();
+      var label = word === "unit" ? "Unit" : (word === "apt" || word === "apartment") ? "Apt" : "Suite";
+      return label + " " + m[2];
+    }
+    var hash = String(text || "").match(/#\s*([A-Za-z0-9][A-Za-z0-9-]*)/);
+    return hash ? "#" + hash[1] : "";
+  }
 
   function bind(input) {
     if (input.dataset.addrBound) return;
@@ -26,6 +40,8 @@
     function fill(p) {
       var g = groupOf(input);
       var street = [p.housenumber, p.street].filter(Boolean).join(" ") || p.name || "";
+      var unit = unitFrom(input.value);
+      if (unit && street.toLowerCase().indexOf(unit.toLowerCase()) === -1) street += ", " + unit;
       input.value = street;
       var city = field(g, "f-city"); if (city) city.value = p.city || p.town || p.village || "";
       var state = field(g, "f-state"); if (state) state.value = p.state || "";
