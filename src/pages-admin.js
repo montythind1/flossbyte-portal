@@ -71,8 +71,10 @@ function locationBlock() {
 // to real location ids on the server after the locations are created.
 function loginBlock() {
   return `<div style="border-top:1px solid var(--line);padding-top:10px;margin-top:12px">
-    <div class="row"><span style="flex:1"><label>Name</label><input name="login_name[]"></span>
-    <span style="flex:1"><label>Email</label><input name="login_email[]" type="email"></span></div>
+    <div class="row"><span style="flex:1"><label>First name <span class="req">*</span></label><input name="login_first[]"></span>
+    <span style="flex:1"><label>Middle name</label><input name="login_middle[]"></span>
+    <span style="flex:1"><label>Last name <span class="req">*</span></label><input name="login_last[]"></span></div>
+    <div class="row"><span style="flex:1"><label>Email</label><input name="login_email[]" type="email"></span></div>
     <label>Access</label><select name="login_location[]" class="login-loc">
       <option value="">All locations</option></select></div>`;
 }
@@ -336,16 +338,22 @@ export async function createCustomerPost(env, request, user) {
   // refused login never blocks the organization itself; it is reported
   // in the summary. The main admin's own email is skipped here, step 1
   // already covers that person.
-  const loginNames = f.getAll("login_name[]");
+  const loginFirsts = f.getAll("login_first[]");
+  const loginMiddles = f.getAll("login_middle[]");
+  const loginLasts = f.getAll("login_last[]");
   const loginEmails = f.getAll("login_email[]");
   const loginLocs = f.getAll("login_location[]");
   const invited = [], connected = [], refused = [];
   let adminAlsoListed = false;
   for (let i = 0; i < loginEmails.length; i++) {
     const email = String(loginEmails[i] || "").trim().toLowerCase();
-    const loginName = String(loginNames[i] || "").trim();
+    const loginName = [loginFirsts[i], loginMiddles[i], loginLasts[i]]
+      .map((v) => String(v || "").trim()).filter(Boolean).join(" ");
     if (!email) continue;
     if (!isValidEmail(email)) { refused.push(`${email} (invalid email address)`); continue; }
+    if (!String(loginFirsts[i] || "").trim() || !String(loginLasts[i] || "").trim()) {
+      refused.push(`${email} (first and last name are required)`); continue;
+    }
     if (email === adminEmail) { adminAlsoListed = true; continue; }
     const scope = "user";
     const locPick = String(loginLocs[i] || "");
@@ -527,7 +535,9 @@ export async function customerPage(env, request, user, customerId) {
       <table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th></th></tr></thead><tbody>${memberRows || `<tr><td colspan="5" class="muted">No logins yet.</td></tr>`}</tbody></table>
       <h4>Invite a login</h4>
       <form method="post" action="/admin/customers/${customerId}/users" class="row" style="align-items:end">
-        <span style="flex:1;min-width:160px"><label>Name <span class="req">*</span></label><input name="name" required></span>
+        <span style="flex:1;min-width:120px"><label>First name <span class="req">*</span></label><input name="first_name" required></span>
+        <span style="flex:1;min-width:120px"><label>Middle name</label><input name="middle_name"></span>
+        <span style="flex:1;min-width:120px"><label>Last name <span class="req">*</span></label><input name="last_name" required></span>
         <span style="flex:1;min-width:200px"><label>Email <span class="req">*</span></label><input name="email" type="email" required></span>
         <span style="flex:1;min-width:150px"><label>Access</label><select name="location_id">
           <option value="">All locations</option>${locOptions}</select></span>
@@ -610,13 +620,16 @@ export async function productTogglePost(env, request, user, customerId) {
 
 export async function inviteCustomerUserPost(env, request, user, customerId) {
   const f = await request.formData();
-  const name = String(f.get("name") || "").trim();
+  const first = String(f.get("first_name") || "").trim();
+  const middle = String(f.get("middle_name") || "").trim();
+  const last = String(f.get("last_name") || "").trim();
+  const name = [first, middle, last].filter(Boolean).join(" ");
   const email = String(f.get("email") || "").trim().toLowerCase();
   const locationId = f.get("location_id") ? Number(f.get("location_id")) : null;
   const scope = String(f.get("scope") || "user") === "admin" ? "admin" : "user";
-  if (!name || !isValidEmail(email)) {
+  if (!first || !last || !isValidEmail(email)) {
     return redirect(`/admin/customers/${customerId}?msg=` + encodeURIComponent(
-      "Enter the person's name and a valid email address."));
+      "Enter the person's first name, last name, and a valid email address."));
   }
   let target = await env.DB.prepare("SELECT * FROM users WHERE email = ?").bind(email).first();
   if (!target) {
@@ -847,7 +860,9 @@ export async function adminsPage(env, request, user) {
     <tbody>${rows}</tbody></table></div>
     <div class="card"><h3>Create an admin</h3>
       <form method="post" action="/admin/admins" class="row" style="align-items:end">
-        <span style="flex:1;min-width:160px"><label>Name <span class="req">*</span></label><input name="name" required></span>
+        <span style="flex:1;min-width:120px"><label>First name <span class="req">*</span></label><input name="first_name" required></span>
+        <span style="flex:1;min-width:120px"><label>Middle name</label><input name="middle_name"></span>
+        <span style="flex:1;min-width:120px"><label>Last name <span class="req">*</span></label><input name="last_name" required></span>
         <span style="flex:1;min-width:200px"><label>Email <span class="req">*</span></label><input name="email" type="email" required></span>
         <button class="btn small" type="submit">Send admin invite</button></form>
       <p class="muted">New admins finish sign-in from the invite email, then set up two-step verification. The Super Admin account can never be disabled or removed, and no admin can disable their own account.</p></div>
@@ -929,11 +944,14 @@ export async function transferPost(env, request, user, targetId) {
 export async function createAdminPost(env, request, user) {
   if (!isSuperAdmin(user)) return notSuper(user);
   const f = await request.formData();
-  const name = String(f.get("name") || "").trim();
+  const first = String(f.get("first_name") || "").trim();
+  const middle = String(f.get("middle_name") || "").trim();
+  const last = String(f.get("last_name") || "").trim();
+  const name = [first, middle, last].filter(Boolean).join(" ");
   const email = String(f.get("email") || "").trim().toLowerCase();
-  if (!name || !isValidEmail(email)) {
+  if (!first || !last || !isValidEmail(email)) {
     return redirect("/admin/admins?msg=" + encodeURIComponent(
-      "Enter the admin's name and a valid email address."));
+      "Enter the admin's first name, last name, and a valid email address."));
   }
   const existing = await env.DB.prepare("SELECT id FROM users WHERE email = ?").bind(email).first();
   if (existing) return redirect("/admin/admins?msg=" + encodeURIComponent("That email already has a login."));

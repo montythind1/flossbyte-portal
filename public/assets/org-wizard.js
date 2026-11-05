@@ -199,6 +199,25 @@
       if (loginMsg) loginMsg.textContent = "Enter valid email addresses for additional users, or leave a row blank.";
       badLogin.classList.add("field-error");
       badLogin.focus();
+      return;
+    }
+    var badName = null;
+    form.querySelectorAll("#loginBlocks > div").forEach(function (block) {
+      var email = block.querySelector('input[name="login_email[]"]');
+      var first = block.querySelector('input[name="login_first[]"]');
+      var last = block.querySelector('input[name="login_last[]"]');
+      if (first) first.classList.remove("field-error");
+      if (last) last.classList.remove("field-error");
+      if (!email || !email.value.trim() || badName) return;
+      if (first && !first.value.trim()) badName = first;
+      else if (last && !last.value.trim()) badName = last;
+    });
+    if (badName) {
+      event.preventDefault();
+      show(4);
+      if (loginMsg) loginMsg.textContent = "First and last name are required for each additional user.";
+      badName.classList.add("field-error");
+      badName.focus();
     }
   });
 
