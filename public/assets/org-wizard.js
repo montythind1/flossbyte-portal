@@ -6,7 +6,8 @@
   if (!form) return;
   form.classList.add("js-wizard");
   var steps = Array.prototype.slice.call(form.querySelectorAll(".wstep"));
-  var labels = Array.prototype.slice.call(form.querySelectorAll(".wiz-label"));
+  var nodes = Array.prototype.slice.call(document.querySelectorAll(".wiz-node"));
+  var fill = document.getElementById("wizFill");
   var back = document.getElementById("wizBack");
   var next = document.getElementById("wizNext");
   var create = document.getElementById("wizCreate");
@@ -38,7 +39,14 @@
   function show(n) {
     current = n;
     steps.forEach(function (s) { s.classList.toggle("active", Number(s.dataset.step) === n); });
-    labels.forEach(function (l) { l.classList.toggle("on", Number(l.dataset.stepLabel) === n); });
+    if (fill) fill.style.width = ((n - 1) / (steps.length - 1)) * 100 + "%";
+    nodes.forEach(function (node) {
+      var i = Number(node.dataset.node);
+      node.classList.toggle("done", i < n);
+      node.classList.toggle("current", i === n);
+      var dot = node.querySelector(".dot");
+      if (dot) dot.textContent = i < n ? "✓" : String(i);
+    });
     back.style.display = n > 1 ? "" : "none";
     next.style.display = n < 4 ? "" : "none";
     create.style.display = n === 4 ? "" : "none";

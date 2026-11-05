@@ -31,8 +31,17 @@ nav.top a:hover{color:#fff}
 .btn.danger{background:var(--bad)}
 form.js-wizard .wstep{display:none}
 form.js-wizard .wstep.active{display:block}
-.wiz-label{font-weight:400}
-.wiz-label.on{font-weight:700;color:var(--ink)}
+.wiz-progress{position:relative;margin:22px 4px 26px}
+.wiz-track{position:absolute;left:13px;right:13px;top:13px;height:4px;background:#dde3ea;border-radius:2px}
+.wiz-fill{height:100%;width:0;background:var(--teal);border-radius:2px;transition:width .35s ease}
+.wiz-nodes{position:relative;display:flex;justify-content:space-between}
+.wiz-node{display:flex;flex-direction:column;align-items:center;gap:6px;width:25%}
+.wiz-node .dot{width:27px;height:27px;border-radius:50%;background:#fff;border:2px solid #c3cedb;color:var(--muted);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700}
+.wiz-node .nlabel{font-size:12px;color:var(--muted);text-align:center}
+.wiz-node.current .dot{border-color:var(--teal);color:var(--teal)}
+.wiz-node.current .nlabel{color:var(--ink);font-weight:700}
+.wiz-node.done .dot{background:var(--teal);border-color:var(--teal);color:#fff}
+.wiz-node.done .nlabel{color:var(--ink)}
 .addr-wrap{position:relative}
 .addr-list{position:absolute;left:0;right:0;top:100%;background:#fff;border:1px solid var(--line);border-radius:0 0 8px 8px;box-shadow:0 10px 24px rgba(10,22,40,.16);z-index:40;overflow:hidden}
 .addr-item{padding:9px 12px;font-size:14px;cursor:pointer}

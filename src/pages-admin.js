@@ -88,10 +88,15 @@ export async function newCustomerPage(env, request, user) {
       <input name="note_${esc(p.key)}" placeholder="Plan note (optional)" style="margin-top:6px">
     </div>`).join("");
   const body = `${adminNav("new")}<div class="card narrow" style="margin:0;max-width:600px"><h1>Add organization</h1>
-    <p class="muted"><span class="wiz-label" data-step-label="1">1 Organization</span> ·
-      <span class="wiz-label" data-step-label="2">2 Locations</span> ·
-      <span class="wiz-label" data-step-label="3">3 Products</span> ·
-      <span class="wiz-label" data-step-label="4">4 User logins</span></p>
+    <div class="wiz-progress">
+      <div class="wiz-track"><div class="wiz-fill" id="wizFill"></div></div>
+      <div class="wiz-nodes">
+        <div class="wiz-node" data-node="1"><span class="dot">1</span><span class="nlabel">Organization</span></div>
+        <div class="wiz-node" data-node="2"><span class="dot">2</span><span class="nlabel">Locations</span></div>
+        <div class="wiz-node" data-node="3"><span class="dot">3</span><span class="nlabel">Products</span></div>
+        <div class="wiz-node" data-node="4"><span class="dot">4</span><span class="nlabel">User logins</span></div>
+      </div>
+    </div>
     <form method="post" action="/admin/customers" id="orgWizard">
       <section class="wstep" data-step="1">
         <label>Organization name</label><input name="name" required>
