@@ -75,6 +75,16 @@ function loginBlock() {
       <option value="">All locations</option></select></div>`;
 }
 
+// US phone numbers are stored in exactly one format: (AAA) BBB-CCCC.
+// Anything that reduces to 10 digits (an optional leading country-code
+// 1 is dropped) is accepted and reformatted; anything else is invalid.
+export function normalizePhone(raw) {
+  let d = String(raw || "").replace(/\D/g, "");
+  if (d.length === 11 && d.startsWith("1")) d = d.slice(1);
+  if (d.length !== 10) return null;
+  return `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}`;
+}
+
 // ---------- Create customer (4-step wizard) ----------
 export async function newCustomerPage(env, request, user) {
   const { results: products } = await env.DB.prepare(
@@ -98,7 +108,7 @@ export async function newCustomerPage(env, request, user) {
     </div>
     <form method="post" action="/admin/customers" id="orgWizard">
       <section class="wstep" data-step="1">
-        <label>Organization name</label><input name="name" required>
+        <label>Organization name <span class="req">*</span></label><input name="name" required>
         <p class="muted">The organization is the business that signs and pays. Each of its practices is a location in step 2.</p>
         <h3 style="margin:16px 0 4px">Customer admin</h3>
         <p class="muted">The main admin for this organization. They get a login invite, see every location, and can manage the organization's team. Everyone added in step 4 is a regular user. An email can belong to only one organization.</p>
@@ -106,7 +116,7 @@ export async function newCustomerPage(env, request, user) {
         <span style="flex:1"><label>Middle name</label><input name="contact_middle_name"></span>
         <span style="flex:1"><label>Last name</label><input name="contact_last_name"></span></div>
         <label>Customer admin email <span class="req">*</span></label><input name="contact_email" type="email">
-        <label>Phone</label><input name="phone">
+        <label>Phone <span class="req">*</span></label><input name="phone" data-phone inputmode="tel" autocomplete="tel" placeholder="(601) 345-0188">
         <label>Notes</label><textarea name="notes"></textarea>
         <p id="emailCheck" style="color:var(--bad)"></p>
       </section>
@@ -135,7 +145,8 @@ export async function newCustomerPage(env, request, user) {
         <button class="btn" type="submit" id="wizCreate">Create organization</button>
       </p></form></div>
     <script src="/assets/address-lookup.js"></script>
-    <script src="/assets/org-wizard.js"></script>`;
+    <script src="/assets/org-wizard.js"></script>
+    <script src="/assets/phone-format.js"></script>`;
   return page({ title: "Add organization", user, body, flash: q(request).get("msg") || undefined });
 }
 
@@ -195,6 +206,11 @@ export async function createCustomerPost(env, request, user) {
         `That customer admin email already belongs to ${other.name}. An email can belong to only one organization.`));
     }
   }
+  const phone = normalizePhone(f.get("phone"));
+  if (!phone) {
+    return redirect("/admin/customers/new?msg=" + encodeURIComponent(
+      "A valid 10-digit phone number is required, for example (601) 345-0188."));
+  }
   const first = String(f.get("contact_first_name") || "").trim();
   const middle = String(f.get("contact_middle_name") || "").trim();
   const last = String(f.get("contact_last_name") || "").trim();
@@ -203,7 +219,7 @@ export async function createCustomerPost(env, request, user) {
     `INSERT INTO customers (name, contact_name, contact_first_name, contact_middle_name, contact_last_name, contact_email, phone, notes)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
     .bind(name, contactName, first || null, middle || null, last || null,
-      contactEmail || null, f.get("phone") || null, f.get("notes") || null).run();
+      contactEmail || null, phone, f.get("notes") || null).run();
   const customerId = res.meta.last_row_id;
   // Any number of location blocks may come back from the form; empty
   // blocks are skipped.
@@ -359,11 +375,16 @@ export async function updateCustomerPost(env, request, user, customerId) {
     return redirect(`/admin/customers/${customerId}?msg=` + encodeURIComponent(
       `That contact email already belongs to ${dup.name} (organization ${dup.id}).`));
   }
+  const phone = normalizePhone(f.get("phone"));
+  if (!phone) {
+    return redirect(`/admin/customers/${customerId}?msg=` + encodeURIComponent(
+      "A valid 10-digit phone number is required, for example (601) 345-0188. Nothing was saved."));
+  }
   await env.DB.prepare(
     `UPDATE customers SET name = ?, contact_name = ?, contact_first_name = ?, contact_middle_name = ?,
      contact_last_name = ?, contact_email = ?, phone = ?, notes = ?, updated_at = datetime('now') WHERE id = ?`)
     .bind(name, contactName, first || null, middle || null, last || null,
-      contactEmail || null, f.get("phone") || null, f.get("notes") || null, customerId).run();
+      contactEmail || null, phone, f.get("notes") || null, customerId).run();
   await audit(env.DB, user.id, "customer_update", "customer", Number(customerId), name);
   return redirect(`/admin/customers/${customerId}?msg=` + encodeURIComponent("Organization saved."));
 }
@@ -407,19 +428,19 @@ export async function customerPage(env, request, user, customerId) {
     <p class="muted">${esc(c.contact_name || "")} ${esc(c.contact_email || "")} ${esc(c.phone || "")}</p>
     <div class="card"><h3>Organization details</h3>
       <form method="post" action="/admin/customers/${customerId}/edit">
-        <label>Organization name</label><input name="name" value="${esc(c.name)}" required>
-        <div class="row"><span style="flex:1"><label>Contact first name</label><input name="contact_first_name" value="${esc(c.contact_first_name || "")}"></span>
+        <label>Organization name <span class="req">*</span></label><input name="name" value="${esc(c.name)}" required>
+        <div class="row"><span style="flex:1"><label>First name</label><input name="contact_first_name" value="${esc(c.contact_first_name || "")}"></span>
         <span style="flex:1"><label>Middle name</label><input name="contact_middle_name" value="${esc(c.contact_middle_name || "")}"></span>
         <span style="flex:1"><label>Last name</label><input name="contact_last_name" value="${esc(c.contact_last_name || "")}"></span></div>
         <label>Customer admin email</label><input name="contact_email" type="email" value="${esc(c.contact_email || "")}">
-        <label>Phone</label><input name="phone" value="${esc(c.phone || "")}">
+        <label>Phone <span class="req">*</span></label><input name="phone" data-phone inputmode="tel" value="${esc(c.phone || "")}">
         <label>Notes</label><textarea name="notes">${esc(c.notes || "")}</textarea>
         <p style="margin-top:12px"><button class="btn small" type="submit">Save organization</button></p></form></div>
     <div class="card"><h3>Locations</h3>
       <table><thead><tr><th>Name</th><th>Address</th><th>Status</th><th>Edit</th></tr></thead><tbody>${locRows || `<tr><td colspan="4" class="muted">No locations yet.</td></tr>`}</tbody></table>
       <form method="post" action="/admin/customers/${customerId}/locations" data-loc style="margin-top:14px">
         <div class="row" style="align-items:end">
-          <span style="flex:1;min-width:180px"><label>New location / practice name</label><input name="name" required></span>
+          <span style="flex:1;min-width:180px"><label>New location / practice name <span class="req">*</span></label><input name="name" required></span>
           <span style="flex:1;min-width:200px"><label>Street address</label><input name="address" data-address autocomplete="off" placeholder="Start typing, then pick the address"></span></div>
         <div class="row" style="align-items:end;margin-top:8px">
           <span style="flex:2"><label>City</label><input name="city" class="f-city"></span>
@@ -427,6 +448,7 @@ export async function customerPage(env, request, user, customerId) {
           <span style="flex:1"><label>ZIP</label><input name="zip" class="f-zip"></span>
           <span><button class="btn small" type="submit">Add location</button></span></div></form></div>
     <script src="/assets/address-lookup.js"></script>
+    <script src="/assets/phone-format.js"></script>
     <div class="card"><h3>Products</h3>
       <table><thead><tr><th>Product</th><th>State</th><th>Change</th></tr></thead><tbody>${prodRows}</tbody></table>
       <p class="muted">Switches are enforced on the server. Off means the client sees a locked tile and their data requests for that service are refused.</p></div>
@@ -434,8 +456,8 @@ export async function customerPage(env, request, user, customerId) {
       <table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th></th></tr></thead><tbody>${memberRows || `<tr><td colspan="5" class="muted">No logins yet.</td></tr>`}</tbody></table>
       <h4>Invite a login</h4>
       <form method="post" action="/admin/customers/${customerId}/users" class="row" style="align-items:end">
-        <span style="flex:1;min-width:160px"><label>Name</label><input name="name" required></span>
-        <span style="flex:1;min-width:200px"><label>Email</label><input name="email" type="email" required></span>
+        <span style="flex:1;min-width:160px"><label>Name <span class="req">*</span></label><input name="name" required></span>
+        <span style="flex:1;min-width:200px"><label>Email <span class="req">*</span></label><input name="email" type="email" required></span>
         <span style="flex:1;min-width:150px"><label>Access</label><select name="location_id">
           <option value="">All locations</option>${locOptions}</select></span>
         <span style="flex:1;min-width:150px"><label>Scope</label><select name="scope">
@@ -674,7 +696,7 @@ export async function pendingPage(env, request, user) {
     rows.push(`<div class="card"><div class="row between"><div><strong>${esc(p.name)}</strong>
       <div class="muted">${esc(p.email)} , signed up ${esc(p.created_at.slice(0, 10))}</div></div></div>
       <form method="post" action="/admin/pending/${p.id}/connect" class="row" style="margin-top:10px;align-items:end">
-        <span style="flex:1;min-width:200px"><label>Connect to location (or customer-wide by picking any of its locations, then scope)</label>
+        <span style="flex:1;min-width:200px"><label>Connect to location (or customer-wide by picking any of its locations, then scope) <span class="req">*</span></label>
         <select name="location_id" required>${(locs || []).map((l) => {
           const cust = (customers || []).find((c) => c.id === l.customer_id);
           return `<option value="${l.id}">${esc(cust ? cust.name + " , " : "")}${esc(l.name)}</option>`;
@@ -739,8 +761,8 @@ export async function adminsPage(env, request, user) {
     <tbody>${rows}</tbody></table></div>
     <div class="card"><h3>Create an admin</h3>
       <form method="post" action="/admin/admins" class="row" style="align-items:end">
-        <span style="flex:1;min-width:160px"><label>Name</label><input name="name" required></span>
-        <span style="flex:1;min-width:200px"><label>Email</label><input name="email" type="email" required></span>
+        <span style="flex:1;min-width:160px"><label>Name <span class="req">*</span></label><input name="name" required></span>
+        <span style="flex:1;min-width:200px"><label>Email <span class="req">*</span></label><input name="email" type="email" required></span>
         <button class="btn small" type="submit">Send admin invite</button></form>
       <p class="muted">New admins finish sign-in from the invite email, then set up two-step verification. The Super Admin account can never be disabled or removed, and no admin can disable their own account.</p></div>
     <div class="card"><h3>Transfer ownership</h3>
@@ -771,12 +793,12 @@ export async function transferPage(env, request, user, targetId) {
     <div class="card narrow"><h3 style="margin-top:0">Make ${esc(target.name)} the Super Admin</h3>
       <p class="muted">${esc(target.name)} (${esc(target.email)}) gets full control of the portal, including managing admin accounts and transferring ownership again. Two-step verification stays mandatory for them; if they have not set it up, they will be asked at their next sign-in.</p>
       <form method="post" action="/admin/transfer/${target.id}">
-        <label>Your password, to confirm this is you</label>
+        <label>Your password, to confirm this is you <span class="req">*</span></label>
         <input name="password" type="password" required autocomplete="current-password">
         <label style="margin-top:14px">What happens to your account</label>
         <label style="font-weight:normal"><input type="radio" name="after" value="admin" checked style="width:auto"> Keep me as a regular admin</label>
         <label style="font-weight:normal"><input type="radio" name="after" value="disable" style="width:auto"> Disable my account and sign me out everywhere</label>
-        <label style="font-weight:normal;margin-top:12px"><input type="checkbox" name="confirm" value="yes" required style="width:auto"> I understand this hands over full control of the portal.</label>
+        <label style="font-weight:normal;margin-top:12px"><input type="checkbox" name="confirm" value="yes" required style="width:auto"><span class="req">*</span> I understand this hands over full control of the portal.</label>
         <p style="margin-top:18px"><button class="btn danger" type="submit">Transfer ownership</button>
         <a class="btn secondary" href="/admin/admins">Cancel</a></p>
       </form></div>`;

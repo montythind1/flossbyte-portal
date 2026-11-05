@@ -44,10 +44,10 @@ export async function setupPage(env, request) {
   const body = `<div class="card narrow"><h1>Create the admin login</h1>
     <p class="muted">This one-time setup creates the FlossByte Super Admin for the portal. After this, the setup screen never appears again.</p>
     <form method="post" action="/setup">
-      <label>Your name</label><input name="name" required autocomplete="name">
-      <label>Email</label><input name="email" type="email" required autocomplete="email">
-      <label>Password</label><input name="password" type="password" required minlength="10" autocomplete="new-password">
-      <label>Password again</label><input name="password2" type="password" required autocomplete="new-password">
+      <label>Your name <span class="req">*</span></label><input name="name" required autocomplete="name">
+      <label>Email <span class="req">*</span></label><input name="email" type="email" required autocomplete="email">
+      <label>Password <span class="req">*</span></label><input name="password" type="password" required minlength="10" autocomplete="new-password">
+      <label>Password again <span class="req">*</span></label><input name="password2" type="password" required autocomplete="new-password">
       <p style="margin-top:18px"><button class="btn" type="submit">Create admin login</button></p>
     </form></div>`;
   return page({ title: "Setup", body });
@@ -81,8 +81,8 @@ export function loginPage(request) {
   const q = params(request);
   const body = `<div class="card narrow"><h1>Sign in</h1>
     <form method="post" action="/login">
-      <label>Email</label><input name="email" type="email" required autocomplete="email">
-      <label>Password</label><input name="password" type="password" required autocomplete="current-password">
+      <label>Email <span class="req">*</span></label><input name="email" type="email" required autocomplete="email">
+      <label>Password <span class="req">*</span></label><input name="password" type="password" required autocomplete="current-password">
       <p style="margin-top:18px"><button class="btn" type="submit" style="width:100%">Sign in</button></p>
     </form>
     <p class="muted" style="margin-top:16px">New customer? <a href="/signup">Create account</a></p>
@@ -113,7 +113,7 @@ export function loginMfaPage(request) {
   const body = `<div class="card narrow"><h1>Two-step verification</h1>
     <p class="muted">Enter the 6-digit code from your authenticator app.</p>
     <form method="post" action="/login/mfa">
-      <label>Code</label><input name="code" inputmode="numeric" autocomplete="one-time-code" required>
+      <label>Code <span class="req">*</span></label><input name="code" inputmode="numeric" autocomplete="one-time-code" required>
       <p style="margin-top:18px"><button class="btn" type="submit" style="width:100%">Verify</button></p>
     </form></div>`;
   return page({ title: "Verify", body, error: q.get("err") || undefined });
@@ -148,10 +148,10 @@ export function signupPage(request) {
   const body = `<div class="card narrow"><h1>Create account</h1>
     <p class="muted">Create your login here. FlossByte then connects your account to your practice, and only then can you see your equipment, tickets, and documents.</p>
     <form method="post" action="/signup">
-      <label>Your name</label><input name="name" required autocomplete="name">
-      <label>Organization / practice name</label><input name="practice" required>
-      <label>Email</label><input name="email" type="email" required autocomplete="email">
-      <label>Password</label><input name="password" type="password" required minlength="10" autocomplete="new-password">
+      <label>Your name <span class="req">*</span></label><input name="name" required autocomplete="name">
+      <label>Organization / practice name <span class="req">*</span></label><input name="practice" required>
+      <label>Email <span class="req">*</span></label><input name="email" type="email" required autocomplete="email">
+      <label>Password <span class="req">*</span></label><input name="password" type="password" required minlength="10" autocomplete="new-password">
       <p style="margin-top:18px"><button class="btn" type="submit" style="width:100%">Create account</button></p>
     </form>
     <p class="muted" style="margin-top:16px">Already have a login? <a href="/login">Back to login</a></p></div>`;
@@ -202,7 +202,7 @@ export async function invitePage(env, request, tokenRaw) {
   if (!token) return page({ title: "Link expired", body: `<div class="card narrow"><h1>Link expired</h1>
     <p class="muted">Invite links work once and last 7 days. Enter the email the invite was sent to and a fresh link will be sent there.</p>
     <form method="post" action="/invite/resend">
-      <label>Email</label><input name="email" type="email" required autocomplete="email">
+      <label>Email <span class="req">*</span></label><input name="email" type="email" required autocomplete="email">
       <p style="margin-top:18px"><button class="btn" type="submit" style="width:100%">Send me a new link</button></p>
     </form>
     <p class="muted" style="margin-top:16px">Already finished setting up? <a href="/login">Sign in</a></p></div>` });
@@ -210,8 +210,8 @@ export async function invitePage(env, request, tokenRaw) {
   const body = `<div class="card narrow"><h1>Finish your sign-in</h1>
     <p class="muted">Hi ${esc(user.name)}, set the password for ${esc(user.email)} to finish.</p>
     <form method="post" action="/invite/${esc(tokenRaw)}">
-      <label>Password</label><input name="password" type="password" required minlength="10" autocomplete="new-password">
-      <label>Password again</label><input name="password2" type="password" required autocomplete="new-password">
+      <label>Password <span class="req">*</span></label><input name="password" type="password" required minlength="10" autocomplete="new-password">
+      <label>Password again <span class="req">*</span></label><input name="password2" type="password" required autocomplete="new-password">
       <p style="margin-top:18px"><button class="btn" type="submit" style="width:100%">Set password and sign in</button></p>
     </form></div>`;
   return page({ title: "Finish sign-in", body });
@@ -267,7 +267,7 @@ export function resetRequestPage(request) {
   const q = params(request);
   const body = `<div class="card narrow"><h1>Reset password</h1>
     <form method="post" action="/reset">
-      <label>Email</label><input name="email" type="email" required autocomplete="email">
+      <label>Email <span class="req">*</span></label><input name="email" type="email" required autocomplete="email">
       <p style="margin-top:18px"><button class="btn" type="submit" style="width:100%">Email me a reset link</button></p>
     </form>
     <p class="muted" style="margin-top:16px"><a href="/login">Back to login</a></p></div>`;
@@ -292,8 +292,8 @@ export async function resetPage(env, request, tokenRaw) {
   if (!token) return page({ title: "Link expired", body: `<div class="card narrow"><h1>Link expired</h1><p class="muted">This reset link is no longer valid. <a href="/reset">Request a new one</a>.</p></div>` });
   const body = `<div class="card narrow"><h1>Set a new password</h1>
     <form method="post" action="/reset/${esc(tokenRaw)}">
-      <label>New password</label><input name="password" type="password" required minlength="10" autocomplete="new-password">
-      <label>Password again</label><input name="password2" type="password" required autocomplete="new-password">
+      <label>New password <span class="req">*</span></label><input name="password" type="password" required minlength="10" autocomplete="new-password">
+      <label>Password again <span class="req">*</span></label><input name="password2" type="password" required autocomplete="new-password">
       <p style="margin-top:18px"><button class="btn" type="submit" style="width:100%">Set password</button></p>
     </form></div>`;
   return page({ title: "Set new password", body });
@@ -337,7 +337,7 @@ export async function mfaPage(env, request, user) {
       <script src="/assets/qrcode.js"></script>
       <script src="/assets/mfa-qr.js"></script>
       <form method="post" action="/mfa/verify">
-        <label>Code from the app</label><input name="code" inputmode="numeric" autocomplete="one-time-code" required>
+        <label>Code from the app <span class="req">*</span></label><input name="code" inputmode="numeric" autocomplete="one-time-code" required>
         <p style="margin-top:18px"><button class="btn" type="submit">Turn on</button></p>
       </form>
       ${user.kind === "customer" ? `<form method="post" action="/mfa/skip" style="margin-top:10px">

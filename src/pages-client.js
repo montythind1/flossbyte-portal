@@ -258,7 +258,7 @@ export async function ticketsPage(env, request, user, locationId) {
     <tbody>${rows || `<tr><td colspan="4" class="muted">No tickets yet.</td></tr>`}</tbody></table></div>
     <div class="card"><h3>Open a ticket</h3>
       <form method="post" action="/app/locations/${locationId}/tickets">
-        <label>What is going on?</label><input name="title" required>
+        <label>What is going on? <span class="req">*</span></label><input name="title" required>
         <label>Details</label><textarea name="body"></textarea>
         <label>Priority</label><select name="priority"><option>low</option><option selected>normal</option><option>high</option><option>urgent</option></select>
         <p style="margin-top:14px"><button class="btn" type="submit">Open ticket</button></p></form></div>`;
@@ -301,7 +301,7 @@ export async function ticketDetailPage(env, request, user, locationId, ticketId)
     <p><span class="pill">${esc(STATUS_LABEL[t.status] || t.status)}</span> <span class="muted">Priority: ${esc(t.priority)} , opened ${esc(t.created_at.slice(0, 10))}</span></p>
     <div class="card">${thread || `<p class="muted">No updates yet.</p>`}
       <form method="post" action="/app/locations/${locationId}/tickets/${ticketId}/update">
-        <label>Add an update</label><textarea name="body" required></textarea>
+        <label>Add an update <span class="req">*</span></label><textarea name="body" required></textarea>
         <p style="margin-top:10px"><button class="btn" type="submit">Post update</button></p></form>
       ${manage}</div>`;
   return page({ title: t.title, user, body });
@@ -352,7 +352,7 @@ export async function documentsPage(env, request, user, locationId) {
     <tbody>${rows || `<tr><td colspan="5" class="muted">No documents yet.</td></tr>`}</tbody></table></div>
     <div class="card"><h3>Upload a document</h3>
       <form method="post" action="/app/locations/${locationId}/documents" enctype="multipart/form-data">
-        <input type="file" name="file" required>
+        <label>File <span class="req">*</span></label><input type="file" name="file" required>
         <p style="margin-top:12px"><button class="btn" type="submit">Upload</button></p></form>
       <p class="muted">Keep patient information out of the portal. This space is for IT documents: network notes, invoices, warranty paperwork.</p></div>`;
   return page({ title: "Documents", user, body });
