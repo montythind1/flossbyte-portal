@@ -1,0 +1,30 @@
+name = "flossbyte-portal"
+main = "src/index.js"
+compatibility_date = "2025-01-01"
+
+# Public origin used to build invite and password reset links.
+[vars]
+APP_ORIGIN = "https://portal.flossbyte.com"
+
+# Static files in ./public (the FlossByte logo) are served at their paths,
+# for example /assets/logo-icon.png.
+[assets]
+directory = "./public"
+
+# Database. Create it, then paste the returned database_id below:
+#   npx wrangler d1 create flossbyte-portal
+[[d1_databases]]
+binding = "DB"
+database_name = "flossbyte-portal"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+migrations_dir = "migrations"
+
+# Document file storage. Create it with:
+#   npx wrangler r2 bucket create flossbyte-portal-docs
+[[r2_buckets]]
+binding = "DOCS"
+bucket_name = "flossbyte-portal-docs"
+
+# Secrets are set with `npx wrangler secret put NAME` and never live in this
+# repo: RESEND_API_KEY, EMAIL_FROM, ADMIN_ALERT_EMAIL (the last one can also
+# be a plain var if preferred).
