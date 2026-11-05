@@ -55,7 +55,7 @@ export async function clientsPage(env, request, user) {
 // block's data-loc container so the lookup fills the right block.
 function locationBlock() {
   return `<div data-loc style="border-top:1px solid var(--line);padding-top:10px;margin-top:12px">
-    <label>Location / practice name</label><input name="loc_name[]" placeholder="Main office">
+    <label>Location / practice name <span class="req">*</span></label><input name="loc_name[]" placeholder="Main office">
     <label>Street address</label><input name="loc_address[]" data-address autocomplete="off" placeholder="Start typing, then pick the address">
     <div class="row"><span style="flex:2"><label>City</label><input name="loc_city[]" class="f-city"></span>
     <span style="flex:1"><label>State</label><input name="loc_state[]" class="f-state"></span>
@@ -122,10 +122,12 @@ export async function newCustomerPage(env, request, user) {
       </section>
       <section class="wstep" data-step="2">
         <h3 style="margin:4px 0">Locations</h3>
+        <p class="muted">At least one office location is required. Additional locations are optional, and more can be added later on the organization page.</p>
         <div id="locationBlocks">${locationBlock()}</div>
         <template id="locationTemplate">${locationBlock()}</template>
         <p style="margin-top:12px"><button class="btn small secondary" type="button" id="addLocationBtn">Add another location</button></p>
-        <p class="muted">Address suggestions come from OpenStreetMap. More locations can also be added later on the organization page.</p>
+        <p class="muted">Address suggestions come from OpenStreetMap.</p>
+        <p id="locationCheck" style="color:var(--bad)"></p>
       </section>
       <section class="wstep" data-step="3">
         <h3 style="margin:4px 0">Products for this organization</h3>
@@ -133,8 +135,8 @@ export async function newCustomerPage(env, request, user) {
         <p class="muted">These switches are enforced on the server and can be changed any time on the organization page.</p>
       </section>
       <section class="wstep" data-step="4">
-        <h3 style="margin:4px 0">User logins</h3>
-        <p class="muted">Regular users of this organization; the main admin was set in step 1. Each person gets an invite email to set their password and finish sign-in. Leave blank to add logins later.</p>
+        <h3 style="margin:4px 0">Additional user logins (optional)</h3>
+        <p class="muted">Additional users are optional. The main admin was set in step 1. Each person added here gets an invite email to set their password and finish sign-in. Leave blank to add logins later.</p>
         <div id="loginBlocks">${loginBlock()}</div>
         <template id="loginTemplate">${loginBlock()}</template>
         <p style="margin-top:12px"><button class="btn small secondary" type="button" id="addLoginBtn">Add another login</button></p>
@@ -211,6 +213,19 @@ export async function createCustomerPost(env, request, user) {
     return redirect("/admin/customers/new?msg=" + encodeURIComponent(
       "A valid 10-digit phone number is required, for example (601) 345-0188."));
   }
+  // At least one named office location is required. This is checked
+  // before the organization is inserted, so a missing location never
+  // leaves a partially created organization behind. Extra blank location
+  // blocks are ignored below.
+  const names = f.getAll("loc_name[]");
+  const addrs = f.getAll("loc_address[]");
+  const cities = f.getAll("loc_city[]");
+  const states = f.getAll("loc_state[]");
+  const zips = f.getAll("loc_zip[]");
+  if (!names.some((value) => String(value || "").trim())) {
+    return redirect("/admin/customers/new?msg=" + encodeURIComponent(
+      "At least one office location is required."));
+  }
   const first = String(f.get("contact_first_name") || "").trim();
   const middle = String(f.get("contact_middle_name") || "").trim();
   const last = String(f.get("contact_last_name") || "").trim();
@@ -223,11 +238,6 @@ export async function createCustomerPost(env, request, user) {
   const customerId = res.meta.last_row_id;
   // Any number of location blocks may come back from the form; empty
   // blocks are skipped.
-  const names = f.getAll("loc_name[]");
-  const addrs = f.getAll("loc_address[]");
-  const cities = f.getAll("loc_city[]");
-  const states = f.getAll("loc_state[]");
-  const zips = f.getAll("loc_zip[]");
   // Location ids keyed by the block's index in the form, so step 4's
   // per-login location picks (which carry block indexes) resolve here.
   const locIdByIndex = {};

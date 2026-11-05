@@ -12,6 +12,7 @@
   var next = document.getElementById("wizNext");
   var create = document.getElementById("wizCreate");
   var emailMsg = document.getElementById("emailCheck");
+  var locationMsg = document.getElementById("locationCheck");
   var current = 1;
 
   function locationOptions() {
@@ -75,9 +76,41 @@
       .catch(function () { show(2); });
   }
 
+  function locationInputs() {
+    return Array.prototype.slice.call(form.querySelectorAll('input[name="loc_name[]"]'));
+  }
+  function hasLocation() {
+    return locationInputs().some(function (input) { return input.value.trim(); });
+  }
+  function checkLocationThenAdvance() {
+    var inputs = locationInputs();
+    if (hasLocation()) {
+      if (locationMsg) locationMsg.textContent = "";
+      inputs.forEach(function (input) { input.classList.remove("field-error"); });
+      show(3);
+      return;
+    }
+    if (locationMsg) locationMsg.textContent = "At least one office location is required.";
+    if (inputs[0]) { inputs[0].classList.add("field-error"); inputs[0].focus(); }
+  }
+  form.addEventListener("input", function (event) {
+    if (event.target.name === "loc_name[]" && event.target.value.trim()) {
+      if (locationMsg) locationMsg.textContent = "";
+      locationInputs().forEach(function (input) { input.classList.remove("field-error"); });
+    }
+  });
+  form.addEventListener("submit", function (event) {
+    if (!hasLocation()) {
+      event.preventDefault();
+      show(2);
+      checkLocationThenAdvance();
+    }
+  });
+
   back.addEventListener("click", function () { if (current > 1) show(current - 1); });
   next.addEventListener("click", function () {
     if (current === 1) checkEmailThenAdvance();
+    else if (current === 2) checkLocationThenAdvance();
     else if (current < 4) show(current + 1);
   });
 
