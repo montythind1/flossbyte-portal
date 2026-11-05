@@ -670,6 +670,7 @@ export async function deleteCustomerPage(env, request, user, customerId) {
     <p>The ${counts.logins} login(s) lose access immediately and are signed out. Their accounts are disabled, not erased, so ticket history keeps its authors.</p>
     <p><strong>This cannot be undone.</strong></p>
     <form method="post" action="/admin/customers/${customerId}/delete" id="deleteOrgForm">
+      <p style="margin:0 0 8px">Organization name: <strong style="font-size:1.05rem">${esc(c.name)}</strong></p>
       <label>Type the organization name to confirm <span class="req">*</span></label>
       <input name="confirm_name" id="confirmName" autocomplete="off" placeholder="${esc(c.name)}" ${errs.includes("name") ? 'class="field-error"' : ""}>
       <label class="confirm-box${errs.includes("box") ? " error" : ""}" id="confirmBox">
@@ -709,7 +710,7 @@ export async function deleteCustomerPost(env, request, user, customerId) {
   if (nameBad || boxBad) {
     const err = [nameBad && "name", boxBad && "box"].filter(Boolean).join(",");
     return redirect(`/admin/customers/${customerId}/delete?err=${err}&msg=` +
-      encodeURIComponent("Confirmation did not match. Type the organization name exactly and tick the box."));
+      encodeURIComponent(`Confirmation did not match. Type "${c.name}" exactly as shown and tick the box.`));
   }
   const locIds = "(SELECT id FROM locations WHERE customer_id = ?)";
   const { results: docRows } = await db.prepare(
