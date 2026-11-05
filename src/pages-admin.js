@@ -1,9 +1,9 @@
 // FlossByte admin console: clients, locations, product switches, logins,
 // pending signups, and (Super Admin only) admin account management.
 import { page, redirect, esc } from "./layout.js";
-import { createAuthToken, revokeAllSessions } from "./auth.js";
+import { createAuthToken, revokeAllSessions, verifyPassword } from "./auth.js";
 import { audit, isSuperAdmin, grantUserAccess, findCustomerByContactEmail } from "./access.js";
-import { sendEmail, inviteEmail, newCustomerNoticeEmail } from "./email.js";
+import { sendEmail, inviteEmail, newCustomerNoticeEmail, ownershipTransferEmail } from "./email.js";
 
 function origin(env) { return env.APP_ORIGIN || "https://portal.flossbyte.com"; }
 function q(request) { return new URL(request.url).searchParams; }
@@ -309,8 +309,80 @@ export async function adminsPage(env, request, user) {
         <span style="flex:1;min-width:160px"><label>Name</label><input name="name" required></span>
         <span style="flex:1;min-width:200px"><label>Email</label><input name="email" type="email" required></span>
         <button class="btn small" type="submit">Send admin invite</button></form>
-      <p class="muted">New admins finish sign-in from the invite email, then set up two-step verification. The Super Admin account can never be disabled or removed, and no admin can disable their own account.</p></div>`;
+      <p class="muted">New admins finish sign-in from the invite email, then set up two-step verification. The Super Admin account can never be disabled or removed, and no admin can disable their own account.</p></div>
+    <div class="card"><h3>Transfer ownership</h3>
+      <p class="muted">Hand the Super Admin role to another admin, for example when the business is sold. There is always exactly one Super Admin, and the transfer is recorded in the audit log. The new Super Admin needs an active admin account (invited and signed in at least once).</p>
+      ${(() => {
+        const eligible = (results || []).filter((a) => a.role === "admin" && a.status === "active" && a.id !== user.id);
+        if (!eligible.length) return `<p class="muted">No admin can receive ownership yet. Create an admin above and have them finish sign-in first.</p>`;
+        return eligible.map((a) => `<p><a class="btn small secondary" href="/admin/transfer/${a.id}">Transfer ownership to ${esc(a.name)}</a> <span class="muted">${esc(a.email)}</span></p>`).join("");
+      })()}</div>`;
   return page({ title: "Admins", user, body, flash: q(request).get("msg") || undefined });
+}
+
+// ---------- Ownership transfer (Super Admin only) ----------
+async function eligibleTransferTarget(env, targetId) {
+  const target = await env.DB.prepare(
+    "SELECT * FROM users WHERE id = ? AND kind = 'flossbyte'").bind(targetId).first();
+  if (!target || target.role !== "admin" || target.status !== "active") return null;
+  return target;
+}
+
+export async function transferPage(env, request, user, targetId) {
+  if (!isSuperAdmin(user)) return notSuper(user);
+  const target = await eligibleTransferTarget(env, targetId);
+  if (!target || Number(targetId) === user.id) {
+    return redirect("/admin/admins?msg=" + encodeURIComponent("That admin cannot receive ownership. They need an active admin account."));
+  }
+  const body = `${adminNav("admins")}<h1>Transfer ownership</h1>
+    <div class="card narrow"><h3 style="margin-top:0">Make ${esc(target.name)} the Super Admin</h3>
+      <p class="muted">${esc(target.name)} (${esc(target.email)}) gets full control of the portal, including managing admin accounts and transferring ownership again. Two-step verification stays mandatory for them; if they have not set it up, they will be asked at their next sign-in.</p>
+      <form method="post" action="/admin/transfer/${target.id}">
+        <label>Your password, to confirm this is you</label>
+        <input name="password" type="password" required autocomplete="current-password">
+        <label style="margin-top:14px">What happens to your account</label>
+        <label style="font-weight:normal"><input type="radio" name="after" value="admin" checked style="width:auto"> Keep me as a regular admin</label>
+        <label style="font-weight:normal"><input type="radio" name="after" value="disable" style="width:auto"> Disable my account and sign me out everywhere</label>
+        <label style="font-weight:normal;margin-top:12px"><input type="checkbox" name="confirm" value="yes" required style="width:auto"> I understand this hands over full control of the portal.</label>
+        <p style="margin-top:18px"><button class="btn danger" type="submit">Transfer ownership</button>
+        <a class="btn secondary" href="/admin/admins">Cancel</a></p>
+      </form></div>`;
+  return page({ title: "Transfer ownership", user, body, flash: q(request).get("msg") || undefined });
+}
+
+export async function transferPost(env, request, user, targetId) {
+  if (!isSuperAdmin(user)) return notSuper(user);
+  const back = (msg) => redirect(`/admin/transfer/${targetId}?msg=` + encodeURIComponent(msg));
+  const target = await eligibleTransferTarget(env, targetId);
+  if (!target || Number(targetId) === user.id) {
+    return redirect("/admin/admins?msg=" + encodeURIComponent("That admin cannot receive ownership. They need an active admin account."));
+  }
+  const f = await request.formData();
+  if (String(f.get("confirm") || "") !== "yes") return back("Tick the confirmation box to transfer ownership.");
+  if (!(await verifyPassword(String(f.get("password") || ""), user.password_hash))) {
+    return back("Your password does not match. Ownership was not transferred.");
+  }
+  const disableSelf = String(f.get("after") || "") === "disable";
+  // One batch, so the portal never has zero or two Super Admins: the role
+  // moves in a single transaction.
+  await env.DB.batch([
+    env.DB.prepare("UPDATE users SET role = 'super_admin' WHERE id = ?").bind(target.id),
+    disableSelf
+      ? env.DB.prepare("UPDATE users SET role = 'admin', status = 'disabled' WHERE id = ?").bind(user.id)
+      : env.DB.prepare("UPDATE users SET role = 'admin' WHERE id = ?").bind(user.id),
+  ]);
+  await audit(env.DB, user.id, "super_admin_transfer_out", "user", target.id, `to ${target.email}`);
+  await audit(env.DB, target.id, "super_admin_transfer_in", "user", user.id, `from ${user.email}`);
+  const mail = ownershipTransferEmail(env, {
+    fromName: user.name, fromEmail: user.email, toName: target.name, toEmail: target.email,
+  });
+  await sendEmail(env, { to: target.email, template: "ownership_transfer", ...mail });
+  await sendEmail(env, { to: user.email, template: "ownership_transfer", ...mail });
+  if (disableSelf) {
+    await revokeAllSessions(env.DB, user.id);
+    return redirect("/login?msg=" + encodeURIComponent(`Ownership transferred to ${target.name}. Your account is disabled.`));
+  }
+  return redirect("/admin?msg=" + encodeURIComponent(`Ownership transferred to ${target.name}. You are now a regular admin.`));
 }
 
 export async function createAdminPost(env, request, user) {

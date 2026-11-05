@@ -84,6 +84,17 @@ export function pendingSignupAlertEmail(env, { userName, userEmail }) {
   };
 }
 
+export function ownershipTransferEmail(env, { fromName, fromEmail, toName, toEmail }) {
+  return {
+    subject: "FlossByte portal ownership transferred",
+    html: wrap("Portal ownership transferred", `
+      <p>Ownership of the FlossByte client portal was transferred.</p>
+      <p>From: ${fromName} (${fromEmail})<br>To: ${toName} (${toEmail})</p>
+      <p>${toName} is now the Super Admin, the only account that can manage admin logins and transfer ownership again. If this was not expected, contact FlossByte right away.</p>`),
+    text: `Ownership of the FlossByte client portal was transferred from ${fromName} (${fromEmail}) to ${toName} (${toEmail}). ${toName} is now the Super Admin. If this was not expected, contact FlossByte right away.`,
+  };
+}
+
 export function newCustomerNoticeEmail(env, { customerName, createdBy }) {
   return {
     subject: `New customer added to the portal: ${customerName}`,
