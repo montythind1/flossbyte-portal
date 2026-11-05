@@ -502,8 +502,8 @@ export async function deleteCustomerPage(env, request, user, customerId) {
     <form method="post" action="/admin/customers/${customerId}/delete">
       <label>Type the organization name to confirm</label>
       <input name="confirm_name" autocomplete="off" placeholder="${esc(c.name)}">
-      <label style="display:flex;gap:8px;align-items:flex-start;font-weight:400;margin-top:14px">
-        <input type="checkbox" name="confirm" value="yes" style="width:auto;margin-top:3px">
+      <label class="confirm-box">
+        <input type="checkbox" name="confirm" value="yes">
         <span>I understand this permanently deletes ${esc(c.name)} and everything under it.</span></label>
       <p class="row" style="margin-top:18px">
         <button class="btn danger" type="submit">Delete organization</button>

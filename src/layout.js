@@ -42,6 +42,8 @@ form.js-wizard .wstep.active{display:block}
 .wiz-node.current .nlabel{color:var(--ink);font-weight:700}
 .wiz-node.done .dot{background:var(--teal);border-color:var(--teal);color:#fff}
 .wiz-node.done .nlabel{color:var(--ink)}
+.confirm-box{display:flex;gap:10px;align-items:flex-start;margin-top:16px;background:var(--warn-bg);border:1.5px solid var(--warn);border-radius:8px;padding:12px 14px;cursor:pointer;font-weight:600}
+.confirm-box input{width:19px;height:19px;margin-top:1px;flex:none;accent-color:var(--warn)}
 .addr-wrap{position:relative}
 .addr-list{position:absolute;left:0;right:0;top:100%;background:#fff;border:1px solid var(--line);border-radius:0 0 8px 8px;box-shadow:0 10px 24px rgba(10,22,40,.16);z-index:40;overflow:hidden}
 .addr-item{padding:9px 12px;font-size:14px;cursor:pointer}
