@@ -10,17 +10,21 @@ function wrap(title, bodyHtml) {
     <div style="border:1px solid #dde3ea;border-top:none;padding:22px;border-radius:0 0 8px 8px">
       <h2 style="margin:0 0 12px;font-size:18px">${title}</h2>${bodyHtml}
       <p style="color:#5b6b82;font-size:13px;margin-top:24px">FlossByte, dental IT support.
-      Questions: call (669) 237-2264 or reply to this email.</p></div></div>`;
+      Questions: call (669) 237-2264 or email hello@flossbyte.com.
+      Please do not reply to this email, this address does not receive mail.</p></div></div>`;
 }
 
 export async function sendEmail(env, { to, template, subject, html, text }) {
   let status = "queued", detail = "no email provider configured";
-  if (env.RESEND_API_KEY && env.EMAIL_FROM) {
+  // Sender is no-reply by Montek's decision (2026-11-05): transactional mail
+  // only, replies are not received. EMAIL_FROM can override for testing.
+  const from = env.EMAIL_FROM || "FlossByte Portal <no-reply@flossbyte.com>";
+  if (env.RESEND_API_KEY) {
     try {
       const resp = await fetch("https://api.resend.com/emails", {
         method: "POST",
         headers: { "Authorization": `Bearer ${env.RESEND_API_KEY}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ from: env.EMAIL_FROM, to: [to], subject, html, text }),
+        body: JSON.stringify({ from, to: [to], subject, html, text }),
       });
       status = resp.ok ? "sent" : "failed";
       detail = `resend http ${resp.status}`;
