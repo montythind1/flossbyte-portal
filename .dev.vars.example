@@ -1,0 +1,6 @@
+# Local development secrets. Copy to .dev.vars and fill in, or leave blank:
+# without a Resend key the portal records outgoing email in the email_log
+# table as "queued" instead of sending it.
+RESEND_API_KEY=
+EMAIL_FROM=FlossByte Portal <portal@flossbyte.com>
+ADMIN_ALERT_EMAIL=
