@@ -95,7 +95,7 @@ export async function locationOverview(env, request, user, locationId) {
           return `<li>${esc(e.vendor || "")} ${esc(e.model || e.type || "Equipment")}: ${kind.toLowerCase()} expires ${esc(date)} (${days < 0 ? "expired" : days + " days"})</li>`;
         }).join("")}</ul></div>` : "";
   const tiles = states.map((p) => p.enabled
-    ? `<a class="tile" href="/app/locations/${locationId}/products/${p.key}"><span class="t">${esc(p.name)}</span><span class="d"><span class="pill on">On</span> ${esc(p.plan_note || p.description || "")}</span></a>`
+    ? `<a class="tile" href="/app/locations/${locationId}/products/${p.key}"><span class="t">${esc(p.name)}</span><span class="d"><span class="pill on">On</span> ${esc(p.description || "")}</span></a>`
     : `<a class="tile" href="/app/locations/${locationId}/products/${p.key}"><span class="t">${esc(p.name)}</span><span class="d"><span class="pill off">Not included</span> Ask FlossByte about adding it.</span></a>`).join("");
   const body = `${locNav(loc, "overview")}${user.role === "customer_admin"
     ? `<p style="margin:-6px 0 14px"><a href="/app/team">Manage your team</a></p>` : ""}<h1>${esc(loc.name)}</h1>
@@ -174,7 +174,7 @@ export async function productPage(env, request, user, locationId, productKey) {
   const state = states.find((s) => s.key === productKey);
   const body = `${locNav(loc, "")}<div class="card"><h2>${esc(prod.name)}</h2>
     <p><span class="pill on">On for this practice</span></p>
-    <p class="muted">${esc((state && state.plan_note) || prod.description || "")}</p>
+    <p class="muted">${esc(prod.description || "")}</p>
     <p class="muted">Work for this service shows up here as it gets scheduled. Questions: call (669) 237-2264.</p></div>`;
   return page({ title: prod.name, user, body });
 }

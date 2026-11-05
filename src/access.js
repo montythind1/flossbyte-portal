@@ -210,8 +210,8 @@ export async function getLocation(db, locationId) {
 }
 
 // Product state for a customer/location. A location row overrides the
-// customer row. Managed IT defaults on for new customers; everything else
-// defaults off until an admin turns it on.
+// customer row. Every product defaults off until an admin turns it on;
+// nothing is enabled by default.
 export async function productEnabled(db, customerId, locationId, productKey) {
   if (locationId) {
     const loc = await db.prepare(
@@ -223,7 +223,7 @@ export async function productEnabled(db, customerId, locationId, productKey) {
     "SELECT enabled FROM customer_products WHERE customer_id = ? AND location_id IS NULL AND product = ?")
     .bind(customerId, productKey).first();
   if (cust) return !!cust.enabled;
-  return productKey === "managed_it";
+  return false;
 }
 
 export async function productStates(db, customerId, locationId) {

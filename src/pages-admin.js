@@ -35,7 +35,7 @@ export async function clientsPage(env, request, user) {
        WHERE l.customer_id = ? AND (date(e.license_expires) <= date('now', '+90 days') OR date(e.warranty_expires) <= date('now', '+90 days'))`)
       .bind(c.id).first();
     const { results: prods } = await db.prepare(
-      `SELECT p.key, p.name, COALESCE(cp.enabled, CASE WHEN p.key = 'managed_it' THEN 1 ELSE 0 END) AS enabled
+      `SELECT p.key, p.name, COALESCE(cp.enabled, 0) AS enabled
        FROM products p LEFT JOIN customer_products cp ON cp.product = p.key AND cp.customer_id = ? AND cp.location_id IS NULL
        ORDER BY p.key`).bind(c.id).all();
     const prodPills = (prods || []).map((p) => `<span class="pill ${p.enabled ? "on" : "off"}">${esc(p.name)} ${p.enabled ? "on" : "off"}</span>`).join(" ");
@@ -57,6 +57,7 @@ function locationBlock() {
   return `<div data-loc style="border-top:1px solid var(--line);padding-top:10px;margin-top:12px">
     <label>Location / practice name <span class="req">*</span></label><input name="loc_name[]" placeholder="Main office">
     <label>Street address <span class="req">*</span></label><input name="loc_address[]" data-address autocomplete="off" placeholder="Start typing, then pick the address">
+    <label>Suite / Unit</label><input name="loc_suite[]" class="f-suite" placeholder="Suite 200 (optional)">
     <div class="row"><span style="flex:2"><label>City <span class="req">*</span></label><input name="loc_city[]" class="f-city"></span>
     <span style="flex:1"><label>State <span class="req">*</span></label><input name="loc_state[]" class="f-state"></span>
     <span style="flex:1"><label>ZIP <span class="req">*</span></label><input name="loc_zip[]" class="f-zip"></span></div>
@@ -93,9 +94,8 @@ export async function newCustomerPage(env, request, user) {
   const productRows = (products || []).map((p) => `
     <div style="border-top:1px solid var(--line);padding:10px 0">
       <label style="display:flex;gap:10px;align-items:flex-start;font-weight:600">
-        <input type="checkbox" name="product_${esc(p.key)}" value="1" style="width:auto;margin-top:3px" ${p.key === "managed_it" ? "checked" : ""}>
+        <input type="checkbox" name="product_${esc(p.key)}" value="1" style="width:auto;margin-top:3px">
         <span>${esc(p.name)}<div class="muted" style="font-weight:400">${esc(p.description || "")}</div></span></label>
-      <input name="note_${esc(p.key)}" placeholder="Plan note (optional)" style="margin-top:6px">
     </div>`).join("");
   const body = `${adminNav("new")}<div class="card narrow" style="margin:0;max-width:600px"><h1>Add organization</h1>
     <div class="wiz-progress">
@@ -132,7 +132,6 @@ export async function newCustomerPage(env, request, user) {
       <section class="wstep" data-step="3">
         <h3 style="margin:4px 0">Products for this organization</h3>
         ${productRows}
-        <p class="muted">These switches are enforced on the server and can be changed any time on the organization page.</p>
       </section>
       <section class="wstep" data-step="4">
         <h3 style="margin:4px 0">Additional user logins (optional)</h3>
@@ -228,6 +227,7 @@ export async function createCustomerPost(env, request, user) {
   const cities = f.getAll("loc_city[]");
   const states = f.getAll("loc_state[]");
   const zips = f.getAll("loc_zip[]");
+  const suites = f.getAll("loc_suite[]");
   if (!names.some((value) => String(value || "").trim())) {
     return redirect("/admin/customers/new?msg=" + encodeURIComponent(
       "At least one office location is required."));
@@ -269,8 +269,9 @@ export async function createCustomerPost(env, request, user) {
     const locName = String(names[i] || "").trim();
     if (!locName) continue;
     const lr = await env.DB.prepare(
-      "INSERT INTO locations (customer_id, name, address, city, state, zip) VALUES (?, ?, ?, ?, ?, ?)")
+      "INSERT INTO locations (customer_id, name, address, suite, city, state, zip) VALUES (?, ?, ?, ?, ?, ?, ?)")
       .bind(customerId, locName, String(addrs[i] || "").trim() || null,
+        String(suites[i] || "").trim() || null,
         String(cities[i] || "").trim() || null, String(states[i] || "").trim() || null,
         String(zips[i] || "").trim() || null).run();
     locIdByIndex[i] = lr.meta.last_row_id;
@@ -280,10 +281,9 @@ export async function createCustomerPost(env, request, user) {
   const { results: allProducts } = await env.DB.prepare("SELECT key FROM products").all();
   for (const p of allProducts || []) {
     const enabled = String(f.get(`product_${p.key}`) || "") === "1" ? 1 : 0;
-    const note = String(f.get(`note_${p.key}`) || "").trim() || null;
     await env.DB.prepare(
       "INSERT INTO customer_products (customer_id, location_id, product, enabled, plan_note) VALUES (?, NULL, ?, ?, ?)")
-      .bind(customerId, p.key, enabled, note).run();
+      .bind(customerId, p.key, enabled, null).run();
   }
   // The customer admin from step 1 becomes the organization's one main
   // admin: a customer_admin login with access to every location, flagged
@@ -446,21 +446,21 @@ export async function customerPage(env, request, user, customerId) {
     `SELECT DISTINCT u.id, u.name, u.email, u.status, u.role, ua.is_main_admin FROM user_access ua JOIN users u ON u.id = ua.user_id
      WHERE ua.customer_id = ? ORDER BY u.name`).bind(customerId).all();
   const locRows = (locations || []).map((l) => `<tr><td><a href="/app/locations/${l.id}">${esc(l.name)}</a></td>
-    <td>${esc([l.address, l.city, l.state, l.zip].filter(Boolean).join(", "))}</td><td>${esc(l.status)}</td>
+    <td>${esc([l.address, l.suite, l.city, l.state, l.zip].filter(Boolean).join(", "))}</td><td>${esc(l.status)}</td>
     <td><form method="post" action="/admin/locations/${l.id}/edit" class="row" data-loc>
       <input name="name" value="${esc(l.name)}" required style="max-width:170px">
       <input name="address" value="${esc(l.address || "")}" placeholder="Street address" data-address autocomplete="off" required style="max-width:200px">
+      <input name="suite" value="${esc(l.suite || "")}" placeholder="Suite / Unit" class="f-suite" style="max-width:110px">
       <input name="city" value="${esc(l.city || "")}" placeholder="City" class="f-city" required style="max-width:120px">
       <input name="state" value="${esc(l.state || "")}" placeholder="State" class="f-state" required style="max-width:64px">
       <input name="zip" value="${esc(l.zip || "")}" placeholder="ZIP" class="f-zip" required style="max-width:84px">
       <button class="btn small secondary" type="submit">Save</button></form></td></tr>`).join("");
   const prodRows = (products || []).map((p) => {
-    const enabled = p.enabled === null || p.enabled === undefined ? (p.key === "managed_it" ? 1 : 0) : p.enabled;
+    const enabled = p.enabled === null || p.enabled === undefined ? 0 : p.enabled;
     return `<tr><td><strong>${esc(p.name)}</strong><div class="muted">${esc(p.description || "")}</div></td>
       <td><span class="pill ${enabled ? "on" : "off"}">${enabled ? "On" : "Off"}</span></td>
       <td><form method="post" action="/admin/customers/${customerId}/products" class="row">
         <input type="hidden" name="product" value="${esc(p.key)}">
-        <input name="plan_note" value="${esc(p.plan_note || "")}" placeholder="Plan note" style="max-width:220px">
         <button class="btn small ${enabled ? "danger" : ""}" name="enabled" value="${enabled ? "0" : "1"}" type="submit">${enabled ? "Turn off" : "Turn on"}</button></form></td></tr>`;
   }).join("");
   const memberRows = (members || []).map((m) => `<tr><td>${esc(m.name)}${m.is_main_admin ? ` <span class="pill on">Main admin</span>` : ""}</td><td>${esc(m.email)}</td>
@@ -485,6 +485,7 @@ export async function customerPage(env, request, user, customerId) {
           <span style="flex:1;min-width:180px"><label>New location / practice name <span class="req">*</span></label><input name="name" required></span>
           <span style="flex:1;min-width:200px"><label>Street address <span class="req">*</span></label><input name="address" data-address autocomplete="off" placeholder="Start typing, then pick the address" required></span></div>
         <div class="row" style="align-items:end;margin-top:8px">
+          <span style="flex:1"><label>Suite / Unit</label><input name="suite" class="f-suite" placeholder="Optional"></span>
           <span style="flex:2"><label>City <span class="req">*</span></label><input name="city" class="f-city" required></span>
           <span style="flex:1"><label>State <span class="req">*</span></label><input name="state" class="f-state" required></span>
           <span style="flex:1"><label>ZIP <span class="req">*</span></label><input name="zip" class="f-zip" required></span>
@@ -520,13 +521,14 @@ export async function addLocationPost(env, request, user, customerId) {
   const city = String(f.get("city") || "").trim();
   const state = String(f.get("state") || "").trim();
   const zip = String(f.get("zip") || "").trim();
+  const suite = String(f.get("suite") || "").trim() || null;
   if (!name || !address || !city || !state || !zip) {
     return redirect(`/admin/customers/${customerId}?msg=` + encodeURIComponent(
       "Name, street address, city, state, and ZIP are all required for a location."));
   }
   await env.DB.prepare(
-    "INSERT INTO locations (customer_id, name, address, city, state, zip) VALUES (?, ?, ?, ?, ?, ?)")
-    .bind(customerId, name, address, city, state, zip).run();
+    "INSERT INTO locations (customer_id, name, address, suite, city, state, zip) VALUES (?, ?, ?, ?, ?, ?, ?)")
+    .bind(customerId, name, address, suite, city, state, zip).run();
   await audit(env.DB, user.id, "location_create", "customer", Number(customerId), name);
   return redirect(`/admin/customers/${customerId}`);
 }
@@ -544,9 +546,10 @@ export async function editLocationPost(env, request, user, locationId) {
     return redirect(`/admin/customers/${loc.customer_id}?msg=` + encodeURIComponent(
       "Name, street address, city, state, and ZIP are all required for a location. Nothing was saved."));
   }
+  const suite2 = String(f.get("suite") || "").trim() || null;
   await env.DB.prepare(
-    "UPDATE locations SET name = ?, address = ?, city = ?, state = ?, zip = ?, updated_at = datetime('now') WHERE id = ?")
-    .bind(name, address, city, state, zip, locationId).run();
+    "UPDATE locations SET name = ?, address = ?, suite = ?, city = ?, state = ?, zip = ?, updated_at = datetime('now') WHERE id = ?")
+    .bind(name, address, suite2, city, state, zip, locationId).run();
   return redirect(`/admin/customers/${loc.customer_id}`);
 }
 
@@ -554,7 +557,6 @@ export async function productTogglePost(env, request, user, customerId) {
   const f = await request.formData();
   const product = String(f.get("product") || "");
   const enabled = String(f.get("enabled") || "0") === "1" ? 1 : 0;
-  const note = f.get("plan_note") || null;
   const locationId = f.get("location_id") ? Number(f.get("location_id")) : null;
   const valid = await env.DB.prepare("SELECT key FROM products WHERE key = ?").bind(product).first();
   if (valid) {
@@ -567,11 +569,11 @@ export async function productTogglePost(env, request, user, customerId) {
     if (existing) {
       await env.DB.prepare(
         "UPDATE customer_products SET enabled = ?, plan_note = ?, updated_at = datetime('now') WHERE id = ?")
-        .bind(enabled, note, existing.id).run();
+        .bind(enabled, null, existing.id).run();
     } else {
       await env.DB.prepare(
         "INSERT INTO customer_products (customer_id, location_id, product, enabled, plan_note) VALUES (?, ?, ?, ?, ?)")
-        .bind(customerId, locationId, product, enabled, note).run();
+        .bind(customerId, locationId, product, enabled, null).run();
     }
     await audit(env.DB, user.id, enabled ? "product_on" : "product_off", "customer", Number(customerId), product);
   }

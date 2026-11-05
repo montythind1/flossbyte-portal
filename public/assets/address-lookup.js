@@ -7,8 +7,9 @@
 // unreachable the form simply works without suggestions.
 // The map data has no suite/unit numbers, so when the person typed one
 // (for example "350 Fifth Avenue Suite 2100" or "88 King St #400"),
-// picking a suggestion keeps it: the filled street address becomes
-// "350 Fifth Avenue, Suite 2100".
+// picking a suggestion keeps it: it lands in the form's Suite / Unit
+// field when the form has one, otherwise it is appended to the street
+// address ("350 Fifth Avenue, Suite 2100").
 (function () {
   function groupOf(input) { return input.closest("[data-loc]") || document; }
   function field(group, cls) { return group.querySelector("." + cls); }
@@ -41,7 +42,14 @@
       var g = groupOf(input);
       var street = [p.housenumber, p.street].filter(Boolean).join(" ") || p.name || "";
       var unit = unitFrom(input.value);
-      if (unit && street.toLowerCase().indexOf(unit.toLowerCase()) === -1) street += ", " + unit;
+      var suiteField = field(g, "f-suite");
+      if (unit && suiteField) {
+        // The form has its own Suite / Unit field: the typed suite goes
+        // there, and the street address stays clean.
+        if (!suiteField.value.trim()) suiteField.value = unit;
+      } else if (unit && street.toLowerCase().indexOf(unit.toLowerCase()) === -1) {
+        street += ", " + unit;
+      }
       input.value = street;
       var city = field(g, "f-city"); if (city) city.value = p.city || p.town || p.village || "";
       var state = field(g, "f-state"); if (state) state.value = p.state || "";
