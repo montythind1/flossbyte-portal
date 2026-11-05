@@ -16,7 +16,7 @@ directory = "./public"
 [[d1_databases]]
 binding = "DB"
 database_name = "flossbyte-portal"
-database_id = "REPLACE_WITH_D1_DATABASE_ID"
+database_id = "3996beab-7c04-4611-997c-792d4e4737aa"
 migrations_dir = "migrations"
 
 # Document file storage. Create it with:
