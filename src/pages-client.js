@@ -3,7 +3,8 @@
 import { page, redirect, esc } from "./layout.js";
 import {
   canAccessLocation, locationScope, getLocation, productEnabled, productStates,
-  expiringItems, audit, accessibleLocationIds,
+  expiringItems, audit, accessibleLocationIds, customerAdminOrg, orgMembers,
+  removeUserFromCustomer,
 } from "./access.js";
 
 const REMOTE_URL = "https://flossbyte.com/remote";
@@ -64,6 +65,10 @@ export async function appHome(env, request, user) {
     if (loc) cards.push(`<a class="tile" href="/app/locations/${id}"><span class="t">${esc(loc.name)}</span>
       <span class="d">${esc(loc.customer_name)}${loc.city ? " , " + esc(loc.city) : ""}</span></a>`);
   }
+  if (user.role === "customer_admin") {
+    cards.push(`<a class="tile" href="/app/team"><span class="t">Team</span>
+      <span class="d">People with a login for your organization, and removing people who left.</span></a>`);
+  }
   const body = `<h1>Your practices</h1><div class="grid">${cards.join("")}</div>`;
   return page({ title: "My Portal", user, body });
 }
@@ -92,7 +97,8 @@ export async function locationOverview(env, request, user, locationId) {
   const tiles = states.map((p) => p.enabled
     ? `<a class="tile" href="/app/locations/${locationId}/products/${p.key}"><span class="t">${esc(p.name)}</span><span class="d"><span class="pill on">On</span> ${esc(p.plan_note || p.description || "")}</span></a>`
     : `<a class="tile" href="/app/locations/${locationId}/products/${p.key}"><span class="t">${esc(p.name)}</span><span class="d"><span class="pill off">Not included</span> Ask FlossByte about adding it.</span></a>`).join("");
-  const body = `${locNav(loc, "overview")}<h1>${esc(loc.name)}</h1>
+  const body = `${locNav(loc, "overview")}${user.role === "customer_admin"
+    ? `<p style="margin:-6px 0 14px"><a href="/app/team">Manage your team</a></p>` : ""}<h1>${esc(loc.name)}</h1>
     ${expiringHtml}
     <div class="grid">
       <div class="tile"><span class="t">${counts.equipment}</span><span class="d">Pieces of equipment on record</span></div>
@@ -102,6 +108,57 @@ export async function locationOverview(env, request, user, locationId) {
     </div>
     <h2 style="margin-top:28px">Your services</h2><div class="grid">${tiles}</div>`;
   return page({ title: loc.name, user, body });
+}
+
+// ---------- Team (customer_admin only) ----------
+export async function teamPage(env, request, user) {
+  const org = await customerAdminOrg(env.DB, user);
+  if (org === null) return denied(user, 403);
+  const cust = await env.DB.prepare("SELECT name FROM customers WHERE id = ?").bind(org).first();
+  const members = await orgMembers(env.DB, org);
+  const rows = members.map((m) => {
+    const isSelf = m.id === user.id;
+    const action = isSelf
+      ? `<span class="muted">You</span>`
+      : m.status === "disabled"
+        ? `<span class="muted">Removed</span>`
+        : `<a class="btn small danger" href="/app/team/${m.id}/remove">Remove</a>`;
+    return `<tr><td>${esc(m.name)}</td><td>${esc(m.email)}</td>
+      <td>${m.role === "customer_admin" ? "Admin" : "User"}</td>
+      <td>${esc(m.locations_label || "")}</td>
+      <td><span class="pill ${m.status === "disabled" ? "off" : "on"}">${esc(m.status)}</span></td>
+      <td>${action}</td></tr>`;
+  }).join("");
+  const body = `<h1>Team</h1>
+    <p class="muted">People with a login for ${esc(cust ? cust.name : "your organization")}. Removing someone signs them out right away and takes away everything they could see here. Tickets and documents they created stay on record.</p>
+    <div class="card" style="padding:8px 14px"><table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Sees</th><th>Status</th><th></th></tr></thead>
+    <tbody>${rows || `<tr><td colspan="6" class="muted">No logins yet.</td></tr>`}</tbody></table></div>`;
+  const msg = new URL(request.url).searchParams.get("msg");
+  return page({ title: "Team", user, body, flash: msg || undefined });
+}
+
+export async function teamRemoveConfirmPage(env, request, user, targetId) {
+  const org = await customerAdminOrg(env.DB, user);
+  if (org === null) return denied(user, 403);
+  const members = await orgMembers(env.DB, org);
+  const target = members.find((m) => m.id === Number(targetId));
+  if (!target || target.status === "disabled") return denied(user, 404);
+  const cust = await env.DB.prepare("SELECT name FROM customers WHERE id = ?").bind(org).first();
+  const body = `<div class="card narrow"><h1>Remove ${esc(target.name)}?</h1>
+    <p>${esc(target.name)} (${esc(target.email)}) will be signed out and will no longer see anything for ${esc(cust ? cust.name : "your organization")}.</p>
+    <p class="muted">Tickets and documents they created stay on record. If they ever need access again, FlossByte can invite them fresh.</p>
+    <form method="post" action="/app/team/${target.id}/remove" class="row">
+      <button class="btn danger" type="submit">Remove this user</button>
+      <a class="btn secondary" href="/app/team">Cancel</a></form></div>`;
+  return page({ title: "Remove user", user, body });
+}
+
+export async function teamRemovePost(env, request, user, targetId) {
+  const org = await customerAdminOrg(env.DB, user);
+  if (org === null) return denied(user, 403);
+  const result = await removeUserFromCustomer(env.DB, user, targetId, org);
+  if (!result.ok) return redirect("/app/team?msg=" + encodeURIComponent(result.error));
+  return redirect("/app/team?msg=" + encodeURIComponent(`${result.target.name} was removed.`));
 }
 
 // ---------- Product status / locked page ----------

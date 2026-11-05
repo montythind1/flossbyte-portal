@@ -2,26 +2,10 @@
 // pending signups, and (Super Admin only) admin account management.
 import { page, redirect, esc } from "./layout.js";
 import { createAuthToken, revokeAllSessions } from "./auth.js";
-import { audit, isSuperAdmin } from "./access.js";
+import { audit, isSuperAdmin, grantUserAccess, findCustomerByContactEmail } from "./access.js";
 import { sendEmail, inviteEmail, newCustomerNoticeEmail } from "./email.js";
 
 function origin(env) { return env.APP_ORIGIN || "https://portal.flossbyte.com"; }
-
-// Grants access without duplicates. SQLite treats NULL location_id as
-// distinct in UNIQUE indexes, so existence is checked explicitly.
-async function grantAccess(db, userId, customerId, locationId, scope) {
-  const existing = await db.prepare(
-    `SELECT id FROM user_access WHERE user_id = ? AND customer_id = ?
-     AND ((location_id IS NULL AND ? IS NULL) OR location_id = ?)`)
-    .bind(userId, customerId, locationId, locationId).first();
-  if (existing) {
-    await db.prepare("UPDATE user_access SET scope = ? WHERE id = ?").bind(scope, existing.id).run();
-    return;
-  }
-  await db.prepare(
-    "INSERT INTO user_access (user_id, customer_id, location_id, scope) VALUES (?, ?, ?, ?)")
-    .bind(userId, customerId, locationId, scope).run();
-}
 function q(request) { return new URL(request.url).searchParams; }
 
 function adminNav(active) {
@@ -76,16 +60,25 @@ export function newCustomerPage(env, request, user) {
       <label>First location name</label><input name="location_name" placeholder="Main office">
       <label>Notes</label><textarea name="notes"></textarea>
       <p style="margin-top:16px"><button class="btn" type="submit">Add customer</button></p></form></div>`;
-  return page({ title: "Add customer", user, body });
+  return page({ title: "Add customer", user, body, flash: q(request).get("msg") || undefined });
 }
 
 export async function createCustomerPost(env, request, user) {
   const f = await request.formData();
   const name = String(f.get("name") || "").trim();
   if (!name) return redirect("/admin/customers/new");
+  // Identity rule: a contact email belongs to exactly one customer. A
+  // match refuses creation outright (no "create anyway"). The name may
+  // repeat freely and is never checked.
+  const contactEmail = String(f.get("contact_email") || "").trim();
+  const dup = await findCustomerByContactEmail(env.DB, contactEmail);
+  if (dup) {
+    return redirect("/admin/customers/new?msg=" + encodeURIComponent(
+      `A customer with this contact email already exists. It matches ${dup.name} (customer ${dup.id}).`));
+  }
   const res = await env.DB.prepare(
     "INSERT INTO customers (name, contact_name, contact_email, phone, notes) VALUES (?, ?, ?, ?, ?)")
-    .bind(name, f.get("contact_name") || null, f.get("contact_email") || null, f.get("phone") || null, f.get("notes") || null).run();
+    .bind(name, f.get("contact_name") || null, contactEmail || null, f.get("phone") || null, f.get("notes") || null).run();
   const customerId = res.meta.last_row_id;
   const locName = String(f.get("location_name") || "").trim();
   if (locName) {
@@ -218,8 +211,21 @@ export async function inviteCustomerUserPost(env, request, user, customerId) {
       `INSERT INTO users (email, name, kind, role, status) VALUES (?, ?, 'customer', ?, 'invited')`)
       .bind(email, name, scope === "admin" ? "customer_admin" : "customer_user").run();
     target = { id: res.meta.last_row_id, name, email };
+  } else if (target.kind === "customer") {
+    // A returning login (for example someone removed from another
+    // organization) takes the role of this new grant, never a leftover
+    // role from before. Their old access was deleted at removal and is
+    // not resurrected; the grant below is the only access they get.
+    await env.DB.prepare("UPDATE users SET role = ? WHERE id = ?")
+      .bind(scope === "admin" ? "customer_admin" : "customer_user", target.id).run();
   }
-  await grantAccess(env.DB, target.id, customerId, locationId, scope);
+  const grant = await grantUserAccess(env.DB, target.id, customerId, locationId, scope);
+  if (!grant.ok) {
+    // FlossByte admins may be told which organization holds the email.
+    // Customer-facing flows never see the other organization's name.
+    const detail = grant.otherCustomer ? ` It belongs to ${grant.otherCustomer.name}.` : "";
+    return redirect(`/admin/customers/${customerId}?msg=` + encodeURIComponent(grant.error + detail));
+  }
   const raw = await createAuthToken(env.DB, target.id, "invite", 7 * 24 * 60);
   const mail = inviteEmail(env, { name: target.name, link: `${origin(env)}/invite/${raw}` });
   await sendEmail(env, { to: email, template: "invite", ...mail });
@@ -250,7 +256,7 @@ export async function pendingPage(env, request, user) {
   const body = `${adminNav("pending")}<h1>Pending accounts</h1>
     <p class="muted">These people created their own login. They see nothing until you connect them here.</p>
     ${rows.join("") || `<div class="card"><p class="muted">No pending accounts.</p></div>`}`;
-  return page({ title: "Pending accounts", user, body });
+  return page({ title: "Pending accounts", user, body, flash: q(request).get("msg") || undefined });
 }
 
 export async function pendingConnectPost(env, request, user, pendingUserId) {
@@ -262,7 +268,11 @@ export async function pendingConnectPost(env, request, user, pendingUserId) {
   if (!loc) return redirect("/admin/pending");
   const scope = String(f.get("scope") || "user") === "admin" ? "admin" : "user";
   const reachAll = String(f.get("reach") || "location") === "customer";
-  await grantAccess(env.DB, target.id, loc.customer_id, reachAll ? null : locationId, scope);
+  const grant = await grantUserAccess(env.DB, target.id, loc.customer_id, reachAll ? null : locationId, scope);
+  if (!grant.ok) {
+    const detail = grant.otherCustomer ? ` It belongs to ${grant.otherCustomer.name}.` : "";
+    return redirect("/admin/pending?msg=" + encodeURIComponent(grant.error + detail));
+  }
   await env.DB.prepare("UPDATE users SET status = 'active' WHERE id = ?").bind(target.id).run();
   await audit(env.DB, user.id, "pending_connected", "user", target.id, `customer ${loc.customer_id}`);
   return redirect("/admin/pending");

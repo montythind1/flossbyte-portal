@@ -53,6 +53,47 @@ for that service's data are refused. Managed IT Support defaults on for new
 customers; FlossVerify, HIPAA & Security, VoIP, and One-Time Project
 default off.
 
+## Identity rules (hard rules, app and database)
+
+Two identity rules sit on top of isolation and are enforced twice: in the
+app first, so people see a plain error, and in the database as a backstop.
+
+- **Customer contact email is unique.** Creating a customer whose contact
+  email matches an existing customer's contact email (case-insensitive,
+  trimmed) is refused outright. There is no "create anyway" for an email
+  match. Customer names may repeat freely and are never blocked.
+- **One user, one organization.** A customer login may hold `user_access`
+  rows under exactly one customer. Every grant goes through
+  `grantUserAccess` in `src/access.js` (FlossByte admin invites,
+  pending-account connect, and any future customer-admin user management
+  all inherit it), and a grant under a second customer is refused.
+  FlossByte logins hold no `user_access` and are unaffected. The only way
+  to move a person is to remove all of their access under the old customer
+  first, then grant under the new one.
+
+Migration `0002_identity_rules.sql` adds the database backstops: a unique
+partial index on the normalized contact email, and triggers on
+`user_access` that abort a second-organization insert or update even if a
+future code path forgets the app-level check.
+
+## Removing a user who left
+
+A customer admin can remove people from their own organization on the
+Team page (`/app/team`, linked from the portal home and location pages).
+Removal runs through `removeUserFromCustomer` in `src/access.js`, which
+checks on the server that the actor is an admin of that same customer,
+that the target belongs to that customer, that nobody removes their own
+login, and that the organization's last remaining admin cannot be
+removed. Removal deletes the person's access rows for the customer,
+disables the login, and revokes their sessions right away; it is written
+to the audit log. The user record itself is kept (disabled, not deleted),
+so tickets, ticket updates, and documents they created stay on record.
+
+Because removal deletes all of the person's access, the freed email can
+later be invited to a different organization: the invite reactivates the
+login with only the new organization's access and the role of the new
+grant. Nothing from the old organization comes back.
+
 ## Local development
 
 ```bash
