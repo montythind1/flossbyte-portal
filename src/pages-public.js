@@ -269,9 +269,12 @@ export async function mfaPage(env, request, user) {
     }
     body = `<div class="card narrow"><h1>Set up two-step verification</h1>
       ${user.kind === "flossbyte" ? `<p class="muted">FlossByte admin logins need this. It takes a minute with any authenticator app.</p>` : `<p class="muted">Optional, and a good idea. Use any authenticator app.</p>`}
-      <p class="muted">Add this key in your authenticator app, then enter the 6-digit code it shows:</p>
+      <p class="muted">Scan this code with your authenticator app, then enter the 6-digit code it shows:</p>
+      <div id="mfaQr" data-url="${esc(otpauthUrl(secret, user.email))}" style="background:#fff;padding:12px;border-radius:10px;width:max-content;max-width:100%"></div>
+      <p class="muted" style="margin-top:14px">Can't scan it? Type this key into the app instead:</p>
       <p style="font-size:18px;letter-spacing:2px"><strong>${esc(secret)}</strong></p>
-      <p class="muted" style="word-break:break-all;font-size:12px">${esc(otpauthUrl(secret, user.email))}</p>
+      <script src="/assets/qrcode.js"></script>
+      <script src="/assets/mfa-qr.js"></script>
       <form method="post" action="/mfa/verify">
         <label>Code from the app</label><input name="code" inputmode="numeric" autocomplete="one-time-code" required>
         <p style="margin-top:18px"><button class="btn" type="submit">Turn on</button></p>
