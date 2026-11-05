@@ -289,7 +289,7 @@ export async function createCustomerPost(env, request, user) {
   // admin: a customer_admin login with access to every location, flagged
   // is_main_admin. Pre-validation above guarantees the grant succeeds.
   const adminEmail = contactEmail.toLowerCase();
-  const summary = [];
+  let adminOutcome = "active";
   let invitesCreated = false;
   {
     let target = adminUser;
@@ -317,16 +317,16 @@ export async function createCustomerPost(env, request, user) {
     if (wasPending) {
       await env.DB.prepare("UPDATE users SET status = 'active' WHERE id = ?").bind(target.id).run();
       await audit(env.DB, user.id, "user_connect", "user", target.id, adminEmail);
-      summary.push(`Main admin ${adminEmail} was connected from their existing account, so they can sign in right away.`);
+      adminOutcome = "connected";
     } else if (target.status === "invited") {
       const raw = await createAuthToken(env.DB, target.id, "invite", 7 * 24 * 60);
       const mail = inviteEmail(env, { name: target.name, link: `${origin(env)}/invite/${raw}` });
       await sendEmail(env, { to: adminEmail, template: "invite", ...mail });
       invitesCreated = true;
       await audit(env.DB, user.id, "user_invite", "user", target.id, adminEmail);
-      summary.push(`Main admin ${adminEmail} was invited to set a password and finish signing in.`);
+      adminOutcome = "invited";
     } else {
-      summary.push(`Main admin ${adminEmail} already has an active account, so no invite was needed.`);
+      adminOutcome = "active";
     }
   }
   // Step 4: user logins, always regular users. Each row follows the same
@@ -388,13 +388,35 @@ export async function createCustomerPost(env, request, user) {
     const mail = newCustomerNoticeEmail(env, { customerName: name, createdBy: user.name });
     await sendEmail(env, { to: env.ADMIN_ALERT_EMAIL, template: "admin_new_customer", ...mail });
   }
-  const parts = [`Organization "${name}" was created.`, ...summary];
+  // Summary style follows the big admin consoles (Google Workspace,
+  // Microsoft 365): one headline, then invitation counts instead of a
+  // sentence per person. The main admin is named because that account
+  // anchors the organization; anyone who could not be added is named
+  // because that needs the admin's attention. Details live in the
+  // Logins table on the organization page and in the audit log.
+  const parts = [`Organization "${name}" was created.`];
+  const emailLive = !!env.RESEND_API_KEY;
+  const inviteTotal = invited.length + (adminOutcome === "invited" ? 1 : 0);
+  if (inviteTotal === 1 && adminOutcome === "invited") {
+    parts.push(emailLive
+      ? `Invitation sent to the main admin, ${adminEmail}.`
+      : `Invitation created for the main admin, ${adminEmail}.`);
+  } else if (inviteTotal > 0) {
+    const base = emailLive
+      ? `Invitations sent to ${inviteTotal} ${inviteTotal === 1 ? "user" : "users"}`
+      : `Invitations created for ${inviteTotal} ${inviteTotal === 1 ? "user" : "users"}`;
+    parts.push(adminOutcome === "invited" ? `${base}, including the main admin (${adminEmail}).` : `${base}.`);
+  }
+  if (adminOutcome === "connected") {
+    parts.push(`The main admin (${adminEmail}) already had an account and was connected directly, no invite needed.`);
+  } else if (adminOutcome === "active" && inviteTotal === 0) {
+    parts.push(`The main admin (${adminEmail}) already has an active account, no invite needed.`);
+  }
   if (adminAlsoListed) parts.push("The main admin was also listed under user logins in step 4, so that entry was skipped.");
-  if (invited.length) parts.push(`User logins invited: ${invited.join(", ")}.`);
-  if (connected.length) parts.push(`Existing accounts connected: ${connected.join(", ")}.`);
+  if (connected.length) parts.push(`Already had accounts, connected directly: ${connected.join(", ")}.`);
   if (refused.length) parts.push(`Not added: ${refused.join("; ")}.`);
-  if (invitesCreated && !env.RESEND_API_KEY) {
-    parts.push("Email delivery is not connected yet, so the invites have been saved but not emailed.");
+  if (invitesCreated && !emailLive) {
+    parts.push("Email delivery is not connected yet, so nothing has been emailed.");
   }
   return redirect(`/admin/customers/${customerId}?msg=` + encodeURIComponent(parts.join(" ")));
 }
