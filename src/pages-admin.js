@@ -487,6 +487,7 @@ export async function deleteCustomerPage(env, request, user, customerId) {
     tickets: await one(`SELECT COUNT(*) AS n FROM tickets WHERE location_id IN ${locIds}`),
     documents: await one(`SELECT COUNT(*) AS n FROM documents WHERE location_id IN ${locIds}`),
   };
+  const errs = String(q(request).get("err") || "").split(",");
   const body = `${adminNav("")}<div class="card narrow" style="margin:0;max-width:560px">
     <h1 style="color:var(--bad)">Delete ${esc(c.name)}</h1>
     <p>This permanently deletes the organization and everything under it:</p>
@@ -499,16 +500,33 @@ export async function deleteCustomerPage(env, request, user, customerId) {
     </ul>
     <p>The ${counts.logins} login(s) lose access immediately and are signed out. Their accounts are disabled, not erased, so ticket history keeps its authors.</p>
     <p><strong>This cannot be undone.</strong></p>
-    <form method="post" action="/admin/customers/${customerId}/delete">
-      <label>Type the organization name to confirm</label>
-      <input name="confirm_name" autocomplete="off" placeholder="${esc(c.name)}">
-      <label class="confirm-box">
-        <input type="checkbox" name="confirm" value="yes">
-        <span>I understand this permanently deletes ${esc(c.name)} and everything under it.</span></label>
+    <form method="post" action="/admin/customers/${customerId}/delete" id="deleteOrgForm">
+      <label>Type the organization name to confirm <span class="req">*</span></label>
+      <input name="confirm_name" id="confirmName" autocomplete="off" placeholder="${esc(c.name)}" ${errs.includes("name") ? 'class="field-error"' : ""}>
+      <label class="confirm-box${errs.includes("box") ? " error" : ""}" id="confirmBox">
+        <input type="checkbox" name="confirm" id="confirmCheck" value="yes">
+        <span><span class="req">*</span> I understand this permanently deletes ${esc(c.name)} and everything under it.</span></label>
       <p class="row" style="margin-top:18px">
         <button class="btn danger" type="submit">Delete organization</button>
         <a class="btn secondary" href="/admin/customers/${customerId}">Cancel</a></p>
-    </form></div>`;
+    </form></div>
+    <script>
+      (function () {
+        var form = document.getElementById("deleteOrgForm");
+        var box = document.getElementById("confirmBox");
+        var check = document.getElementById("confirmCheck");
+        var name = document.getElementById("confirmName");
+        var expected = ${JSON.stringify(c.name)};
+        check.addEventListener("change", function () { if (check.checked) box.classList.remove("error"); });
+        name.addEventListener("input", function () { name.classList.remove("field-error"); });
+        form.addEventListener("submit", function (e) {
+          var bad = false;
+          if (name.value.trim() !== expected) { name.classList.add("field-error"); bad = true; }
+          if (!check.checked) { box.classList.add("error"); box.scrollIntoView({ block: "center" }); bad = true; }
+          if (bad) e.preventDefault();
+        });
+      })();
+    </script>`;
   return page({ title: "Delete organization", user, body, flash: q(request).get("msg") || undefined });
 }
 
@@ -517,8 +535,11 @@ export async function deleteCustomerPost(env, request, user, customerId) {
   const c = await db.prepare("SELECT * FROM customers WHERE id = ?").bind(customerId).first();
   if (!c) return redirect("/admin");
   const f = await request.formData();
-  if (String(f.get("confirm_name") || "").trim() !== c.name || String(f.get("confirm") || "") !== "yes") {
-    return redirect(`/admin/customers/${customerId}/delete?msg=` +
+  const nameBad = String(f.get("confirm_name") || "").trim() !== c.name;
+  const boxBad = String(f.get("confirm") || "") !== "yes";
+  if (nameBad || boxBad) {
+    const err = [nameBad && "name", boxBad && "box"].filter(Boolean).join(",");
+    return redirect(`/admin/customers/${customerId}/delete?err=${err}&msg=` +
       encodeURIComponent("Confirmation did not match. Type the organization name exactly and tick the box."));
   }
   const locIds = "(SELECT id FROM locations WHERE customer_id = ?)";
