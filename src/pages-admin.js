@@ -62,18 +62,17 @@ function locationBlock() {
     <span style="flex:1"><label>ZIP</label><input name="loc_zip[]" class="f-zip"></span></div></div>`;
 }
 
-// One user-login block on step 4 of the wizard. The location select is
-// populated by org-wizard.js from the location names typed in step 2; its
-// values are the location blocks' indexes, mapped to real location ids
-// on the server after the locations are created.
+// One user-login block on step 4 of the wizard. Step-4 logins are always
+// regular users; the organization's one main admin is set in step 1. The
+// location select is populated by org-wizard.js from the location names
+// typed in step 2; its values are the location blocks' indexes, mapped
+// to real location ids on the server after the locations are created.
 function loginBlock() {
   return `<div style="border-top:1px solid var(--line);padding-top:10px;margin-top:12px">
     <div class="row"><span style="flex:1"><label>Name</label><input name="login_name[]"></span>
     <span style="flex:1"><label>Email</label><input name="login_email[]" type="email"></span></div>
-    <div class="row"><span style="flex:1"><label>Access</label><select name="login_location[]" class="login-loc">
-      <option value="">All locations</option></select></span>
-    <span style="flex:1"><label>Scope</label><select name="login_scope[]">
-      <option value="user">User</option><option value="admin">Location admin</option></select></span></div></div>`;
+    <label>Access</label><select name="login_location[]" class="login-loc">
+      <option value="">All locations</option></select></div>`;
 }
 
 // ---------- Create customer (4-step wizard) ----------
@@ -101,10 +100,12 @@ export async function newCustomerPage(env, request, user) {
       <section class="wstep" data-step="1">
         <label>Organization name</label><input name="name" required>
         <p class="muted">The organization is the business that signs and pays. Each of its practices is a location in step 2.</p>
-        <div class="row"><span style="flex:1"><label>Contact first name</label><input name="contact_first_name"></span>
+        <h3 style="margin:16px 0 4px">Customer admin</h3>
+        <p class="muted">The main admin for this organization. They get a login invite, see every location, and can manage the organization's team. Everyone added in step 4 is a regular user. An email can belong to only one organization.</p>
+        <div class="row"><span style="flex:1"><label>First name</label><input name="contact_first_name"></span>
         <span style="flex:1"><label>Middle name</label><input name="contact_middle_name"></span>
         <span style="flex:1"><label>Last name</label><input name="contact_last_name"></span></div>
-        <label>Main contact email</label><input name="contact_email" type="email">
+        <label>Customer admin email <span class="req">*</span></label><input name="contact_email" type="email">
         <label>Phone</label><input name="phone">
         <label>Notes</label><textarea name="notes"></textarea>
         <p id="emailCheck" style="color:var(--bad)"></p>
@@ -123,7 +124,7 @@ export async function newCustomerPage(env, request, user) {
       </section>
       <section class="wstep" data-step="4">
         <h3 style="margin:4px 0">User logins</h3>
-        <p class="muted">Each person gets an invite email to set their password and finish sign-in. Leave blank to add logins later.</p>
+        <p class="muted">Regular users of this organization; the main admin was set in step 1. Each person gets an invite email to set their password and finish sign-in. Leave blank to add logins later.</p>
         <div id="loginBlocks">${loginBlock()}</div>
         <template id="loginTemplate">${loginBlock()}</template>
         <p style="margin-top:12px"><button class="btn small secondary" type="button" id="addLoginBtn">Add another login</button></p>
@@ -139,10 +140,23 @@ export async function newCustomerPage(env, request, user) {
 }
 
 export async function checkCustomerEmail(env, request) {
-  const email = new URL(request.url).searchParams.get("email") || "";
+  const email = String(new URL(request.url).searchParams.get("email") || "").trim().toLowerCase();
   const dup = await findCustomerByContactEmail(env.DB, email);
-  return new Response(JSON.stringify(dup ? { exists: true, id: dup.id, name: dup.name } : { exists: false }),
-    { headers: { "Content-Type": "application/json" } });
+  const out = dup ? { exists: true, id: dup.id, name: dup.name } : { exists: false };
+  // The customer admin email also becomes a login, so it is checked as
+  // one too: a FlossByte account can never be a customer login, and a
+  // login that already belongs to another organization cannot be reused.
+  if (email) {
+    const u = await env.DB.prepare("SELECT id, kind FROM users WHERE email = ?").bind(email).first();
+    if (u && u.kind === "flossbyte") out.loginFlossbyte = true;
+    if (u && u.kind === "customer") {
+      const other = await env.DB.prepare(
+        `SELECT c.id, c.name FROM user_access ua JOIN customers c ON c.id = ua.customer_id
+         WHERE ua.user_id = ? LIMIT 1`).bind(u.id).first();
+      if (other) { out.loginTaken = true; out.loginOrg = other.name; }
+    }
+  }
+  return new Response(JSON.stringify(out), { headers: { "Content-Type": "application/json" } });
 }
 
 export async function createCustomerPost(env, request, user) {
@@ -153,10 +167,33 @@ export async function createCustomerPost(env, request, user) {
   // match refuses creation outright (no "create anyway"). The name may
   // repeat freely and is never checked.
   const contactEmail = String(f.get("contact_email") || "").trim();
+  // The customer admin email is required: it is the organization's main
+  // admin login, and as the organization email it also anchors the
+  // never-duplicate rule. Both are validated before anything is created,
+  // so a refused admin email never leaves a half-built organization.
+  if (!contactEmail) {
+    return redirect("/admin/customers/new?msg=" + encodeURIComponent(
+      "Customer admin email is required. It becomes the organization's main admin login."));
+  }
   const dup = await findCustomerByContactEmail(env.DB, contactEmail);
   if (dup) {
     return redirect("/admin/customers/new?msg=" + encodeURIComponent(
-      `An organization with this contact email already exists. It matches ${dup.name} (organization ${dup.id}).`));
+      `An organization with this admin email already exists. It matches ${dup.name} (organization ${dup.id}).`));
+  }
+  const adminUser = await env.DB.prepare("SELECT * FROM users WHERE email = ?")
+    .bind(contactEmail.toLowerCase()).first();
+  if (adminUser && adminUser.kind === "flossbyte") {
+    return redirect("/admin/customers/new?msg=" + encodeURIComponent(
+      "That customer admin email is a FlossByte account and cannot be a customer login."));
+  }
+  if (adminUser && adminUser.kind === "customer") {
+    const other = await env.DB.prepare(
+      `SELECT c.id, c.name FROM user_access ua JOIN customers c ON c.id = ua.customer_id
+       WHERE ua.user_id = ? LIMIT 1`).bind(adminUser.id).first();
+    if (other) {
+      return redirect("/admin/customers/new?msg=" + encodeURIComponent(
+        `That customer admin email already belongs to ${other.name}. An email can belong to only one organization.`));
+    }
   }
   const first = String(f.get("contact_first_name") || "").trim();
   const middle = String(f.get("contact_middle_name") || "").trim();
@@ -198,21 +235,66 @@ export async function createCustomerPost(env, request, user) {
       "INSERT INTO customer_products (customer_id, location_id, product, enabled, plan_note) VALUES (?, NULL, ?, ?, ?)")
       .bind(customerId, p.key, enabled, note).run();
   }
-  // Step 4: user logins. Each row follows the same rules as a console
-  // invite: the one-email-one-organization rule is enforced by
-  // grantUserAccess, a pending self-signup is connected in place, and a
-  // FlossByte account can never become a customer login. A refused login
-  // never blocks the organization itself; it is reported in the summary.
+  // The customer admin from step 1 becomes the organization's one main
+  // admin: a customer_admin login with access to every location, flagged
+  // is_main_admin. Pre-validation above guarantees the grant succeeds.
+  const adminEmail = contactEmail.toLowerCase();
+  const summary = [];
+  {
+    let target = adminUser;
+    const wasPending = !!target && target.status === "pending";
+    if (!target) {
+      const ur = await env.DB.prepare(
+        "INSERT INTO users (email, name, kind, role, status) VALUES (?, ?, 'customer', 'customer_admin', 'invited')")
+        .bind(adminEmail, contactName || adminEmail).run();
+      target = { id: ur.meta.last_row_id, name: contactName || adminEmail, email: adminEmail, status: "invited" };
+    } else {
+      // A returning account (for example a removed login being made the
+      // admin of a new organization) takes the admin role; a disabled
+      // account is re-invited rather than left locked out.
+      await env.DB.prepare("UPDATE users SET role = 'customer_admin' WHERE id = ?").bind(target.id).run();
+      if (target.status === "disabled") {
+        await env.DB.prepare("UPDATE users SET status = 'invited' WHERE id = ?").bind(target.id).run();
+        target = { ...target, status: "invited" };
+      }
+    }
+    await grantUserAccess(env.DB, target.id, customerId, null, "admin");
+    await env.DB.prepare("UPDATE user_access SET is_main_admin = 0 WHERE customer_id = ?").bind(customerId).run();
+    await env.DB.prepare(
+      "UPDATE user_access SET is_main_admin = 1 WHERE user_id = ? AND customer_id = ? AND location_id IS NULL")
+      .bind(target.id, customerId).run();
+    if (wasPending) {
+      await env.DB.prepare("UPDATE users SET status = 'active' WHERE id = ?").bind(target.id).run();
+      await audit(env.DB, user.id, "user_connect", "user", target.id, adminEmail);
+      summary.push(`Main admin connected: ${adminEmail}.`);
+    } else if (target.status === "invited") {
+      const raw = await createAuthToken(env.DB, target.id, "invite", 7 * 24 * 60);
+      const mail = inviteEmail(env, { name: target.name, link: `${origin(env)}/invite/${raw}` });
+      await sendEmail(env, { to: adminEmail, template: "invite", ...mail });
+      await audit(env.DB, user.id, "user_invite", "user", target.id, adminEmail);
+      summary.push(`Main admin invited: ${adminEmail}.`);
+    } else {
+      summary.push(`Main admin: ${adminEmail}.`);
+    }
+  }
+  // Step 4: user logins, always regular users. Each row follows the same
+  // rules as a console invite: the one-email-one-organization rule is
+  // enforced by grantUserAccess, a pending self-signup is connected in
+  // place, and a FlossByte account can never become a customer login. A
+  // refused login never blocks the organization itself; it is reported
+  // in the summary. The main admin's own email is skipped here, step 1
+  // already covers that person.
   const loginNames = f.getAll("login_name[]");
   const loginEmails = f.getAll("login_email[]");
   const loginLocs = f.getAll("login_location[]");
-  const loginScopes = f.getAll("login_scope[]");
   const invited = [], connected = [], refused = [];
+  let adminAlsoListed = false;
   for (let i = 0; i < loginEmails.length; i++) {
     const email = String(loginEmails[i] || "").trim().toLowerCase();
     const loginName = String(loginNames[i] || "").trim();
     if (!email) continue;
-    const scope = String(loginScopes[i] || "user") === "admin" ? "admin" : "user";
+    if (email === adminEmail) { adminAlsoListed = true; continue; }
+    const scope = "user";
     const locPick = String(loginLocs[i] || "");
     const locationId = locPick === "" ? null : (locIdByIndex[Number(locPick)] ?? null);
     let target = await env.DB.prepare("SELECT * FROM users WHERE email = ?").bind(email).first();
@@ -252,7 +334,8 @@ export async function createCustomerPost(env, request, user) {
     const mail = newCustomerNoticeEmail(env, { customerName: name, createdBy: user.name });
     await sendEmail(env, { to: env.ADMIN_ALERT_EMAIL, template: "admin_new_customer", ...mail });
   }
-  const parts = ["Organization added."];
+  const parts = ["Organization added.", ...summary];
+  if (adminAlsoListed) parts.push("The main admin was also listed in step 4; step 1 already covers them.");
   if (invited.length) parts.push(`Logins invited: ${invited.join(", ")}.`);
   if (connected.length) parts.push(`Existing accounts connected: ${connected.join(", ")}.`);
   if (refused.length) parts.push(`Logins refused: ${refused.join("; ")}.`);
@@ -296,7 +379,7 @@ export async function customerPage(env, request, user, customerId) {
      LEFT JOIN customer_products cp ON cp.product = p.key AND cp.customer_id = ? AND cp.location_id IS NULL ORDER BY p.key`)
     .bind(customerId).all();
   const { results: members } = await db.prepare(
-    `SELECT DISTINCT u.id, u.name, u.email, u.status, u.role FROM user_access ua JOIN users u ON u.id = ua.user_id
+    `SELECT DISTINCT u.id, u.name, u.email, u.status, u.role, ua.is_main_admin FROM user_access ua JOIN users u ON u.id = ua.user_id
      WHERE ua.customer_id = ? ORDER BY u.name`).bind(customerId).all();
   const locRows = (locations || []).map((l) => `<tr><td><a href="/app/locations/${l.id}">${esc(l.name)}</a></td>
     <td>${esc([l.address, l.city, l.state, l.zip].filter(Boolean).join(", "))}</td><td>${esc(l.status)}</td>
@@ -316,7 +399,7 @@ export async function customerPage(env, request, user, customerId) {
         <input name="plan_note" value="${esc(p.plan_note || "")}" placeholder="Plan note" style="max-width:220px">
         <button class="btn small ${enabled ? "danger" : ""}" name="enabled" value="${enabled ? "0" : "1"}" type="submit">${enabled ? "Turn off" : "Turn on"}</button></form></td></tr>`;
   }).join("");
-  const memberRows = (members || []).map((m) => `<tr><td>${esc(m.name)}</td><td>${esc(m.email)}</td>
+  const memberRows = (members || []).map((m) => `<tr><td>${esc(m.name)}${m.is_main_admin ? ` <span class="pill on">Main admin</span>` : ""}</td><td>${esc(m.email)}</td>
     <td>${esc(m.role)}</td><td><span class="pill">${esc(m.status)}</span></td>
     <td>${m.status === "invited" ? `<form method="post" action="/admin/customers/${customerId}/users/${m.id}/resend" style="display:inline"><button class="btn small secondary" type="submit">Resend invite</button></form>` : ""}</td></tr>`).join("");
   const locOptions = (locations || []).map((l) => `<option value="${l.id}">${esc(l.name)}</option>`).join("");
@@ -328,7 +411,7 @@ export async function customerPage(env, request, user, customerId) {
         <div class="row"><span style="flex:1"><label>Contact first name</label><input name="contact_first_name" value="${esc(c.contact_first_name || "")}"></span>
         <span style="flex:1"><label>Middle name</label><input name="contact_middle_name" value="${esc(c.contact_middle_name || "")}"></span>
         <span style="flex:1"><label>Last name</label><input name="contact_last_name" value="${esc(c.contact_last_name || "")}"></span></div>
-        <label>Main contact email</label><input name="contact_email" type="email" value="${esc(c.contact_email || "")}">
+        <label>Customer admin email</label><input name="contact_email" type="email" value="${esc(c.contact_email || "")}">
         <label>Phone</label><input name="phone" value="${esc(c.phone || "")}">
         <label>Notes</label><textarea name="notes">${esc(c.notes || "")}</textarea>
         <p style="margin-top:12px"><button class="btn small" type="submit">Save organization</button></p></form></div>

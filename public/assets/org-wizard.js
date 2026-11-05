@@ -58,14 +58,18 @@
     var email = form.querySelector('input[name="contact_email"]').value.trim();
     var name = form.querySelector('input[name="name"]').value.trim();
     if (!name) { emailMsg.textContent = "Organization name is required."; return; }
-    if (!email) { emailMsg.textContent = ""; show(2); return; }
+    if (!email) { emailMsg.textContent = "Customer admin email is required. It becomes the organization's main admin login."; return; }
     fetch("/admin/customers/check-email?email=" + encodeURIComponent(email))
       .then(function (r) { return r.json(); })
       .then(function (data) {
         if (data && data.exists) {
-          emailMsg.innerHTML = "An organization with this contact email already exists: " +
+          emailMsg.innerHTML = "An organization with this admin email already exists: " +
             '<a href="/admin/customers/' + data.id + '">' + data.name + "</a>. " +
             "An email can belong to only one organization.";
+        } else if (data && data.loginFlossbyte) {
+          emailMsg.textContent = "That email is a FlossByte account. It cannot be a customer admin.";
+        } else if (data && data.loginTaken) {
+          emailMsg.textContent = "That email is already a login under " + data.loginOrg + ". An email can belong to only one organization.";
         } else { emailMsg.textContent = ""; show(2); }
       })
       .catch(function () { show(2); });
