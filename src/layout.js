@@ -14,7 +14,7 @@ const CSS = `
 body{margin:0;font-family:Inter,system-ui,sans-serif;color:var(--ink);background:var(--bg)}
 h1,h2,h3,.brand-name{font-family:'Plus Jakarta Sans',Inter,sans-serif}
 a{color:#00796b}
-header.site{background:var(--navy);height:72px;display:flex;align-items:center}
+header.site{background:var(--navy);min-height:72px;display:flex;align-items:center}
 .header-in{width:100%;max-width:1120px;margin:0 auto;padding:0 20px;display:flex;align-items:center;justify-content:space-between;gap:16px}
 .brand{display:flex;align-items:center;gap:10px;text-decoration:none;color:#fff}
 .brand img{width:27px;height:40px;max-height:40px;object-fit:contain;display:block}
@@ -80,7 +80,7 @@ footer.site{background:var(--navy);color:#c8d3e0;margin-top:24px}
 footer.site a{color:#fff}
 footer.site .brand img{width:27px;height:40px;max-height:40px}
 .switch{display:inline-flex;align-items:center;gap:8px}
-@media (max-width:640px){.brand-sub{display:none}nav.top a{font-size:13px}}
+@media (max-width:640px){.brand-sub{display:none}.header-in{flex-wrap:wrap;row-gap:8px;padding-top:10px;padding-bottom:10px}nav.top{width:100%;gap:12px;row-gap:6px}nav.top a{font-size:13px}}
 `;
 
 export function page({ title, user, body, flash, error }) {
