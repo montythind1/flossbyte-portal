@@ -13,7 +13,10 @@
   var create = document.getElementById("wizCreate");
   var emailMsg = document.getElementById("emailCheck");
   var locationMsg = document.getElementById("locationCheck");
+  var loginMsg = document.getElementById("loginCheck");
   var current = 1;
+
+  function validEmail(v) { return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(v); }
 
   function locationOptions() {
     var opts = [{ value: "", label: "All locations" }];
@@ -56,7 +59,8 @@
   }
 
   function checkEmailThenAdvance() {
-    var email = form.querySelector('input[name="contact_email"]').value.trim();
+    var emailInput = form.querySelector('input[name="contact_email"]');
+    var email = emailInput.value.trim();
     var name = form.querySelector('input[name="name"]').value.trim();
     var firstInput = form.querySelector('input[name="contact_first_name"]');
     var lastInput = form.querySelector('input[name="contact_last_name"]');
@@ -64,10 +68,12 @@
     var last = lastInput.value.trim();
     firstInput.classList.remove("field-error");
     lastInput.classList.remove("field-error");
+    emailInput.classList.remove("field-error");
     if (!name) { emailMsg.textContent = "Organization name is required."; return; }
     if (!first) { emailMsg.textContent = "First name is required."; firstInput.classList.add("field-error"); firstInput.focus(); return; }
     if (!last) { emailMsg.textContent = "Last name is required."; lastInput.classList.add("field-error"); lastInput.focus(); return; }
     if (!email) { emailMsg.textContent = "Customer admin email is required. It becomes the organization's main admin login."; return; }
+    if (!validEmail(email)) { emailMsg.textContent = "Enter a valid customer admin email address."; emailInput.classList.add("field-error"); emailInput.focus(); return; }
     fetch("/admin/customers/check-email?email=" + encodeURIComponent(email))
       .then(function (r) { return r.json(); })
       .then(function (data) {
@@ -84,34 +90,95 @@
       .catch(function () { show(2); });
   }
 
-  function locationInputs() {
-    return Array.prototype.slice.call(form.querySelectorAll('input[name="loc_name[]"]'));
+  var locationFieldNames = ["loc_name[]", "loc_address[]", "loc_city[]", "loc_state[]", "loc_zip[]"];
+  function locationBlocks() {
+    var holder = document.getElementById("locationBlocks");
+    return holder ? Array.prototype.slice.call(holder.querySelectorAll("[data-loc]")) : [];
   }
-  function hasLocation() {
-    return locationInputs().some(function (input) { return input.value.trim(); });
+  function blockFields(block) {
+    return locationFieldNames.map(function (n) { return block.querySelector('input[name="' + n + '"]'); }).filter(Boolean);
   }
-  function checkLocationThenAdvance() {
-    var inputs = locationInputs();
-    if (hasLocation()) {
-      if (locationMsg) locationMsg.textContent = "";
-      inputs.forEach(function (input) { input.classList.remove("field-error"); });
-      show(3);
-      return;
+  function validateLocations() {
+    var anyStarted = false, firstBad = null, firstBadMissing = [];
+    locationBlocks().forEach(function (block) {
+      var fields = blockFields(block);
+      fields.forEach(function (f) { f.classList.remove("field-error"); });
+      if (!fields.some(function (f) { return f.value.trim(); })) return;
+      anyStarted = true;
+      var missing = fields.filter(function (f) { return !f.value.trim(); });
+      if (missing.length && !firstBad) { firstBad = missing[0]; firstBadMissing = missing; }
+    });
+    if (!anyStarted) {
+      var firstName = form.querySelector('input[name="loc_name[]"]');
+      if (locationMsg) locationMsg.textContent = "At least one office location is required.";
+      if (firstName) { firstName.classList.add("field-error"); firstName.focus(); }
+      return false;
     }
-    if (locationMsg) locationMsg.textContent = "At least one office location is required.";
-    if (inputs[0]) { inputs[0].classList.add("field-error"); inputs[0].focus(); }
+    if (firstBad) {
+      if (locationMsg) locationMsg.textContent = "Every location needs a name, street address, city, state, and ZIP / postal code. Fill in the missing fields, or remove the extra location.";
+      firstBadMissing.forEach(function (f) { f.classList.add("field-error"); });
+      firstBad.focus();
+      return false;
+    }
+    if (locationMsg) locationMsg.textContent = "";
+    return true;
   }
+  function checkLocationThenAdvance() { if (validateLocations()) show(3); }
+
+  // Extra location blocks can be removed again (an accidental click on
+  // "Add another location" should not trap anyone). The remove button
+  // hides itself when only one block remains.
+  function syncRemoveButtons() {
+    var blocks = locationBlocks();
+    blocks.forEach(function (block) {
+      var btn = block.querySelector(".remove-location");
+      if (btn) btn.style.display = blocks.length > 1 ? "" : "none";
+    });
+  }
+  var locationHolder = document.getElementById("locationBlocks");
+  if (locationHolder) {
+    locationHolder.addEventListener("click", function (event) {
+      var btn = event.target.closest(".remove-location");
+      if (!btn) return;
+      var block = btn.closest("[data-loc]");
+      if (block && locationBlocks().length > 1) {
+        block.remove();
+        if (locationMsg) locationMsg.textContent = "";
+        syncRemoveButtons();
+        syncLocationSelects();
+      }
+    });
+    if (window.MutationObserver) new MutationObserver(syncRemoveButtons).observe(locationHolder, { childList: true });
+    syncRemoveButtons();
+  }
+
   form.addEventListener("input", function (event) {
-    if (event.target.name === "loc_name[]" && event.target.value.trim()) {
+    if (locationFieldNames.indexOf(event.target.name) >= 0 && event.target.value.trim()) {
+      event.target.classList.remove("field-error");
       if (locationMsg) locationMsg.textContent = "";
-      locationInputs().forEach(function (input) { input.classList.remove("field-error"); });
+    }
+    if (event.target.name === "login_email[]" && validEmail(event.target.value.trim())) {
+      event.target.classList.remove("field-error");
+      if (loginMsg) loginMsg.textContent = "";
+    }
+    if (event.target.name === "contact_email" && validEmail(event.target.value.trim())) {
+      event.target.classList.remove("field-error");
     }
   });
   form.addEventListener("submit", function (event) {
-    if (!hasLocation()) {
+    if (!validateLocations()) { event.preventDefault(); show(2); return; }
+    var badLogin = null;
+    form.querySelectorAll('input[name="login_email[]"]').forEach(function (input) {
+      input.classList.remove("field-error");
+      var v = input.value.trim();
+      if (v && !validEmail(v) && !badLogin) badLogin = input;
+    });
+    if (badLogin) {
       event.preventDefault();
-      show(2);
-      checkLocationThenAdvance();
+      show(4);
+      if (loginMsg) loginMsg.textContent = "Enter valid email addresses for additional users, or leave a row blank.";
+      badLogin.classList.add("field-error");
+      badLogin.focus();
     }
   });
 

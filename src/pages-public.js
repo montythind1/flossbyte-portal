@@ -6,7 +6,7 @@ import {
   revokeAllSessions,
 } from "./auth.js";
 import { verifyTotp, generateSecret, otpauthUrl } from "./totp.js";
-import { audit } from "./access.js";
+import { audit, isValidEmail } from "./access.js";
 import { sendEmail, inviteEmail, welcomeEmail, resetEmail, pendingSignupAlertEmail } from "./email.js";
 
 function params(request) { return new URL(request.url).searchParams; }
@@ -59,8 +59,8 @@ export async function setupPost(env, request) {
   const name = String(form.get("name") || "").trim();
   const email = String(form.get("email") || "").trim().toLowerCase();
   const pw = String(form.get("password") || "");
-  if (!name || !email || pw.length < 10) {
-    return page({ title: "Setup", error: "Name, email, and a password of at least 10 characters are required.", body: "" });
+  if (!name || !isValidEmail(email) || pw.length < 10) {
+    return page({ title: "Setup", error: "Name, a valid email, and a password of at least 10 characters are required.", body: "" });
   }
   if (pw !== String(form.get("password2") || "")) {
     return page({ title: "Setup", error: "The two passwords do not match.", body: "" });
@@ -165,8 +165,8 @@ export async function signupPost(env, request) {
   const practice = String(form.get("practice") || "").trim();
   const email = String(form.get("email") || "").trim().toLowerCase();
   const pw = String(form.get("password") || "");
-  if (!name || !email || pw.length < 10) {
-    return redirect("/signup?err=" + encodeURIComponent("Name, email, and a password of at least 10 characters are required."));
+  if (!name || !isValidEmail(email) || pw.length < 10) {
+    return redirect("/signup?err=" + encodeURIComponent("Name, a valid email, and a password of at least 10 characters are required."));
   }
   const existing = await env.DB.prepare("SELECT id FROM users WHERE email = ?").bind(email).first();
   if (existing) return redirect("/signup?err=" + encodeURIComponent("That email already has a login. Sign in instead."));

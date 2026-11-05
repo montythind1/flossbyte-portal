@@ -2,7 +2,7 @@
 // pending signups, and (Super Admin only) admin account management.
 import { page, redirect, esc } from "./layout.js";
 import { createAuthToken, revokeAllSessions, verifyPassword } from "./auth.js";
-import { audit, isSuperAdmin, grantUserAccess, findCustomerByContactEmail } from "./access.js";
+import { audit, isSuperAdmin, grantUserAccess, findCustomerByContactEmail, isValidEmail } from "./access.js";
 import { sendEmail, inviteEmail, newCustomerNoticeEmail, ownershipTransferEmail } from "./email.js";
 import { resendInviteEmail } from "./pages-public.js";
 
@@ -56,10 +56,11 @@ export async function clientsPage(env, request, user) {
 function locationBlock() {
   return `<div data-loc style="border-top:1px solid var(--line);padding-top:10px;margin-top:12px">
     <label>Location / practice name <span class="req">*</span></label><input name="loc_name[]" placeholder="Main office">
-    <label>Street address</label><input name="loc_address[]" data-address autocomplete="off" placeholder="Start typing, then pick the address">
-    <div class="row"><span style="flex:2"><label>City</label><input name="loc_city[]" class="f-city"></span>
-    <span style="flex:1"><label>State</label><input name="loc_state[]" class="f-state"></span>
-    <span style="flex:1"><label>ZIP</label><input name="loc_zip[]" class="f-zip"></span></div></div>`;
+    <label>Street address <span class="req">*</span></label><input name="loc_address[]" data-address autocomplete="off" placeholder="Start typing, then pick the address">
+    <div class="row"><span style="flex:2"><label>City <span class="req">*</span></label><input name="loc_city[]" class="f-city"></span>
+    <span style="flex:1"><label>State <span class="req">*</span></label><input name="loc_state[]" class="f-state"></span>
+    <span style="flex:1"><label>ZIP / postal code <span class="req">*</span></label><input name="loc_zip[]" class="f-zip"></span></div>
+    <p style="text-align:right;margin:8px 0 0"><button class="btn small secondary remove-location" type="button">Remove this location</button></p></div>`;
 }
 
 // One user-login block on step 4 of the wizard. Step-4 logins are always
@@ -121,7 +122,7 @@ export async function newCustomerPage(env, request, user) {
       </section>
       <section class="wstep" data-step="2">
         <h3 style="margin:4px 0">Locations</h3>
-        <p class="muted">At least one office location is required. Additional locations are optional, and more can be added later on the organization page.</p>
+        <p class="muted">At least one complete office location is required: name, street address, city, state, and ZIP / postal code. Additional locations are optional, and more can be added later on the organization page.</p>
         <div id="locationBlocks">${locationBlock()}</div>
         <template id="locationTemplate">${locationBlock()}</template>
         <p style="margin-top:12px"><button class="btn small secondary" type="button" id="addLocationBtn">Add another location</button></p>
@@ -139,6 +140,7 @@ export async function newCustomerPage(env, request, user) {
         <div id="loginBlocks">${loginBlock()}</div>
         <template id="loginTemplate">${loginBlock()}</template>
         <p style="margin-top:12px"><button class="btn small secondary" type="button" id="addLoginBtn">Add another login</button></p>
+        <p id="loginCheck" style="color:var(--bad)"></p>
       </section>
       <p class="row" style="margin-top:20px">
         <button class="btn secondary" type="button" id="wizBack">Back</button>
@@ -187,6 +189,10 @@ export async function createCustomerPost(env, request, user) {
     return redirect("/admin/customers/new?msg=" + encodeURIComponent(
       "Customer admin email is required. It becomes the organization's main admin login."));
   }
+  if (!isValidEmail(contactEmail)) {
+    return redirect("/admin/customers/new?msg=" + encodeURIComponent(
+      "Enter a valid customer admin email address."));
+  }
   const dup = await findCustomerByContactEmail(env.DB, contactEmail);
   if (dup) {
     return redirect("/admin/customers/new?msg=" + encodeURIComponent(
@@ -212,10 +218,11 @@ export async function createCustomerPost(env, request, user) {
     return redirect("/admin/customers/new?msg=" + encodeURIComponent(
       "A valid 10-digit phone number is required."));
   }
-  // At least one named office location is required. This is checked
-  // before the organization is inserted, so a missing location never
-  // leaves a partially created organization behind. Extra blank location
-  // blocks are ignored below.
+  // At least one complete office location is required. This is checked
+  // before the organization is inserted, so a missing or incomplete
+  // location never leaves a partially created organization behind.
+  // Completely blank extra location blocks are ignored; a block with
+  // anything filled in must have every field filled in.
   const names = f.getAll("loc_name[]");
   const addrs = f.getAll("loc_address[]");
   const cities = f.getAll("loc_city[]");
@@ -224,6 +231,20 @@ export async function createCustomerPost(env, request, user) {
   if (!names.some((value) => String(value || "").trim())) {
     return redirect("/admin/customers/new?msg=" + encodeURIComponent(
       "At least one office location is required."));
+  }
+  const locationFields = [
+    ["name", "location / practice name", names], ["address", "street address", addrs],
+    ["city", "city", cities], ["state", "state", states], ["zip", "ZIP / postal code", zips],
+  ];
+  const blockCount = Math.max(names.length, addrs.length, cities.length, states.length, zips.length);
+  for (let i = 0; i < blockCount; i++) {
+    const values = locationFields.map(([, , arr]) => String(arr[i] || "").trim());
+    if (!values.some(Boolean)) continue;
+    const missing = locationFields.filter((_, j) => !values[j]).map(([, label]) => label);
+    if (missing.length) {
+      return redirect("/admin/customers/new?msg=" + encodeURIComponent(
+        `Location ${i + 1} is incomplete: ${missing.join(", ")} ${missing.length === 1 ? "is" : "are"} required.`));
+    }
   }
   const first = String(f.get("contact_first_name") || "").trim();
   const middle = String(f.get("contact_middle_name") || "").trim();
@@ -322,6 +343,7 @@ export async function createCustomerPost(env, request, user) {
     const email = String(loginEmails[i] || "").trim().toLowerCase();
     const loginName = String(loginNames[i] || "").trim();
     if (!email) continue;
+    if (!isValidEmail(email)) { refused.push(`${email} (invalid email address)`); continue; }
     if (email === adminEmail) { adminAlsoListed = true; continue; }
     const scope = "user";
     const locPick = String(loginLocs[i] || "");
@@ -385,6 +407,10 @@ export async function updateCustomerPost(env, request, user, customerId) {
   }
   const contactName = [first, middle, last].filter(Boolean).join(" ");
   const contactEmail = String(f.get("contact_email") || "").trim();
+  if (!isValidEmail(contactEmail)) {
+    return redirect(`/admin/customers/${customerId}?msg=` + encodeURIComponent(
+      "Enter a valid customer admin email address. Nothing was saved."));
+  }
   // The one-email-per-organization rule binds edits too: the new email may
   // not belong to a different organization.
   const dup = await findCustomerByContactEmail(env.DB, contactEmail);
@@ -422,11 +448,11 @@ export async function customerPage(env, request, user, customerId) {
   const locRows = (locations || []).map((l) => `<tr><td><a href="/app/locations/${l.id}">${esc(l.name)}</a></td>
     <td>${esc([l.address, l.city, l.state, l.zip].filter(Boolean).join(", "))}</td><td>${esc(l.status)}</td>
     <td><form method="post" action="/admin/locations/${l.id}/edit" class="row" data-loc>
-      <input name="name" value="${esc(l.name)}" style="max-width:170px">
-      <input name="address" value="${esc(l.address || "")}" placeholder="Street address" data-address autocomplete="off" style="max-width:200px">
-      <input name="city" value="${esc(l.city || "")}" placeholder="City" class="f-city" style="max-width:120px">
-      <input name="state" value="${esc(l.state || "")}" placeholder="State" class="f-state" style="max-width:64px">
-      <input name="zip" value="${esc(l.zip || "")}" placeholder="ZIP" class="f-zip" style="max-width:84px">
+      <input name="name" value="${esc(l.name)}" required style="max-width:170px">
+      <input name="address" value="${esc(l.address || "")}" placeholder="Street address" data-address autocomplete="off" required style="max-width:200px">
+      <input name="city" value="${esc(l.city || "")}" placeholder="City" class="f-city" required style="max-width:120px">
+      <input name="state" value="${esc(l.state || "")}" placeholder="State" class="f-state" required style="max-width:64px">
+      <input name="zip" value="${esc(l.zip || "")}" placeholder="ZIP / postal code" class="f-zip" required style="max-width:84px">
       <button class="btn small secondary" type="submit">Save</button></form></td></tr>`).join("");
   const prodRows = (products || []).map((p) => {
     const enabled = p.enabled === null || p.enabled === undefined ? (p.key === "managed_it" ? 1 : 0) : p.enabled;
@@ -449,7 +475,7 @@ export async function customerPage(env, request, user, customerId) {
         <div class="row"><span style="flex:1"><label>First name <span class="req">*</span></label><input name="contact_first_name" value="${esc(c.contact_first_name || "")}" required></span>
         <span style="flex:1"><label>Middle name</label><input name="contact_middle_name" value="${esc(c.contact_middle_name || "")}"></span>
         <span style="flex:1"><label>Last name <span class="req">*</span></label><input name="contact_last_name" value="${esc(c.contact_last_name || "")}" required></span></div>
-        <label>Customer admin email</label><input name="contact_email" type="email" value="${esc(c.contact_email || "")}">
+        <label>Customer admin email <span class="req">*</span></label><input name="contact_email" type="email" value="${esc(c.contact_email || "")}" required>
         <label>Phone <span class="req">*</span></label><input name="phone" data-phone inputmode="tel" value="${esc(c.phone || "")}">
         <p style="margin-top:12px"><button class="btn small" type="submit">Save organization</button></p></form></div>
     <div class="card"><h3>Locations</h3>
@@ -457,11 +483,11 @@ export async function customerPage(env, request, user, customerId) {
       <form method="post" action="/admin/customers/${customerId}/locations" data-loc style="margin-top:14px">
         <div class="row" style="align-items:end">
           <span style="flex:1;min-width:180px"><label>New location / practice name <span class="req">*</span></label><input name="name" required></span>
-          <span style="flex:1;min-width:200px"><label>Street address</label><input name="address" data-address autocomplete="off" placeholder="Start typing, then pick the address"></span></div>
+          <span style="flex:1;min-width:200px"><label>Street address <span class="req">*</span></label><input name="address" data-address autocomplete="off" placeholder="Start typing, then pick the address" required></span></div>
         <div class="row" style="align-items:end;margin-top:8px">
-          <span style="flex:2"><label>City</label><input name="city" class="f-city"></span>
-          <span style="flex:1"><label>State</label><input name="state" class="f-state"></span>
-          <span style="flex:1"><label>ZIP</label><input name="zip" class="f-zip"></span>
+          <span style="flex:2"><label>City <span class="req">*</span></label><input name="city" class="f-city" required></span>
+          <span style="flex:1"><label>State <span class="req">*</span></label><input name="state" class="f-state" required></span>
+          <span style="flex:1"><label>ZIP / postal code <span class="req">*</span></label><input name="zip" class="f-zip" required></span>
           <span><button class="btn small" type="submit">Add location</button></span></div></form></div>
     <script src="/assets/address-lookup.js"></script>
     <script src="/assets/phone-format.js"></script>
@@ -490,14 +516,18 @@ export async function customerPage(env, request, user, customerId) {
 export async function addLocationPost(env, request, user, customerId) {
   const f = await request.formData();
   const name = String(f.get("name") || "").trim();
-  if (name) {
-    await env.DB.prepare(
-      "INSERT INTO locations (customer_id, name, address, city, state, zip) VALUES (?, ?, ?, ?, ?, ?)")
-      .bind(customerId, name, String(f.get("address") || "").trim() || null,
-        String(f.get("city") || "").trim() || null, String(f.get("state") || "").trim() || null,
-        String(f.get("zip") || "").trim() || null).run();
-    await audit(env.DB, user.id, "location_create", "customer", Number(customerId), name);
+  const address = String(f.get("address") || "").trim();
+  const city = String(f.get("city") || "").trim();
+  const state = String(f.get("state") || "").trim();
+  const zip = String(f.get("zip") || "").trim();
+  if (!name || !address || !city || !state || !zip) {
+    return redirect(`/admin/customers/${customerId}?msg=` + encodeURIComponent(
+      "Name, street address, city, state, and ZIP / postal code are all required for a location."));
   }
+  await env.DB.prepare(
+    "INSERT INTO locations (customer_id, name, address, city, state, zip) VALUES (?, ?, ?, ?, ?, ?)")
+    .bind(customerId, name, address, city, state, zip).run();
+  await audit(env.DB, user.id, "location_create", "customer", Number(customerId), name);
   return redirect(`/admin/customers/${customerId}`);
 }
 
@@ -505,11 +535,18 @@ export async function editLocationPost(env, request, user, locationId) {
   const loc = await env.DB.prepare("SELECT * FROM locations WHERE id = ?").bind(locationId).first();
   if (!loc) return redirect("/admin");
   const f = await request.formData();
+  const name = String(f.get("name") || "").trim();
+  const address = String(f.get("address") || "").trim();
+  const city = String(f.get("city") || "").trim();
+  const state = String(f.get("state") || "").trim();
+  const zip = String(f.get("zip") || "").trim();
+  if (!name || !address || !city || !state || !zip) {
+    return redirect(`/admin/customers/${loc.customer_id}?msg=` + encodeURIComponent(
+      "Name, street address, city, state, and ZIP / postal code are all required for a location. Nothing was saved."));
+  }
   await env.DB.prepare(
     "UPDATE locations SET name = ?, address = ?, city = ?, state = ?, zip = ?, updated_at = datetime('now') WHERE id = ?")
-    .bind(String(f.get("name") || loc.name), String(f.get("address") || "").trim() || null,
-      String(f.get("city") || "").trim() || null, String(f.get("state") || "").trim() || null,
-      String(f.get("zip") || "").trim() || null, locationId).run();
+    .bind(name, address, city, state, zip, locationId).run();
   return redirect(`/admin/customers/${loc.customer_id}`);
 }
 
@@ -547,7 +584,10 @@ export async function inviteCustomerUserPost(env, request, user, customerId) {
   const email = String(f.get("email") || "").trim().toLowerCase();
   const locationId = f.get("location_id") ? Number(f.get("location_id")) : null;
   const scope = String(f.get("scope") || "user") === "admin" ? "admin" : "user";
-  if (!name || !email) return redirect(`/admin/customers/${customerId}`);
+  if (!name || !isValidEmail(email)) {
+    return redirect(`/admin/customers/${customerId}?msg=` + encodeURIComponent(
+      "Enter the person's name and a valid email address."));
+  }
   let target = await env.DB.prepare("SELECT * FROM users WHERE email = ?").bind(email).first();
   if (!target) {
     const res = await env.DB.prepare(
@@ -861,7 +901,10 @@ export async function createAdminPost(env, request, user) {
   const f = await request.formData();
   const name = String(f.get("name") || "").trim();
   const email = String(f.get("email") || "").trim().toLowerCase();
-  if (!name || !email) return redirect("/admin/admins");
+  if (!name || !isValidEmail(email)) {
+    return redirect("/admin/admins?msg=" + encodeURIComponent(
+      "Enter the admin's name and a valid email address."));
+  }
   const existing = await env.DB.prepare("SELECT id FROM users WHERE email = ?").bind(email).first();
   if (existing) return redirect("/admin/admins?msg=" + encodeURIComponent("That email already has a login."));
   const res = await env.DB.prepare(

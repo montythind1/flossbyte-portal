@@ -6,6 +6,24 @@ import { revokeAllSessions } from "./auth.js";
 export function isFlossByte(user) { return user && user.kind === "flossbyte"; }
 export function isSuperAdmin(user) { return user && user.role === "super_admin"; }
 
+// Pragmatic email format check for addresses people type into the portal.
+// It requires one @, a valid-looking local part, a domain with at least
+// one dot, and a letter-only top-level domain of 2+ characters. It does
+// not try to prove the mailbox exists.
+export function isValidEmail(value) {
+  const email = String(value || "").trim().toLowerCase();
+  if (!email || email.length > 254 || /\s/.test(email)) return false;
+  const parts = email.split("@");
+  if (parts.length !== 2) return false;
+  const [local, domain] = parts;
+  if (!local || local.length > 64 || local.startsWith(".") || local.endsWith(".") || local.includes("..")) return false;
+  if (!/^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+$/.test(local)) return false;
+  const labels = domain.split(".");
+  if (labels.length < 2) return false;
+  if (!labels.every((label) => label && label.length <= 63 && /^[a-z0-9-]+$/.test(label) && !label.startsWith("-") && !label.endsWith("-"))) return false;
+  return /^[a-z]{2,}$/.test(labels[labels.length - 1]);
+}
+
 // ----- Identity rules (Montek, 2026-11-05) -----
 // 1. Customer contact email is a hard identity: no two customers may share
 //    one (case-insensitive, trimmed). Customer NAME may repeat freely.
