@@ -123,7 +123,7 @@
       return false;
     }
     if (firstBad) {
-      if (locationMsg) locationMsg.textContent = "Every location needs a name, street address, city, state, and ZIP / postal code. Fill in the missing fields, or remove the extra location.";
+      if (locationMsg) locationMsg.textContent = "Every location needs a name, street address, city, state, and ZIP. Fill in the missing fields, or remove the extra location.";
       firstBadMissing.forEach(function (f) { f.classList.add("field-error"); });
       firstBad.focus();
       return false;

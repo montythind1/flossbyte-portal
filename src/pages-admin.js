@@ -59,7 +59,7 @@ function locationBlock() {
     <label>Street address <span class="req">*</span></label><input name="loc_address[]" data-address autocomplete="off" placeholder="Start typing, then pick the address">
     <div class="row"><span style="flex:2"><label>City <span class="req">*</span></label><input name="loc_city[]" class="f-city"></span>
     <span style="flex:1"><label>State <span class="req">*</span></label><input name="loc_state[]" class="f-state"></span>
-    <span style="flex:1"><label>ZIP / postal code <span class="req">*</span></label><input name="loc_zip[]" class="f-zip"></span></div>
+    <span style="flex:1"><label>ZIP <span class="req">*</span></label><input name="loc_zip[]" class="f-zip"></span></div>
     <p style="text-align:right;margin:8px 0 0"><button class="btn small secondary remove-location" type="button">Remove this location</button></p></div>`;
 }
 
@@ -122,7 +122,7 @@ export async function newCustomerPage(env, request, user) {
       </section>
       <section class="wstep" data-step="2">
         <h3 style="margin:4px 0">Locations</h3>
-        <p class="muted">At least one complete office location is required: name, street address, city, state, and ZIP / postal code. Additional locations are optional, and more can be added later on the organization page.</p>
+        <p class="muted">At least one complete office location is required: name, street address, city, state, and ZIP. Additional locations are optional, and more can be added later on the organization page.</p>
         <div id="locationBlocks">${locationBlock()}</div>
         <template id="locationTemplate">${locationBlock()}</template>
         <p style="margin-top:12px"><button class="btn small secondary" type="button" id="addLocationBtn">Add another location</button></p>
@@ -234,7 +234,7 @@ export async function createCustomerPost(env, request, user) {
   }
   const locationFields = [
     ["name", "location / practice name", names], ["address", "street address", addrs],
-    ["city", "city", cities], ["state", "state", states], ["zip", "ZIP / postal code", zips],
+    ["city", "city", cities], ["state", "state", states], ["zip", "ZIP", zips],
   ];
   const blockCount = Math.max(names.length, addrs.length, cities.length, states.length, zips.length);
   for (let i = 0; i < blockCount; i++) {
@@ -452,7 +452,7 @@ export async function customerPage(env, request, user, customerId) {
       <input name="address" value="${esc(l.address || "")}" placeholder="Street address" data-address autocomplete="off" required style="max-width:200px">
       <input name="city" value="${esc(l.city || "")}" placeholder="City" class="f-city" required style="max-width:120px">
       <input name="state" value="${esc(l.state || "")}" placeholder="State" class="f-state" required style="max-width:64px">
-      <input name="zip" value="${esc(l.zip || "")}" placeholder="ZIP / postal code" class="f-zip" required style="max-width:84px">
+      <input name="zip" value="${esc(l.zip || "")}" placeholder="ZIP" class="f-zip" required style="max-width:84px">
       <button class="btn small secondary" type="submit">Save</button></form></td></tr>`).join("");
   const prodRows = (products || []).map((p) => {
     const enabled = p.enabled === null || p.enabled === undefined ? (p.key === "managed_it" ? 1 : 0) : p.enabled;
@@ -487,7 +487,7 @@ export async function customerPage(env, request, user, customerId) {
         <div class="row" style="align-items:end;margin-top:8px">
           <span style="flex:2"><label>City <span class="req">*</span></label><input name="city" class="f-city" required></span>
           <span style="flex:1"><label>State <span class="req">*</span></label><input name="state" class="f-state" required></span>
-          <span style="flex:1"><label>ZIP / postal code <span class="req">*</span></label><input name="zip" class="f-zip" required></span>
+          <span style="flex:1"><label>ZIP <span class="req">*</span></label><input name="zip" class="f-zip" required></span>
           <span><button class="btn small" type="submit">Add location</button></span></div></form></div>
     <script src="/assets/address-lookup.js"></script>
     <script src="/assets/phone-format.js"></script>
@@ -522,7 +522,7 @@ export async function addLocationPost(env, request, user, customerId) {
   const zip = String(f.get("zip") || "").trim();
   if (!name || !address || !city || !state || !zip) {
     return redirect(`/admin/customers/${customerId}?msg=` + encodeURIComponent(
-      "Name, street address, city, state, and ZIP / postal code are all required for a location."));
+      "Name, street address, city, state, and ZIP are all required for a location."));
   }
   await env.DB.prepare(
     "INSERT INTO locations (customer_id, name, address, city, state, zip) VALUES (?, ?, ?, ?, ?, ?)")
@@ -542,7 +542,7 @@ export async function editLocationPost(env, request, user, locationId) {
   const zip = String(f.get("zip") || "").trim();
   if (!name || !address || !city || !state || !zip) {
     return redirect(`/admin/customers/${loc.customer_id}?msg=` + encodeURIComponent(
-      "Name, street address, city, state, and ZIP / postal code are all required for a location. Nothing was saved."));
+      "Name, street address, city, state, and ZIP are all required for a location. Nothing was saved."));
   }
   await env.DB.prepare(
     "UPDATE locations SET name = ?, address = ?, city = ?, state = ?, zip = ?, updated_at = datetime('now') WHERE id = ?")
