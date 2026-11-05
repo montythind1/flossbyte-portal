@@ -5,6 +5,56 @@
 export function isFlossByte(user) { return user && user.kind === "flossbyte"; }
 export function isSuperAdmin(user) { return user && user.role === "super_admin"; }
 
+// ----- Identity rules (Montek, 2026-11-05) -----
+// 1. Customer contact email is a hard identity: no two customers may share
+//    one (case-insensitive, trimmed). Customer NAME may repeat freely.
+// 2. One user, one organization: a customer user may hold user_access rows
+//    under exactly one customer. Migration 0002 adds database backstops
+//    (unique index + triggers); the checks here run first so people see a
+//    friendly error instead of a constraint failure.
+
+export const CROSS_ORG_ERROR =
+  "This email already belongs to another organization and cannot be added here.";
+
+// Existing customer whose contact email matches `email`, or null.
+export async function findCustomerByContactEmail(db, email) {
+  const normalized = String(email || "").trim();
+  if (!normalized) return null;
+  return db.prepare(
+    "SELECT id, name, contact_email FROM customers WHERE LOWER(TRIM(contact_email)) = LOWER(?)")
+    .bind(normalized).first();
+}
+
+// The one path that grants a customer login access to a customer. Every
+// caller (FlossByte admin invites, pending-account connect, and any future
+// customer-admin user management) must go through here so the one-org rule
+// is enforced in a single place. Grants access without duplicates: SQLite
+// treats NULL location_id as distinct in UNIQUE indexes, so existence is
+// checked explicitly. FlossByte logins hold no user_access and are
+// unaffected. Returns { ok: true } or { ok: false, error, otherCustomer }.
+export async function grantUserAccess(db, userId, customerId, locationId, scope) {
+  const target = await db.prepare("SELECT kind FROM users WHERE id = ?").bind(userId).first();
+  if (target && target.kind !== "flossbyte") {
+    const other = await db.prepare(
+      `SELECT c.id, c.name FROM user_access ua JOIN customers c ON c.id = ua.customer_id
+       WHERE ua.user_id = ? AND ua.customer_id != ? LIMIT 1`)
+      .bind(userId, customerId).first();
+    if (other) return { ok: false, error: CROSS_ORG_ERROR, otherCustomer: other };
+  }
+  const existing = await db.prepare(
+    `SELECT id FROM user_access WHERE user_id = ? AND customer_id = ?
+     AND ((location_id IS NULL AND ? IS NULL) OR location_id = ?)`)
+    .bind(userId, customerId, locationId, locationId).first();
+  if (existing) {
+    await db.prepare("UPDATE user_access SET scope = ? WHERE id = ?").bind(scope, existing.id).run();
+    return { ok: true };
+  }
+  await db.prepare(
+    "INSERT INTO user_access (user_id, customer_id, location_id, scope) VALUES (?, ?, ?, ?)")
+    .bind(userId, customerId, locationId, scope).run();
+  return { ok: true };
+}
+
 export async function getUserAccess(db, user) {
   if (!user) return [];
   if (isFlossByte(user)) return [{ customer_id: null, location_id: null, scope: "owner" }];
