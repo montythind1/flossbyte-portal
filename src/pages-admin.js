@@ -62,26 +62,82 @@ function locationBlock() {
     <span style="flex:1"><label>ZIP</label><input name="loc_zip[]" class="f-zip"></span></div></div>`;
 }
 
-// ---------- Create customer ----------
-export function newCustomerPage(env, request, user) {
-  const body = `${adminNav("new")}<div class="card narrow" style="margin:0;max-width:560px"><h1>Add organization</h1>
-    <form method="post" action="/admin/customers">
-      <label>Organization name</label><input name="name" required>
-      <p class="muted">The organization is the business that signs and pays. Each of its practices is a location below.</p>
-      <div class="row"><span style="flex:1"><label>Contact first name</label><input name="contact_first_name"></span>
-      <span style="flex:1"><label>Middle name</label><input name="contact_middle_name"></span>
-      <span style="flex:1"><label>Last name</label><input name="contact_last_name"></span></div>
-      <label>Main contact email</label><input name="contact_email" type="email">
-      <label>Phone</label><input name="phone">
-      <h3 style="margin:18px 0 4px">Locations</h3>
-      <div id="locationBlocks">${locationBlock()}</div>
-      <template id="locationTemplate">${locationBlock()}</template>
-      <p style="margin-top:12px"><button class="btn small secondary" type="button" id="addLocationBtn">Add another location</button></p>
-      <p class="muted">Address suggestions come from OpenStreetMap. More locations can also be added later on the organization page.</p>
-      <label>Notes</label><textarea name="notes"></textarea>
-      <p style="margin-top:16px"><button class="btn" type="submit">Add organization</button></p></form></div>
-    <script src="/assets/address-lookup.js"></script>`;
+// One user-login block on step 4 of the wizard. The location select is
+// populated by org-wizard.js from the location names typed in step 2; its
+// values are the location blocks' indexes, mapped to real location ids
+// on the server after the locations are created.
+function loginBlock() {
+  return `<div style="border-top:1px solid var(--line);padding-top:10px;margin-top:12px">
+    <div class="row"><span style="flex:1"><label>Name</label><input name="login_name[]"></span>
+    <span style="flex:1"><label>Email</label><input name="login_email[]" type="email"></span></div>
+    <div class="row"><span style="flex:1"><label>Access</label><select name="login_location[]" class="login-loc">
+      <option value="">All locations</option></select></span>
+    <span style="flex:1"><label>Scope</label><select name="login_scope[]">
+      <option value="user">User</option><option value="admin">Location admin</option></select></span></div></div>`;
+}
+
+// ---------- Create customer (4-step wizard) ----------
+export async function newCustomerPage(env, request, user) {
+  const { results: products } = await env.DB.prepare(
+    "SELECT key, name, description FROM products ORDER BY key").all();
+  const productRows = (products || []).map((p) => `
+    <div style="border-top:1px solid var(--line);padding:10px 0">
+      <label style="display:flex;gap:10px;align-items:flex-start;font-weight:600">
+        <input type="checkbox" name="product_${esc(p.key)}" value="1" style="width:auto;margin-top:3px" ${p.key === "managed_it" ? "checked" : ""}>
+        <span>${esc(p.name)}<div class="muted" style="font-weight:400">${esc(p.description || "")}</div></span></label>
+      <input name="note_${esc(p.key)}" placeholder="Plan note (optional)" style="margin-top:6px">
+    </div>`).join("");
+  const body = `${adminNav("new")}<div class="card narrow" style="margin:0;max-width:600px"><h1>Add organization</h1>
+    <p class="muted"><span class="wiz-label" data-step-label="1">1 Organization</span> ·
+      <span class="wiz-label" data-step-label="2">2 Locations</span> ·
+      <span class="wiz-label" data-step-label="3">3 Products</span> ·
+      <span class="wiz-label" data-step-label="4">4 User logins</span></p>
+    <form method="post" action="/admin/customers" id="orgWizard">
+      <section class="wstep" data-step="1">
+        <label>Organization name</label><input name="name" required>
+        <p class="muted">The organization is the business that signs and pays. Each of its practices is a location in step 2.</p>
+        <div class="row"><span style="flex:1"><label>Contact first name</label><input name="contact_first_name"></span>
+        <span style="flex:1"><label>Middle name</label><input name="contact_middle_name"></span>
+        <span style="flex:1"><label>Last name</label><input name="contact_last_name"></span></div>
+        <label>Main contact email</label><input name="contact_email" type="email">
+        <label>Phone</label><input name="phone">
+        <label>Notes</label><textarea name="notes"></textarea>
+        <p id="emailCheck" style="color:var(--bad)"></p>
+      </section>
+      <section class="wstep" data-step="2">
+        <h3 style="margin:4px 0">Locations</h3>
+        <div id="locationBlocks">${locationBlock()}</div>
+        <template id="locationTemplate">${locationBlock()}</template>
+        <p style="margin-top:12px"><button class="btn small secondary" type="button" id="addLocationBtn">Add another location</button></p>
+        <p class="muted">Address suggestions come from OpenStreetMap. More locations can also be added later on the organization page.</p>
+      </section>
+      <section class="wstep" data-step="3">
+        <h3 style="margin:4px 0">Products for this organization</h3>
+        ${productRows}
+        <p class="muted">These switches are enforced on the server and can be changed any time on the organization page.</p>
+      </section>
+      <section class="wstep" data-step="4">
+        <h3 style="margin:4px 0">User logins</h3>
+        <p class="muted">Each person gets an invite email to set their password and finish sign-in. Leave blank to add logins later.</p>
+        <div id="loginBlocks">${loginBlock()}</div>
+        <template id="loginTemplate">${loginBlock()}</template>
+        <p style="margin-top:12px"><button class="btn small secondary" type="button" id="addLoginBtn">Add another login</button></p>
+      </section>
+      <p class="row" style="margin-top:20px">
+        <button class="btn secondary" type="button" id="wizBack">Back</button>
+        <button class="btn" type="button" id="wizNext">Next</button>
+        <button class="btn" type="submit" id="wizCreate">Create organization</button>
+      </p></form></div>
+    <script src="/assets/address-lookup.js"></script>
+    <script src="/assets/org-wizard.js"></script>`;
   return page({ title: "Add organization", user, body, flash: q(request).get("msg") || undefined });
+}
+
+export async function checkCustomerEmail(env, request) {
+  const email = new URL(request.url).searchParams.get("email") || "";
+  const dup = await findCustomerByContactEmail(env.DB, email);
+  return new Response(JSON.stringify(dup ? { exists: true, id: dup.id, name: dup.name } : { exists: false }),
+    { headers: { "Content-Type": "application/json" } });
 }
 
 export async function createCustomerPost(env, request, user) {
@@ -114,21 +170,88 @@ export async function createCustomerPost(env, request, user) {
   const cities = f.getAll("loc_city[]");
   const states = f.getAll("loc_state[]");
   const zips = f.getAll("loc_zip[]");
+  // Location ids keyed by the block's index in the form, so step 4's
+  // per-login location picks (which carry block indexes) resolve here.
+  const locIdByIndex = {};
   for (let i = 0; i < names.length; i++) {
     const locName = String(names[i] || "").trim();
     if (!locName) continue;
-    await env.DB.prepare(
+    const lr = await env.DB.prepare(
       "INSERT INTO locations (customer_id, name, address, city, state, zip) VALUES (?, ?, ?, ?, ?, ?)")
       .bind(customerId, locName, String(addrs[i] || "").trim() || null,
         String(cities[i] || "").trim() || null, String(states[i] || "").trim() || null,
         String(zips[i] || "").trim() || null).run();
+    locIdByIndex[i] = lr.meta.last_row_id;
+  }
+  // Step 3: product switches chosen in the wizard are written explicitly
+  // for every product, so the organization's state is never ambiguous.
+  const { results: allProducts } = await env.DB.prepare("SELECT key FROM products").all();
+  for (const p of allProducts || []) {
+    const enabled = String(f.get(`product_${p.key}`) || "") === "1" ? 1 : 0;
+    const note = String(f.get(`note_${p.key}`) || "").trim() || null;
+    await env.DB.prepare(
+      "INSERT INTO customer_products (customer_id, location_id, product, enabled, plan_note) VALUES (?, NULL, ?, ?, ?)")
+      .bind(customerId, p.key, enabled, note).run();
+  }
+  // Step 4: user logins. Each row follows the same rules as a console
+  // invite: the one-email-one-organization rule is enforced by
+  // grantUserAccess, a pending self-signup is connected in place, and a
+  // FlossByte account can never become a customer login. A refused login
+  // never blocks the organization itself; it is reported in the summary.
+  const loginNames = f.getAll("login_name[]");
+  const loginEmails = f.getAll("login_email[]");
+  const loginLocs = f.getAll("login_location[]");
+  const loginScopes = f.getAll("login_scope[]");
+  const invited = [], connected = [], refused = [];
+  for (let i = 0; i < loginEmails.length; i++) {
+    const email = String(loginEmails[i] || "").trim().toLowerCase();
+    const loginName = String(loginNames[i] || "").trim();
+    if (!email) continue;
+    const scope = String(loginScopes[i] || "user") === "admin" ? "admin" : "user";
+    const locPick = String(loginLocs[i] || "");
+    const locationId = locPick === "" ? null : (locIdByIndex[Number(locPick)] ?? null);
+    let target = await env.DB.prepare("SELECT * FROM users WHERE email = ?").bind(email).first();
+    if (target && target.kind === "flossbyte") { refused.push(`${email} (a FlossByte account)`); continue; }
+    const wasPending = !!target && target.status === "pending";
+    if (!target) {
+      const ur = await env.DB.prepare(
+        "INSERT INTO users (email, name, kind, role, status) VALUES (?, ?, 'customer', ?, 'invited')")
+        .bind(email, loginName || email, scope === "admin" ? "customer_admin" : "customer_user").run();
+      target = { id: ur.meta.last_row_id, name: loginName || email, email, status: "invited" };
+    } else if (!wasPending) {
+      await env.DB.prepare("UPDATE users SET role = ? WHERE id = ?")
+        .bind(scope === "admin" ? "customer_admin" : "customer_user", target.id).run();
+    }
+    const grant = await grantUserAccess(env.DB, target.id, customerId, locationId, scope);
+    if (!grant.ok) {
+      const detail = grant.otherCustomer ? ` It belongs to ${grant.otherCustomer.name}.` : "";
+      refused.push(`${email} (${grant.error}${detail})`);
+      continue;
+    }
+    if (wasPending) {
+      await env.DB.prepare("UPDATE users SET status = 'active' WHERE id = ?").bind(target.id).run();
+      await audit(env.DB, user.id, "user_connect", "user", target.id, email);
+      connected.push(email);
+    } else if (target.status === "invited") {
+      const raw = await createAuthToken(env.DB, target.id, "invite", 7 * 24 * 60);
+      const mail = inviteEmail(env, { name: target.name, link: `${origin(env)}/invite/${raw}` });
+      await sendEmail(env, { to: email, template: "invite", ...mail });
+      await audit(env.DB, user.id, "user_invite", "user", target.id, email);
+      invited.push(email);
+    } else {
+      invited.push(email);
+    }
   }
   await audit(env.DB, user.id, "customer_create", "customer", customerId, name);
   if (env.ADMIN_ALERT_EMAIL) {
     const mail = newCustomerNoticeEmail(env, { customerName: name, createdBy: user.name });
     await sendEmail(env, { to: env.ADMIN_ALERT_EMAIL, template: "admin_new_customer", ...mail });
   }
-  return redirect(`/admin/customers/${customerId}?msg=` + encodeURIComponent("Organization added."));
+  const parts = ["Organization added."];
+  if (invited.length) parts.push(`Logins invited: ${invited.join(", ")}.`);
+  if (connected.length) parts.push(`Existing accounts connected: ${connected.join(", ")}.`);
+  if (refused.length) parts.push(`Logins refused: ${refused.join("; ")}.`);
+  return redirect(`/admin/customers/${customerId}?msg=` + encodeURIComponent(parts.join(" ")));
 }
 
 export async function updateCustomerPost(env, request, user, customerId) {

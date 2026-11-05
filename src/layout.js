@@ -29,6 +29,10 @@ nav.top a:hover{color:#fff}
 .btn.secondary:hover{background:#d7e0ea}
 .btn.small{padding:6px 12px;font-size:13px}
 .btn.danger{background:var(--bad)}
+form.js-wizard .wstep{display:none}
+form.js-wizard .wstep.active{display:block}
+.wiz-label{font-weight:400}
+.wiz-label.on{font-weight:700;color:var(--ink)}
 .addr-wrap{position:relative}
 .addr-list{position:absolute;left:0;right:0;top:100%;background:#fff;border:1px solid var(--line);border-radius:0 0 8px 8px;box-shadow:0 10px 24px rgba(10,22,40,.16);z-index:40;overflow:hidden}
 .addr-item{padding:9px 12px;font-size:14px;cursor:pointer}

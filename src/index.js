@@ -68,6 +68,7 @@ async function route(request, env) {
     if (needsMfa) return redirect("/mfa");
     if (path === "/admin" && method === "GET") return admin.clientsPage(env, request, user);
     if (path === "/admin/customers/new" && method === "GET") return admin.newCustomerPage(env, request, user);
+    if (path === "/admin/customers/check-email" && method === "GET") return admin.checkCustomerEmail(env, request);
     if (path === "/admin/customers" && method === "POST") return admin.createCustomerPost(env, request, user);
     if (path === "/admin/pending" && method === "GET") return admin.pendingPage(env, request, user);
     if (path === "/admin/admins" && method === "GET") return admin.adminsPage(env, request, user);
