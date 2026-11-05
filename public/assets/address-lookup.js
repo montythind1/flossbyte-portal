@@ -1,8 +1,9 @@
 // Address autocomplete for location forms. Free OpenStreetMap data via the
 // Photon service (no API key). Typing in a street-address field offers
-// matching US addresses; picking one fills street, city, state and ZIP in
-// the same location block. Every field stays manually editable, and if the
-// lookup is unreachable the form simply works without suggestions.
+// matching addresses worldwide; picking one fills street, city, state or
+// region, and postal code in the same location block. Every field stays
+// manually editable, and if the lookup is unreachable the form simply
+// works without suggestions.
 (function () {
   function groupOf(input) { return input.closest("[data-loc]") || document; }
   function field(group, cls) { return group.querySelector("." + cls); }
@@ -35,7 +36,7 @@
       items.forEach(function (f, i) {
         var p = f.properties;
         var line = [[p.housenumber, p.street].filter(Boolean).join(" ") || p.name,
-          p.city || p.town || p.village || "", p.state || "", p.postcode || ""]
+          p.city || p.town || p.village || "", p.state || "", p.postcode || "", p.country || ""]
           .filter(Boolean).join(", ");
         var d = document.createElement("div");
         d.className = "addr-item" + (i === active ? " active" : "");
@@ -52,11 +53,11 @@
       timer = setTimeout(function () {
         if (q === lastQuery && items.length) { render(); return; }
         lastQuery = q;
-        fetch("https://photon.komoot.io/api/?limit=6&lat=37.3382&lon=-121.8863&q=" + encodeURIComponent(q))
+        fetch("https://photon.komoot.io/api/?limit=6&lang=en&q=" + encodeURIComponent(q))
           .then(function (r) { return r.json(); })
           .then(function (data) {
             items = (data.features || []).filter(function (f) {
-              return f.properties && f.properties.countrycode === "US" && (f.properties.street || f.properties.name);
+              return f.properties && (f.properties.street || f.properties.name);
             }).slice(0, 6);
             active = items.length ? 0 : -1;
             render();

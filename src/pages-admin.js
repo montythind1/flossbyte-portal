@@ -112,12 +112,11 @@ export async function newCustomerPage(env, request, user) {
         <p class="muted">The organization is the business that signs and pays. Each of its practices is a location in step 2.</p>
         <h3 style="margin:16px 0 4px">Customer admin</h3>
         <p class="muted">The main admin for this organization. They get a login invite, see every location, and can manage the organization's team. Everyone added in step 4 is a regular user. An email can belong to only one organization.</p>
-        <div class="row"><span style="flex:1"><label>First name</label><input name="contact_first_name"></span>
+        <div class="row"><span style="flex:1"><label>First name <span class="req">*</span></label><input name="contact_first_name" required></span>
         <span style="flex:1"><label>Middle name</label><input name="contact_middle_name"></span>
-        <span style="flex:1"><label>Last name</label><input name="contact_last_name"></span></div>
+        <span style="flex:1"><label>Last name <span class="req">*</span></label><input name="contact_last_name" required></span></div>
         <label>Customer admin email <span class="req">*</span></label><input name="contact_email" type="email">
-        <label>Phone <span class="req">*</span></label><input name="phone" data-phone inputmode="tel" autocomplete="tel" placeholder="(601) 345-0188">
-        <label>Notes</label><textarea name="notes"></textarea>
+        <label>Phone <span class="req">*</span></label><input name="phone" data-phone inputmode="tel" autocomplete="tel">
         <p id="emailCheck" style="color:var(--bad)"></p>
       </section>
       <section class="wstep" data-step="2">
@@ -211,7 +210,7 @@ export async function createCustomerPost(env, request, user) {
   const phone = normalizePhone(f.get("phone"));
   if (!phone) {
     return redirect("/admin/customers/new?msg=" + encodeURIComponent(
-      "A valid 10-digit phone number is required, for example (601) 345-0188."));
+      "A valid 10-digit phone number is required."));
   }
   // At least one named office location is required. This is checked
   // before the organization is inserted, so a missing location never
@@ -229,12 +228,16 @@ export async function createCustomerPost(env, request, user) {
   const first = String(f.get("contact_first_name") || "").trim();
   const middle = String(f.get("contact_middle_name") || "").trim();
   const last = String(f.get("contact_last_name") || "").trim();
-  const contactName = [first, middle, last].filter(Boolean).join(" ") || null;
+  if (!first || !last) {
+    return redirect("/admin/customers/new?msg=" + encodeURIComponent(
+      "First name and last name are required."));
+  }
+  const contactName = [first, middle, last].filter(Boolean).join(" ");
   const res = await env.DB.prepare(
-    `INSERT INTO customers (name, contact_name, contact_first_name, contact_middle_name, contact_last_name, contact_email, phone, notes)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-    .bind(name, contactName, first || null, middle || null, last || null,
-      contactEmail || null, phone, f.get("notes") || null).run();
+    `INSERT INTO customers (name, contact_name, contact_first_name, contact_middle_name, contact_last_name, contact_email, phone)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    .bind(name, contactName, first, middle || null, last,
+      contactEmail || null, phone).run();
   const customerId = res.meta.last_row_id;
   // Any number of location blocks may come back from the form; empty
   // blocks are skipped.
@@ -376,7 +379,11 @@ export async function updateCustomerPost(env, request, user, customerId) {
   const first = String(f.get("contact_first_name") || "").trim();
   const middle = String(f.get("contact_middle_name") || "").trim();
   const last = String(f.get("contact_last_name") || "").trim();
-  const contactName = [first, middle, last].filter(Boolean).join(" ") || null;
+  if (!first || !last) {
+    return redirect(`/admin/customers/${customerId}?msg=` + encodeURIComponent(
+      "First name and last name are required. Nothing was saved."));
+  }
+  const contactName = [first, middle, last].filter(Boolean).join(" ");
   const contactEmail = String(f.get("contact_email") || "").trim();
   // The one-email-per-organization rule binds edits too: the new email may
   // not belong to a different organization.
@@ -388,13 +395,13 @@ export async function updateCustomerPost(env, request, user, customerId) {
   const phone = normalizePhone(f.get("phone"));
   if (!phone) {
     return redirect(`/admin/customers/${customerId}?msg=` + encodeURIComponent(
-      "A valid 10-digit phone number is required, for example (601) 345-0188. Nothing was saved."));
+      "A valid 10-digit phone number is required. Nothing was saved."));
   }
   await env.DB.prepare(
     `UPDATE customers SET name = ?, contact_name = ?, contact_first_name = ?, contact_middle_name = ?,
-     contact_last_name = ?, contact_email = ?, phone = ?, notes = ?, updated_at = datetime('now') WHERE id = ?`)
-    .bind(name, contactName, first || null, middle || null, last || null,
-      contactEmail || null, phone, f.get("notes") || null, customerId).run();
+     contact_last_name = ?, contact_email = ?, phone = ?, updated_at = datetime('now') WHERE id = ?`)
+    .bind(name, contactName, first, middle || null, last,
+      contactEmail || null, phone, customerId).run();
   await audit(env.DB, user.id, "customer_update", "customer", Number(customerId), name);
   return redirect(`/admin/customers/${customerId}?msg=` + encodeURIComponent("Organization saved."));
 }
@@ -439,12 +446,11 @@ export async function customerPage(env, request, user, customerId) {
     <div class="card"><h3>Organization details</h3>
       <form method="post" action="/admin/customers/${customerId}/edit">
         <label>Organization name <span class="req">*</span></label><input name="name" value="${esc(c.name)}" required>
-        <div class="row"><span style="flex:1"><label>First name</label><input name="contact_first_name" value="${esc(c.contact_first_name || "")}"></span>
+        <div class="row"><span style="flex:1"><label>First name <span class="req">*</span></label><input name="contact_first_name" value="${esc(c.contact_first_name || "")}" required></span>
         <span style="flex:1"><label>Middle name</label><input name="contact_middle_name" value="${esc(c.contact_middle_name || "")}"></span>
-        <span style="flex:1"><label>Last name</label><input name="contact_last_name" value="${esc(c.contact_last_name || "")}"></span></div>
+        <span style="flex:1"><label>Last name <span class="req">*</span></label><input name="contact_last_name" value="${esc(c.contact_last_name || "")}" required></span></div>
         <label>Customer admin email</label><input name="contact_email" type="email" value="${esc(c.contact_email || "")}">
         <label>Phone <span class="req">*</span></label><input name="phone" data-phone inputmode="tel" value="${esc(c.phone || "")}">
-        <label>Notes</label><textarea name="notes">${esc(c.notes || "")}</textarea>
         <p style="margin-top:12px"><button class="btn small" type="submit">Save organization</button></p></form></div>
     <div class="card"><h3>Locations</h3>
       <table><thead><tr><th>Name</th><th>Address</th><th>Status</th><th>Edit</th></tr></thead><tbody>${locRows || `<tr><td colspan="4" class="muted">No locations yet.</td></tr>`}</tbody></table>

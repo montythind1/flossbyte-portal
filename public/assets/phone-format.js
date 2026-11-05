@@ -1,7 +1,6 @@
-// Auto-format US phone inputs as (AAA) BBB-CCCC while typing. Typing
-// 6013450188 lands as (601) 345-0188; a leading country-code 1 is
-// dropped. The server normalizes the same way, so what is stored is
-// always the formatted number.
+// Auto-format US phone inputs as (AAA) BBB-CCCC while typing. A leading
+// country-code 1 is dropped. The server normalizes the same way, so what
+// is stored is always the formatted number.
 (function () {
   function format(v) {
     var d = String(v || "").replace(/\D/g, "");

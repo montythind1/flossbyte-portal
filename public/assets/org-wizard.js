@@ -58,7 +58,15 @@
   function checkEmailThenAdvance() {
     var email = form.querySelector('input[name="contact_email"]').value.trim();
     var name = form.querySelector('input[name="name"]').value.trim();
+    var firstInput = form.querySelector('input[name="contact_first_name"]');
+    var lastInput = form.querySelector('input[name="contact_last_name"]');
+    var first = firstInput.value.trim();
+    var last = lastInput.value.trim();
+    firstInput.classList.remove("field-error");
+    lastInput.classList.remove("field-error");
     if (!name) { emailMsg.textContent = "Organization name is required."; return; }
+    if (!first) { emailMsg.textContent = "First name is required."; firstInput.classList.add("field-error"); firstInput.focus(); return; }
+    if (!last) { emailMsg.textContent = "Last name is required."; lastInput.classList.add("field-error"); lastInput.focus(); return; }
     if (!email) { emailMsg.textContent = "Customer admin email is required. It becomes the organization's main admin login."; return; }
     fetch("/admin/customers/check-email?email=" + encodeURIComponent(email))
       .then(function (r) { return r.json(); })
