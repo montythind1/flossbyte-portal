@@ -77,6 +77,8 @@ async function route(request, env) {
     if (m && method === "POST") return admin.transferPost(env, request, user, Number(m[1]));
     m = path.match(/^\/admin\/customers\/(\d+)$/);
     if (m && method === "GET") return admin.customerPage(env, request, user, Number(m[1]));
+    m = path.match(/^\/admin\/customers\/(\d+)\/edit$/);
+    if (m && method === "POST") return admin.updateCustomerPost(env, request, user, Number(m[1]));
     m = path.match(/^\/admin\/customers\/(\d+)\/locations$/);
     if (m && method === "POST") return admin.addLocationPost(env, request, user, Number(m[1]));
     m = path.match(/^\/admin\/customers\/(\d+)\/products$/);

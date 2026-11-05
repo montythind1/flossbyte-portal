@@ -46,22 +46,42 @@ export async function clientsPage(env, request, user) {
   }
   const body = `${adminNav("clients")}<h1>Clients</h1>
     ${pending && pending.n ? `<div class="notice"><strong>${pending.n} account(s)</strong> waiting to be connected. See Pending accounts.</div>` : ""}
-    ${cards.join("") || `<div class="card"><p class="muted">No customers yet. Add the first one.</p></div>`}`;
+    ${cards.join("") || `<div class="card"><p class="muted">No organizations yet. Add the first one.</p></div>`}`;
   return page({ title: "Clients", user, body, flash: q(request).get("msg") || undefined });
+}
+
+// One location block on the create form. The address field carries the
+// autocomplete (public/assets/address-lookup.js); city/state/ZIP share the
+// block's data-loc container so the lookup fills the right block.
+function locationBlock() {
+  return `<div data-loc style="border-top:1px solid var(--line);padding-top:10px;margin-top:12px">
+    <label>Location / practice name</label><input name="loc_name[]" placeholder="Main office">
+    <label>Street address</label><input name="loc_address[]" data-address autocomplete="off" placeholder="Start typing, then pick the address">
+    <div class="row"><span style="flex:2"><label>City</label><input name="loc_city[]" class="f-city"></span>
+    <span style="flex:1"><label>State</label><input name="loc_state[]" class="f-state"></span>
+    <span style="flex:1"><label>ZIP</label><input name="loc_zip[]" class="f-zip"></span></div></div>`;
 }
 
 // ---------- Create customer ----------
 export function newCustomerPage(env, request, user) {
-  const body = `${adminNav("new")}<div class="card narrow" style="margin:0"><h1>Add customer</h1>
+  const body = `${adminNav("new")}<div class="card narrow" style="margin:0;max-width:560px"><h1>Add organization</h1>
     <form method="post" action="/admin/customers">
-      <label>Customer / organization name</label><input name="name" required>
-      <label>Main contact name</label><input name="contact_name">
+      <label>Organization name</label><input name="name" required>
+      <p class="muted">The organization is the business that signs and pays. Each of its practices is a location below.</p>
+      <div class="row"><span style="flex:1"><label>Contact first name</label><input name="contact_first_name"></span>
+      <span style="flex:1"><label>Middle name</label><input name="contact_middle_name"></span>
+      <span style="flex:1"><label>Last name</label><input name="contact_last_name"></span></div>
       <label>Main contact email</label><input name="contact_email" type="email">
       <label>Phone</label><input name="phone">
-      <label>First location name</label><input name="location_name" placeholder="Main office">
+      <h3 style="margin:18px 0 4px">Locations</h3>
+      <div id="locationBlocks">${locationBlock()}</div>
+      <template id="locationTemplate">${locationBlock()}</template>
+      <p style="margin-top:12px"><button class="btn small secondary" type="button" id="addLocationBtn">Add another location</button></p>
+      <p class="muted">Address suggestions come from OpenStreetMap. More locations can also be added later on the organization page.</p>
       <label>Notes</label><textarea name="notes"></textarea>
-      <p style="margin-top:16px"><button class="btn" type="submit">Add customer</button></p></form></div>`;
-  return page({ title: "Add customer", user, body, flash: q(request).get("msg") || undefined });
+      <p style="margin-top:16px"><button class="btn" type="submit">Add organization</button></p></form></div>
+    <script src="/assets/address-lookup.js"></script>`;
+  return page({ title: "Add organization", user, body, flash: q(request).get("msg") || undefined });
 }
 
 export async function createCustomerPost(env, request, user) {
@@ -75,22 +95,66 @@ export async function createCustomerPost(env, request, user) {
   const dup = await findCustomerByContactEmail(env.DB, contactEmail);
   if (dup) {
     return redirect("/admin/customers/new?msg=" + encodeURIComponent(
-      `A customer with this contact email already exists. It matches ${dup.name} (customer ${dup.id}).`));
+      `An organization with this contact email already exists. It matches ${dup.name} (organization ${dup.id}).`));
   }
+  const first = String(f.get("contact_first_name") || "").trim();
+  const middle = String(f.get("contact_middle_name") || "").trim();
+  const last = String(f.get("contact_last_name") || "").trim();
+  const contactName = [first, middle, last].filter(Boolean).join(" ") || null;
   const res = await env.DB.prepare(
-    "INSERT INTO customers (name, contact_name, contact_email, phone, notes) VALUES (?, ?, ?, ?, ?)")
-    .bind(name, f.get("contact_name") || null, contactEmail || null, f.get("phone") || null, f.get("notes") || null).run();
+    `INSERT INTO customers (name, contact_name, contact_first_name, contact_middle_name, contact_last_name, contact_email, phone, notes)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+    .bind(name, contactName, first || null, middle || null, last || null,
+      contactEmail || null, f.get("phone") || null, f.get("notes") || null).run();
   const customerId = res.meta.last_row_id;
-  const locName = String(f.get("location_name") || "").trim();
-  if (locName) {
-    await env.DB.prepare("INSERT INTO locations (customer_id, name) VALUES (?, ?)").bind(customerId, locName).run();
+  // Any number of location blocks may come back from the form; empty
+  // blocks are skipped.
+  const names = f.getAll("loc_name[]");
+  const addrs = f.getAll("loc_address[]");
+  const cities = f.getAll("loc_city[]");
+  const states = f.getAll("loc_state[]");
+  const zips = f.getAll("loc_zip[]");
+  for (let i = 0; i < names.length; i++) {
+    const locName = String(names[i] || "").trim();
+    if (!locName) continue;
+    await env.DB.prepare(
+      "INSERT INTO locations (customer_id, name, address, city, state, zip) VALUES (?, ?, ?, ?, ?, ?)")
+      .bind(customerId, locName, String(addrs[i] || "").trim() || null,
+        String(cities[i] || "").trim() || null, String(states[i] || "").trim() || null,
+        String(zips[i] || "").trim() || null).run();
   }
   await audit(env.DB, user.id, "customer_create", "customer", customerId, name);
   if (env.ADMIN_ALERT_EMAIL) {
     const mail = newCustomerNoticeEmail(env, { customerName: name, createdBy: user.name });
     await sendEmail(env, { to: env.ADMIN_ALERT_EMAIL, template: "admin_new_customer", ...mail });
   }
-  return redirect(`/admin/customers/${customerId}?msg=` + encodeURIComponent("Customer added."));
+  return redirect(`/admin/customers/${customerId}?msg=` + encodeURIComponent("Organization added."));
+}
+
+export async function updateCustomerPost(env, request, user, customerId) {
+  const c = await env.DB.prepare("SELECT * FROM customers WHERE id = ?").bind(customerId).first();
+  if (!c) return redirect("/admin/customers");
+  const f = await request.formData();
+  const name = String(f.get("name") || "").trim() || c.name;
+  const first = String(f.get("contact_first_name") || "").trim();
+  const middle = String(f.get("contact_middle_name") || "").trim();
+  const last = String(f.get("contact_last_name") || "").trim();
+  const contactName = [first, middle, last].filter(Boolean).join(" ") || null;
+  const contactEmail = String(f.get("contact_email") || "").trim();
+  // The one-email-per-organization rule binds edits too: the new email may
+  // not belong to a different organization.
+  const dup = await findCustomerByContactEmail(env.DB, contactEmail);
+  if (dup && dup.id !== Number(customerId)) {
+    return redirect(`/admin/customers/${customerId}?msg=` + encodeURIComponent(
+      `That contact email already belongs to ${dup.name} (organization ${dup.id}).`));
+  }
+  await env.DB.prepare(
+    `UPDATE customers SET name = ?, contact_name = ?, contact_first_name = ?, contact_middle_name = ?,
+     contact_last_name = ?, contact_email = ?, phone = ?, notes = ?, updated_at = datetime('now') WHERE id = ?`)
+    .bind(name, contactName, first || null, middle || null, last || null,
+      contactEmail || null, f.get("phone") || null, f.get("notes") || null, customerId).run();
+  await audit(env.DB, user.id, "customer_update", "customer", Number(customerId), name);
+  return redirect(`/admin/customers/${customerId}?msg=` + encodeURIComponent("Organization saved."));
 }
 
 // ---------- Customer detail ----------
@@ -107,11 +171,13 @@ export async function customerPage(env, request, user, customerId) {
     `SELECT DISTINCT u.id, u.name, u.email, u.status, u.role FROM user_access ua JOIN users u ON u.id = ua.user_id
      WHERE ua.customer_id = ? ORDER BY u.name`).bind(customerId).all();
   const locRows = (locations || []).map((l) => `<tr><td><a href="/app/locations/${l.id}">${esc(l.name)}</a></td>
-    <td>${esc([l.city, l.state].filter(Boolean).join(", "))}</td><td>${esc(l.status)}</td>
-    <td><form method="post" action="/admin/locations/${l.id}/edit" class="row">
-      <input name="name" value="${esc(l.name)}" style="max-width:180px">
-      <input name="city" value="${esc(l.city || "")}" placeholder="City" style="max-width:130px">
-      <input name="state" value="${esc(l.state || "")}" placeholder="State" style="max-width:70px">
+    <td>${esc([l.address, l.city, l.state, l.zip].filter(Boolean).join(", "))}</td><td>${esc(l.status)}</td>
+    <td><form method="post" action="/admin/locations/${l.id}/edit" class="row" data-loc>
+      <input name="name" value="${esc(l.name)}" style="max-width:170px">
+      <input name="address" value="${esc(l.address || "")}" placeholder="Street address" data-address autocomplete="off" style="max-width:200px">
+      <input name="city" value="${esc(l.city || "")}" placeholder="City" class="f-city" style="max-width:120px">
+      <input name="state" value="${esc(l.state || "")}" placeholder="State" class="f-state" style="max-width:64px">
+      <input name="zip" value="${esc(l.zip || "")}" placeholder="ZIP" class="f-zip" style="max-width:84px">
       <button class="btn small secondary" type="submit">Save</button></form></td></tr>`).join("");
   const prodRows = (products || []).map((p) => {
     const enabled = p.enabled === null || p.enabled === undefined ? (p.key === "managed_it" ? 1 : 0) : p.enabled;
@@ -128,12 +194,28 @@ export async function customerPage(env, request, user, customerId) {
   const locOptions = (locations || []).map((l) => `<option value="${l.id}">${esc(l.name)}</option>`).join("");
   const body = `${adminNav("")}<h1>${esc(c.name)}</h1>
     <p class="muted">${esc(c.contact_name || "")} ${esc(c.contact_email || "")} ${esc(c.phone || "")}</p>
+    <div class="card"><h3>Organization details</h3>
+      <form method="post" action="/admin/customers/${customerId}/edit">
+        <label>Organization name</label><input name="name" value="${esc(c.name)}" required>
+        <div class="row"><span style="flex:1"><label>Contact first name</label><input name="contact_first_name" value="${esc(c.contact_first_name || "")}"></span>
+        <span style="flex:1"><label>Middle name</label><input name="contact_middle_name" value="${esc(c.contact_middle_name || "")}"></span>
+        <span style="flex:1"><label>Last name</label><input name="contact_last_name" value="${esc(c.contact_last_name || "")}"></span></div>
+        <label>Main contact email</label><input name="contact_email" type="email" value="${esc(c.contact_email || "")}">
+        <label>Phone</label><input name="phone" value="${esc(c.phone || "")}">
+        <label>Notes</label><textarea name="notes">${esc(c.notes || "")}</textarea>
+        <p style="margin-top:12px"><button class="btn small" type="submit">Save organization</button></p></form></div>
     <div class="card"><h3>Locations</h3>
-      <table><thead><tr><th>Name</th><th>City</th><th>Status</th><th>Edit</th></tr></thead><tbody>${locRows || `<tr><td colspan="4" class="muted">No locations yet.</td></tr>`}</tbody></table>
-      <form method="post" action="/admin/customers/${customerId}/locations" class="row" style="margin-top:14px">
-        <input name="name" placeholder="New location name" required style="max-width:260px">
-        <input name="city" placeholder="City" style="max-width:150px">
-        <button class="btn small" type="submit">Add location</button></form></div>
+      <table><thead><tr><th>Name</th><th>Address</th><th>Status</th><th>Edit</th></tr></thead><tbody>${locRows || `<tr><td colspan="4" class="muted">No locations yet.</td></tr>`}</tbody></table>
+      <form method="post" action="/admin/customers/${customerId}/locations" data-loc style="margin-top:14px">
+        <div class="row" style="align-items:end">
+          <span style="flex:1;min-width:180px"><label>New location / practice name</label><input name="name" required></span>
+          <span style="flex:1;min-width:200px"><label>Street address</label><input name="address" data-address autocomplete="off" placeholder="Start typing, then pick the address"></span></div>
+        <div class="row" style="align-items:end;margin-top:8px">
+          <span style="flex:2"><label>City</label><input name="city" class="f-city"></span>
+          <span style="flex:1"><label>State</label><input name="state" class="f-state"></span>
+          <span style="flex:1"><label>ZIP</label><input name="zip" class="f-zip"></span>
+          <span><button class="btn small" type="submit">Add location</button></span></div></form></div>
+    <script src="/assets/address-lookup.js"></script>
     <div class="card"><h3>Products</h3>
       <table><thead><tr><th>Product</th><th>State</th><th>Change</th></tr></thead><tbody>${prodRows}</tbody></table>
       <p class="muted">Switches are enforced on the server. Off means the client sees a locked tile and their data requests for that service are refused.</p></div>
@@ -156,8 +238,11 @@ export async function addLocationPost(env, request, user, customerId) {
   const f = await request.formData();
   const name = String(f.get("name") || "").trim();
   if (name) {
-    await env.DB.prepare("INSERT INTO locations (customer_id, name, city) VALUES (?, ?, ?)")
-      .bind(customerId, name, f.get("city") || null).run();
+    await env.DB.prepare(
+      "INSERT INTO locations (customer_id, name, address, city, state, zip) VALUES (?, ?, ?, ?, ?, ?)")
+      .bind(customerId, name, String(f.get("address") || "").trim() || null,
+        String(f.get("city") || "").trim() || null, String(f.get("state") || "").trim() || null,
+        String(f.get("zip") || "").trim() || null).run();
     await audit(env.DB, user.id, "location_create", "customer", Number(customerId), name);
   }
   return redirect(`/admin/customers/${customerId}`);
@@ -167,8 +252,11 @@ export async function editLocationPost(env, request, user, locationId) {
   const loc = await env.DB.prepare("SELECT * FROM locations WHERE id = ?").bind(locationId).first();
   if (!loc) return redirect("/admin");
   const f = await request.formData();
-  await env.DB.prepare("UPDATE locations SET name = ?, city = ?, state = ?, updated_at = datetime('now') WHERE id = ?")
-    .bind(String(f.get("name") || loc.name), f.get("city") || null, f.get("state") || null, locationId).run();
+  await env.DB.prepare(
+    "UPDATE locations SET name = ?, address = ?, city = ?, state = ?, zip = ?, updated_at = datetime('now') WHERE id = ?")
+    .bind(String(f.get("name") || loc.name), String(f.get("address") || "").trim() || null,
+      String(f.get("city") || "").trim() || null, String(f.get("state") || "").trim() || null,
+      String(f.get("zip") || "").trim() || null, locationId).run();
   return redirect(`/admin/customers/${loc.customer_id}`);
 }
 

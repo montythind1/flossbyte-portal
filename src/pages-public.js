@@ -149,7 +149,7 @@ export function signupPage(request) {
     <p class="muted">Create your login here. FlossByte then connects your account to your practice, and only then can you see your equipment, tickets, and documents.</p>
     <form method="post" action="/signup">
       <label>Your name</label><input name="name" required autocomplete="name">
-      <label>Practice name</label><input name="practice" required>
+      <label>Organization / practice name</label><input name="practice" required>
       <label>Email</label><input name="email" type="email" required autocomplete="email">
       <label>Password</label><input name="password" type="password" required minlength="10" autocomplete="new-password">
       <p style="margin-top:18px"><button class="btn" type="submit" style="width:100%">Create account</button></p>

@@ -29,6 +29,10 @@ nav.top a:hover{color:#fff}
 .btn.secondary:hover{background:#d7e0ea}
 .btn.small{padding:6px 12px;font-size:13px}
 .btn.danger{background:var(--bad)}
+.addr-wrap{position:relative}
+.addr-list{position:absolute;left:0;right:0;top:100%;background:#fff;border:1px solid var(--line);border-radius:0 0 8px 8px;box-shadow:0 10px 24px rgba(10,22,40,.16);z-index:40;overflow:hidden}
+.addr-item{padding:9px 12px;font-size:14px;cursor:pointer}
+.addr-item:hover,.addr-item.active{background:#eef6f4}
 main{max-width:1120px;margin:0 auto;padding:28px 20px 48px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:22px;margin-bottom:18px}
 .card.narrow{max-width:440px;margin:40px auto}
