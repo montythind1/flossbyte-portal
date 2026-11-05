@@ -126,7 +126,7 @@ export async function newCustomerPage(env, request, user) {
         <div id="locationBlocks">${locationBlock()}</div>
         <template id="locationTemplate">${locationBlock()}</template>
         <p style="margin-top:12px"><button class="btn small secondary" type="button" id="addLocationBtn">Add another location</button></p>
-        <p class="muted">Address suggestions come from OpenStreetMap.</p>
+        <p class="muted">Address suggestions come from ${env.GOOGLE_PLACES_API_KEY ? "Google Maps" : "OpenStreetMap"}.</p>
         <p id="locationCheck" style="color:var(--bad)"></p>
       </section>
       <section class="wstep" data-step="3">

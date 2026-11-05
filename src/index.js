@@ -6,6 +6,7 @@ import { redirect } from "./layout.js";
 import * as pub from "./pages-public.js";
 import * as client from "./pages-client.js";
 import * as admin from "./pages-admin.js";
+import * as places from "./places.js";
 
 function notFound() { return new Response("Not found", { status: 404 }); }
 
@@ -69,6 +70,8 @@ async function route(request, env) {
     if (path === "/admin" && method === "GET") return admin.clientsPage(env, request, user);
     if (path === "/admin/customers/new" && method === "GET") return admin.newCustomerPage(env, request, user);
     if (path === "/admin/customers/check-email" && method === "GET") return admin.checkCustomerEmail(env, request);
+    if (path === "/admin/places/autocomplete" && method === "GET") return places.placesAutocomplete(env, request);
+    if (path === "/admin/places/details" && method === "GET") return places.placesDetails(env, request);
     if (path === "/admin/customers" && method === "POST") return admin.createCustomerPost(env, request, user);
     if (path === "/admin/pending" && method === "GET") return admin.pendingPage(env, request, user);
     if (path === "/admin/admins" && method === "GET") return admin.adminsPage(env, request, user);
