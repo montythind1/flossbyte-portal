@@ -358,7 +358,11 @@ export async function customerPage(env, request, user, customerId) {
         <span style="flex:1;min-width:150px"><label>Scope</label><select name="scope">
           <option value="user">User</option><option value="admin">Location admin</option></select></span>
         <button class="btn small" type="submit">Send invite</button></form>
-      <p class="muted">The invite email asks them to set a password and finish sign-in. Access starts only with this invite.</p></div>`;
+      <p class="muted">The invite email asks them to set a password and finish sign-in. Access starts only with this invite.</p></div>
+    <div class="card" style="border-color:#e5b4b0">
+      <h3 style="color:var(--bad)">Danger zone</h3>
+      <p class="muted">Deleting this organization permanently removes its locations, equipment, tickets, documents, and login access. This cannot be undone.</p>
+      <p><a class="btn danger" href="/admin/customers/${customerId}/delete">Delete this organization</a></p></div>`;
   return page({ title: c.name, user, body, flash: q(request).get("msg") || undefined });
 }
 
@@ -461,6 +465,98 @@ export async function customerUserResendPost(env, request, user, customerId, tar
   await resendInviteEmail(env, target);
   await audit(env.DB, user.id, "invite_resent_admin", "user", target.id, target.email);
   return redirect(`/admin/customers/${customerId}?msg=` + encodeURIComponent(`Invite resent to ${target.email}. The old link no longer works.`));
+}
+
+// ---------- Delete organization ----------
+// Deleting an organization removes everything under it: locations,
+// equipment, tickets (and their updates), documents (database rows and
+// the R2 files), product settings, and logins' access. The people's
+// accounts are not erased: anyone whose only access was this
+// organization is disabled and signed out, with their history kept, the
+// same treatment as a removal. Guarded by a type-the-name confirmation.
+export async function deleteCustomerPage(env, request, user, customerId) {
+  const db = env.DB;
+  const c = await db.prepare("SELECT * FROM customers WHERE id = ?").bind(customerId).first();
+  if (!c) return page({ title: "Not found", user, body: `<div class="card narrow"><h1>Not found</h1></div>` });
+  const one = async (sql) => (await db.prepare(sql).bind(customerId).first()).n;
+  const locIds = "(SELECT id FROM locations WHERE customer_id = ?)";
+  const counts = {
+    locations: await one("SELECT COUNT(*) AS n FROM locations WHERE customer_id = ?"),
+    logins: await one("SELECT COUNT(DISTINCT user_id) AS n FROM user_access WHERE customer_id = ?"),
+    equipment: await one(`SELECT COUNT(*) AS n FROM equipment WHERE location_id IN ${locIds}`),
+    tickets: await one(`SELECT COUNT(*) AS n FROM tickets WHERE location_id IN ${locIds}`),
+    documents: await one(`SELECT COUNT(*) AS n FROM documents WHERE location_id IN ${locIds}`),
+  };
+  const body = `${adminNav("")}<div class="card narrow" style="margin:0;max-width:560px">
+    <h1 style="color:var(--bad)">Delete ${esc(c.name)}</h1>
+    <p>This permanently deletes the organization and everything under it:</p>
+    <ul>
+      <li>${counts.locations} location(s)</li>
+      <li>${counts.equipment} equipment record(s)</li>
+      <li>${counts.tickets} ticket(s) with their full history</li>
+      <li>${counts.documents} document(s), including the stored files</li>
+      <li>Product settings for this organization</li>
+    </ul>
+    <p>The ${counts.logins} login(s) lose access immediately and are signed out. Their accounts are disabled, not erased, so ticket history keeps its authors.</p>
+    <p><strong>This cannot be undone.</strong></p>
+    <form method="post" action="/admin/customers/${customerId}/delete">
+      <label>Type the organization name to confirm</label>
+      <input name="confirm_name" autocomplete="off" placeholder="${esc(c.name)}">
+      <label style="display:flex;gap:8px;align-items:flex-start;font-weight:400;margin-top:14px">
+        <input type="checkbox" name="confirm" value="yes" style="width:auto;margin-top:3px">
+        <span>I understand this permanently deletes ${esc(c.name)} and everything under it.</span></label>
+      <p class="row" style="margin-top:18px">
+        <button class="btn danger" type="submit">Delete organization</button>
+        <a class="btn secondary" href="/admin/customers/${customerId}">Cancel</a></p>
+    </form></div>`;
+  return page({ title: "Delete organization", user, body, flash: q(request).get("msg") || undefined });
+}
+
+export async function deleteCustomerPost(env, request, user, customerId) {
+  const db = env.DB;
+  const c = await db.prepare("SELECT * FROM customers WHERE id = ?").bind(customerId).first();
+  if (!c) return redirect("/admin");
+  const f = await request.formData();
+  if (String(f.get("confirm_name") || "").trim() !== c.name || String(f.get("confirm") || "") !== "yes") {
+    return redirect(`/admin/customers/${customerId}/delete?msg=` +
+      encodeURIComponent("Confirmation did not match. Type the organization name exactly and tick the box."));
+  }
+  const locIds = "(SELECT id FROM locations WHERE customer_id = ?)";
+  const { results: docRows } = await db.prepare(
+    `SELECT r2_key FROM documents WHERE location_id IN ${locIds} AND r2_key IS NOT NULL`).bind(customerId).all();
+  const { results: memberRows } = await db.prepare(
+    "SELECT DISTINCT user_id FROM user_access WHERE customer_id = ?").bind(customerId).all();
+  const del = (sql) => db.prepare(sql).bind(customerId);
+  await db.batch([
+    del(`DELETE FROM ticket_updates WHERE ticket_id IN (SELECT id FROM tickets WHERE location_id IN ${locIds})`),
+    del(`DELETE FROM tickets WHERE location_id IN ${locIds}`),
+    del(`DELETE FROM ask_messages WHERE location_id IN ${locIds}`),
+    del(`DELETE FROM documents WHERE location_id IN ${locIds}`),
+    del(`DELETE FROM equipment WHERE location_id IN ${locIds}`),
+    del("DELETE FROM customer_products WHERE customer_id = ?"),
+    del("DELETE FROM user_access WHERE customer_id = ?"),
+    del("DELETE FROM locations WHERE customer_id = ?"),
+    del("DELETE FROM customers WHERE id = ?"),
+  ]);
+  // People whose only access was this organization are disabled and
+  // signed out (accounts kept for history). Anyone with access elsewhere
+  // (not possible under the one-organization rule, but checked anyway)
+  // keeps their account untouched.
+  for (const m of memberRows || []) {
+    const remaining = await db.prepare("SELECT COUNT(*) AS n FROM user_access WHERE user_id = ?").bind(m.user_id).first();
+    if (remaining && remaining.n === 0) {
+      await db.prepare("UPDATE users SET status = 'disabled', updated_at = datetime('now') WHERE id = ? AND kind = 'customer'").bind(m.user_id).run();
+      await db.prepare("DELETE FROM sessions WHERE user_id = ?").bind(m.user_id).run();
+      await db.prepare("DELETE FROM auth_tokens WHERE user_id = ?").bind(m.user_id).run();
+    }
+  }
+  if (env.DOCS) {
+    for (const d of docRows || []) {
+      try { await env.DOCS.delete(d.r2_key); } catch { /* file cleanup is best-effort; rows are already gone */ }
+    }
+  }
+  await audit(db, user.id, "customer_delete", "customer", Number(customerId), c.name);
+  return redirect("/admin?msg=" + encodeURIComponent(`Organization "${c.name}" was deleted.`));
 }
 
 // ---------- Pending accounts ----------
