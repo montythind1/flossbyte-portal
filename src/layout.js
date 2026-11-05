@@ -33,6 +33,12 @@ details.addbox{margin-top:14px}
 details.addbox>summary{list-style:none;width:fit-content}
 details.addbox>summary::-webkit-details-marker{display:none}
 details.addbox>summary::marker{content:""}
+.tabbar{display:flex;gap:2px;flex-wrap:wrap;margin:16px 0 14px;border-bottom:2px solid var(--line)}
+.tab-btn{background:none;border:none;border-bottom:3px solid transparent;margin-bottom:-2px;padding:9px 14px;font-size:15px;font-weight:600;color:var(--muted);cursor:pointer;font-family:inherit}
+.tab-btn:hover{color:var(--ink)}
+.tab-btn.active{color:var(--teal);border-bottom-color:var(--teal)}
+.tab-panel{display:none}
+.tab-panel.active{display:block}
 form.js-wizard .wstep{display:none}
 form.js-wizard .wstep.active{display:block}
 .wiz-progress{position:relative;margin:22px 4px 26px}

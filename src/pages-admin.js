@@ -439,25 +439,25 @@ export async function updateCustomerPost(env, request, user, customerId) {
   const middle = String(f.get("contact_middle_name") || "").trim();
   const last = String(f.get("contact_last_name") || "").trim();
   if (!first || !last) {
-    return redirect(`/admin/customers/${customerId}?msg=` + encodeURIComponent(
+    return redirect(`/admin/customers/${customerId}?tab=organization&msg=` + encodeURIComponent(
       "First name and last name are required. Nothing was saved."));
   }
   const contactName = [first, middle, last].filter(Boolean).join(" ");
   const contactEmail = String(f.get("contact_email") || "").trim();
   if (!isValidEmail(contactEmail)) {
-    return redirect(`/admin/customers/${customerId}?msg=` + encodeURIComponent(
+    return redirect(`/admin/customers/${customerId}?tab=organization&msg=` + encodeURIComponent(
       "Enter a valid customer admin email address. Nothing was saved."));
   }
   // The one-email-per-organization rule binds edits too: the new email may
   // not belong to a different organization.
   const dup = await findCustomerByContactEmail(env.DB, contactEmail);
   if (dup && dup.id !== Number(customerId)) {
-    return redirect(`/admin/customers/${customerId}?msg=` + encodeURIComponent(
+    return redirect(`/admin/customers/${customerId}?tab=organization&msg=` + encodeURIComponent(
       `That contact email already belongs to ${dup.name} (organization ${dup.id}).`));
   }
   const phone = normalizePhone(f.get("phone"));
   if (!phone) {
-    return redirect(`/admin/customers/${customerId}?msg=` + encodeURIComponent(
+    return redirect(`/admin/customers/${customerId}?tab=organization&msg=` + encodeURIComponent(
       "A valid 10-digit phone number is required. Nothing was saved."));
   }
   await env.DB.prepare(
@@ -466,7 +466,7 @@ export async function updateCustomerPost(env, request, user, customerId) {
     .bind(name, contactName, first, middle || null, last,
       contactEmail || null, phone, customerId).run();
   await audit(env.DB, user.id, "customer_update", "customer", Number(customerId), name);
-  return redirect(`/admin/customers/${customerId}?msg=` + encodeURIComponent("Organization saved."));
+  return redirect(`/admin/customers/${customerId}?tab=organization&msg=` + encodeURIComponent("Organization saved."));
 }
 
 // ---------- Customer detail ----------
@@ -491,7 +491,7 @@ export async function customerPage(env, request, user, customerId) {
       <input name="city" value="${esc(l.city || "")}" placeholder="City" class="f-city" required style="max-width:120px">
       <input name="state" value="${esc(l.state || "")}" placeholder="State" class="f-state" required style="max-width:64px">
       <input name="zip" value="${esc(l.zip || "")}" placeholder="ZIP" class="f-zip" required style="max-width:84px">
-      <button class="btn small secondary" type="submit">Save</button></form></td></tr>`).join("");
+      <button class="btn small" type="submit">Save</button> <button class="btn small secondary" type="button" data-cancel>Cancel</button></form></td></tr>`).join("");
   const prodRows = (products || []).map((p) => {
     const enabled = p.enabled === null || p.enabled === undefined ? 0 : p.enabled;
     return `<tr><td><strong>${esc(p.name)}</strong><div class="muted">${esc(p.description || "")}</div></td>
@@ -503,10 +503,20 @@ export async function customerPage(env, request, user, customerId) {
   const memberRows = (members || []).map((m) => `<tr><td>${esc(m.name)}${m.is_main_admin ? ` <span class="pill on">Main admin</span>` : ""}</td><td>${esc(m.email)}</td>
     <td>${esc(m.role)}</td><td><span class="pill">${esc(m.status)}</span></td>
     <td>${m.status === "invited" ? `<form method="post" action="/admin/customers/${customerId}/users/${m.id}/resend" style="display:inline"><button class="btn small secondary" type="submit">Resend invite</button></form>` : ""}</td></tr>`).join("");
+  const tabParam = q(request).get("tab");
+  const tab = ["organization", "locations", "products", "users", "manage"].includes(tabParam) ? tabParam : "organization";
   const locOptions = (locations || []).map((l) => `<option value="${l.id}">${esc(l.name)}</option>`).join("");
   const body = `${adminNav("")}<h1>${esc(c.name)}</h1>
     <p class="muted">${esc(c.contact_name || "")} ${esc(c.contact_email || "")} ${esc(c.phone || "")}</p>
-    <div class="card"><h3>Organization details</h3>
+    <div class="tabbar">
+      <button type="button" class="tab-btn${tab === "organization" ? " active" : ""}" data-tab="organization">Organization</button>
+      <button type="button" class="tab-btn${tab === "locations" ? " active" : ""}" data-tab="locations">Locations</button>
+      <button type="button" class="tab-btn${tab === "products" ? " active" : ""}" data-tab="products">Products</button>
+      <button type="button" class="tab-btn${tab === "users" ? " active" : ""}" data-tab="users">Users</button>
+      <button type="button" class="tab-btn${tab === "manage" ? " active" : ""}" data-tab="manage">Manage</button>
+    </div>
+    <noscript><style>.tab-panel{display:block}.tabbar{display:none}</style></noscript>
+    <div class="card tab-panel${tab === "organization" ? " active" : ""}" data-panel="organization">
       <form method="post" action="/admin/customers/${customerId}/edit">
         <label>Organization name <span class="req">*</span></label><input name="name" value="${esc(c.name)}" required>
         <div class="row"><span style="flex:1"><label>First name <span class="req">*</span></label><input name="contact_first_name" value="${esc(c.contact_first_name || "")}" required></span>
@@ -514,8 +524,8 @@ export async function customerPage(env, request, user, customerId) {
         <span style="flex:1"><label>Last name <span class="req">*</span></label><input name="contact_last_name" value="${esc(c.contact_last_name || "")}" required></span></div>
         <label>Customer admin email <span class="req">*</span></label><input name="contact_email" type="email" value="${esc(c.contact_email || "")}" required>
         <label>Phone <span class="req">*</span></label><input name="phone" data-phone inputmode="tel" value="${esc(c.phone || "")}">
-        <p style="margin-top:12px"><button class="btn small" type="submit">Save organization</button></p></form></div>
-    <div class="card"><h3>Locations</h3>
+        <p style="margin-top:12px"><button class="btn small" type="submit">Save</button> <button class="btn small secondary" type="button" data-cancel>Cancel</button></p></form></div>
+    <div class="card tab-panel${tab === "locations" ? " active" : ""}" data-panel="locations">
       <table><thead><tr><th>Name</th><th>Address</th><th>Status</th><th>Edit</th></tr></thead><tbody>${locRows || `<tr><td colspan="4" class="muted">No locations yet.</td></tr>`}</tbody></table>
       <details class="addbox"><summary class="btn small secondary">+ Add location</summary>
       <form method="post" action="/admin/customers/${customerId}/locations" data-loc style="margin-top:14px">
@@ -527,13 +537,13 @@ export async function customerPage(env, request, user, customerId) {
           <span style="flex:2"><label>City <span class="req">*</span></label><input name="city" class="f-city" required></span>
           <span style="flex:1"><label>State <span class="req">*</span></label><input name="state" class="f-state" required></span>
           <span style="flex:1"><label>ZIP <span class="req">*</span></label><input name="zip" class="f-zip" required></span>
-          <span><button class="btn small" type="submit">Save</button></span></div></form></details></div>
+          <span><button class="btn small" type="submit">Save</button></span> <span><button class="btn small secondary" type="button" data-cancel>Cancel</button></span></div></form></details></div>
     <script src="/assets/address-lookup.js"></script>
     <script src="/assets/phone-format.js"></script>
-    <div class="card"><h3>Products</h3>
+    <div class="card tab-panel${tab === "products" ? " active" : ""}" data-panel="products">
       <table><thead><tr><th>Product</th><th>State</th><th>Change</th></tr></thead><tbody>${prodRows}</tbody></table>
       <p class="muted">Switches are enforced on the server. Off means the client sees a locked tile and their data requests for that service are refused.</p></div>
-    <div class="card"><h3>Logins for this customer</h3>
+    <div class="card tab-panel${tab === "users" ? " active" : ""}" data-panel="users">
       <table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th></th></tr></thead><tbody>${memberRows || `<tr><td colspan="5" class="muted">No logins yet.</td></tr>`}</tbody></table>
       <details class="addbox"><summary class="btn small secondary">+ Add user</summary>
       <form method="post" action="/admin/customers/${customerId}/users" class="row" style="align-items:end;margin-top:12px">
@@ -545,12 +555,13 @@ export async function customerPage(env, request, user, customerId) {
           <option value="">All locations</option>${locOptions}</select></span>
         <span style="flex:1;min-width:150px"><label>Scope</label><select name="scope">
           <option value="user">User</option><option value="admin">Location admin</option></select></span>
-        <button class="btn small" type="submit">Send invite</button></form></details>
+        <button class="btn small" type="submit">Send invite</button> <button class="btn small secondary" type="button" data-cancel>Cancel</button></form></details>
       <p class="muted">The invite email asks them to set a password and finish sign-in. Access starts only with this invite.</p></div>
-    <div class="card" style="border-color:#e5b4b0">
-      <h3 style="color:var(--bad)">Danger zone</h3>
+    <div class="card tab-panel${tab === "manage" ? " active" : ""}" data-panel="manage" style="border-color:#e5b4b0">
+      <h3 style="color:var(--bad)">Delete organization</h3>
       <p class="muted">Deleting this organization permanently removes its locations, equipment, tickets, documents, and login access. This cannot be undone.</p>
-      <p><a class="btn danger" href="/admin/customers/${customerId}/delete">Delete this organization</a></p></div>`;
+      <p><a class="btn danger" href="/admin/customers/${customerId}/delete">Delete this organization</a></p></div>
+    <script src="/assets/org-page.js"></script>`;
   return page({ title: c.name, user, body, flash: q(request).get("msg") || undefined });
 }
 
@@ -563,14 +574,14 @@ export async function addLocationPost(env, request, user, customerId) {
   const zip = String(f.get("zip") || "").trim();
   const suite = String(f.get("suite") || "").trim() || null;
   if (!name || !address || !city || !state || !zip) {
-    return redirect(`/admin/customers/${customerId}?msg=` + encodeURIComponent(
+    return redirect(`/admin/customers/${customerId}?tab=locations&msg=` + encodeURIComponent(
       "Name, street address, city, state, and ZIP are all required for a location."));
   }
   await env.DB.prepare(
     "INSERT INTO locations (customer_id, name, address, suite, city, state, zip) VALUES (?, ?, ?, ?, ?, ?, ?)")
     .bind(customerId, name, address, suite, city, state, zip).run();
   await audit(env.DB, user.id, "location_create", "customer", Number(customerId), name);
-  return redirect(`/admin/customers/${customerId}`);
+  return redirect(`/admin/customers/${customerId}?tab=locations`);
 }
 
 export async function editLocationPost(env, request, user, locationId) {
@@ -583,14 +594,14 @@ export async function editLocationPost(env, request, user, locationId) {
   const state = String(f.get("state") || "").trim();
   const zip = String(f.get("zip") || "").trim();
   if (!name || !address || !city || !state || !zip) {
-    return redirect(`/admin/customers/${loc.customer_id}?msg=` + encodeURIComponent(
+    return redirect(`/admin/customers/${loc.customer_id}?tab=locations&msg=` + encodeURIComponent(
       "Name, street address, city, state, and ZIP are all required for a location. Nothing was saved."));
   }
   const suite2 = String(f.get("suite") || "").trim() || null;
   await env.DB.prepare(
     "UPDATE locations SET name = ?, address = ?, suite = ?, city = ?, state = ?, zip = ?, updated_at = datetime('now') WHERE id = ?")
     .bind(name, address, suite2, city, state, zip, locationId).run();
-  return redirect(`/admin/customers/${loc.customer_id}`);
+  return redirect(`/admin/customers/${loc.customer_id}?tab=locations`);
 }
 
 export async function productTogglePost(env, request, user, customerId) {
@@ -617,7 +628,7 @@ export async function productTogglePost(env, request, user, customerId) {
     }
     await audit(env.DB, user.id, enabled ? "product_on" : "product_off", "customer", Number(customerId), product);
   }
-  return redirect(`/admin/customers/${customerId}`);
+  return redirect(`/admin/customers/${customerId}?tab=products`);
 }
 
 export async function inviteCustomerUserPost(env, request, user, customerId) {
@@ -630,7 +641,7 @@ export async function inviteCustomerUserPost(env, request, user, customerId) {
   const locationId = f.get("location_id") ? Number(f.get("location_id")) : null;
   const scope = String(f.get("scope") || "user") === "admin" ? "admin" : "user";
   if (!first || !last || !isValidEmail(email)) {
-    return redirect(`/admin/customers/${customerId}?msg=` + encodeURIComponent(
+    return redirect(`/admin/customers/${customerId}?tab=users&msg=` + encodeURIComponent(
       "Enter the person's first name, last name, and a valid email address."));
   }
   let target = await env.DB.prepare("SELECT * FROM users WHERE email = ?").bind(email).first();
@@ -652,13 +663,13 @@ export async function inviteCustomerUserPost(env, request, user, customerId) {
     // FlossByte admins may be told which organization holds the email.
     // Customer-facing flows never see the other organization's name.
     const detail = grant.otherCustomer ? ` It belongs to ${grant.otherCustomer.name}.` : "";
-    return redirect(`/admin/customers/${customerId}?msg=` + encodeURIComponent(grant.error + detail));
+    return redirect(`/admin/customers/${customerId}?tab=users&msg=` + encodeURIComponent(grant.error + detail));
   }
   const raw = await createAuthToken(env.DB, target.id, "invite", 7 * 24 * 60);
   const mail = inviteEmail(env, { name: target.name, link: `${origin(env)}/invite/${raw}` });
   await sendEmail(env, { to: email, template: "invite", ...mail });
   await audit(env.DB, user.id, "user_invite", "user", target.id, email);
-  return redirect(`/admin/customers/${customerId}?msg=` + encodeURIComponent("Invite sent (or queued, if email is not configured yet)."));
+  return redirect(`/admin/customers/${customerId}?tab=users&msg=` + encodeURIComponent("Invite sent (or queued, if email is not configured yet)."));
 }
 
 export async function customerUserResendPost(env, request, user, customerId, targetId) {
@@ -666,11 +677,11 @@ export async function customerUserResendPost(env, request, user, customerId, tar
     "SELECT id FROM user_access WHERE user_id = ? AND customer_id = ?").bind(targetId, customerId).first();
   const target = await env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(targetId).first();
   if (!access || !target || target.kind !== "customer" || target.status !== "invited") {
-    return redirect(`/admin/customers/${customerId}?msg=` + encodeURIComponent("That login cannot be re-invited. Only pending invites can be resent."));
+    return redirect(`/admin/customers/${customerId}?tab=users&msg=` + encodeURIComponent("That login cannot be re-invited. Only pending invites can be resent."));
   }
   await resendInviteEmail(env, target);
   await audit(env.DB, user.id, "invite_resent_admin", "user", target.id, target.email);
-  return redirect(`/admin/customers/${customerId}?msg=` + encodeURIComponent(`Invite resent to ${target.email}. The old link no longer works.`));
+  return redirect(`/admin/customers/${customerId}?tab=users&msg=` + encodeURIComponent(`Invite resent to ${target.email}. The old link no longer works.`));
 }
 
 // ---------- Delete organization ----------
