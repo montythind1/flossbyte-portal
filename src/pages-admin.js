@@ -290,6 +290,7 @@ export async function createCustomerPost(env, request, user) {
   // is_main_admin. Pre-validation above guarantees the grant succeeds.
   const adminEmail = contactEmail.toLowerCase();
   const summary = [];
+  let invitesCreated = false;
   {
     let target = adminUser;
     const wasPending = !!target && target.status === "pending";
@@ -316,15 +317,16 @@ export async function createCustomerPost(env, request, user) {
     if (wasPending) {
       await env.DB.prepare("UPDATE users SET status = 'active' WHERE id = ?").bind(target.id).run();
       await audit(env.DB, user.id, "user_connect", "user", target.id, adminEmail);
-      summary.push(`Main admin connected: ${adminEmail}.`);
+      summary.push(`Main admin ${adminEmail} was connected from their existing account, so they can sign in right away.`);
     } else if (target.status === "invited") {
       const raw = await createAuthToken(env.DB, target.id, "invite", 7 * 24 * 60);
       const mail = inviteEmail(env, { name: target.name, link: `${origin(env)}/invite/${raw}` });
       await sendEmail(env, { to: adminEmail, template: "invite", ...mail });
+      invitesCreated = true;
       await audit(env.DB, user.id, "user_invite", "user", target.id, adminEmail);
-      summary.push(`Main admin invited: ${adminEmail}.`);
+      summary.push(`Main admin ${adminEmail} was invited to set a password and finish signing in.`);
     } else {
-      summary.push(`Main admin: ${adminEmail}.`);
+      summary.push(`Main admin ${adminEmail} already has an active account, so no invite was needed.`);
     }
   }
   // Step 4: user logins, always regular users. Each row follows the same
@@ -374,6 +376,7 @@ export async function createCustomerPost(env, request, user) {
       const raw = await createAuthToken(env.DB, target.id, "invite", 7 * 24 * 60);
       const mail = inviteEmail(env, { name: target.name, link: `${origin(env)}/invite/${raw}` });
       await sendEmail(env, { to: email, template: "invite", ...mail });
+      invitesCreated = true;
       await audit(env.DB, user.id, "user_invite", "user", target.id, email);
       invited.push(email);
     } else {
@@ -385,11 +388,14 @@ export async function createCustomerPost(env, request, user) {
     const mail = newCustomerNoticeEmail(env, { customerName: name, createdBy: user.name });
     await sendEmail(env, { to: env.ADMIN_ALERT_EMAIL, template: "admin_new_customer", ...mail });
   }
-  const parts = ["Organization added.", ...summary];
-  if (adminAlsoListed) parts.push("The main admin was also listed in step 4; step 1 already covers them.");
-  if (invited.length) parts.push(`Logins invited: ${invited.join(", ")}.`);
+  const parts = [`Organization "${name}" was created.`, ...summary];
+  if (adminAlsoListed) parts.push("The main admin was also listed under user logins in step 4, so that entry was skipped.");
+  if (invited.length) parts.push(`User logins invited: ${invited.join(", ")}.`);
   if (connected.length) parts.push(`Existing accounts connected: ${connected.join(", ")}.`);
-  if (refused.length) parts.push(`Logins refused: ${refused.join("; ")}.`);
+  if (refused.length) parts.push(`Not added: ${refused.join("; ")}.`);
+  if (invitesCreated && !env.RESEND_API_KEY) {
+    parts.push("Email delivery is not connected yet, so the invites have been saved but not emailed.");
+  }
   return redirect(`/admin/customers/${customerId}?msg=` + encodeURIComponent(parts.join(" ")));
 }
 
