@@ -527,17 +527,7 @@ export async function customerPage(env, request, user, customerId) {
         <p style="margin-top:12px"><button class="btn small" type="submit">Save</button> <button class="btn small secondary" type="button" data-cancel>Cancel</button></p></form></div>
     <div class="card tab-panel${tab === "locations" ? " active" : ""}" data-panel="locations">
       <table><thead><tr><th>Name</th><th>Address</th><th>Status</th><th>Edit</th></tr></thead><tbody>${locRows || `<tr><td colspan="4" class="muted">No locations yet.</td></tr>`}</tbody></table>
-      <details class="addbox"><summary class="btn small secondary">+ Add location</summary>
-      <form method="post" action="/admin/customers/${customerId}/locations" data-loc style="margin-top:14px">
-        <div class="row" style="align-items:end">
-          <span style="flex:1;min-width:180px"><label>New location / practice name <span class="req">*</span></label><input name="name" required></span>
-          <span style="flex:1;min-width:200px"><label>Street address <span class="req">*</span></label><input name="address" data-address autocomplete="off" placeholder="Start typing, then pick the address" required></span></div>
-        <div class="row" style="align-items:end;margin-top:8px">
-          <span style="flex:1"><label>Suite / Unit</label><input name="suite" class="f-suite" placeholder="Optional"></span>
-          <span style="flex:2"><label>City <span class="req">*</span></label><input name="city" class="f-city" required></span>
-          <span style="flex:1"><label>State <span class="req">*</span></label><input name="state" class="f-state" required></span>
-          <span style="flex:1"><label>ZIP <span class="req">*</span></label><input name="zip" class="f-zip" required></span>
-          <span><button class="btn small" type="submit">Save</button></span> <span><button class="btn small secondary" type="button" data-cancel>Cancel</button></span></div></form></details></div>
+      <p style="margin-top:14px"><a class="btn small secondary" href="/admin/customers/${customerId}/locations/new">+ Add location</a></p></div>
     <script src="/assets/address-lookup.js"></script>
     <script src="/assets/phone-format.js"></script>
     <div class="card tab-panel${tab === "products" ? " active" : ""}" data-panel="products">
@@ -545,17 +535,7 @@ export async function customerPage(env, request, user, customerId) {
       <p class="muted">Switches are enforced on the server. Off means the client sees a locked tile and their data requests for that service are refused.</p></div>
     <div class="card tab-panel${tab === "users" ? " active" : ""}" data-panel="users">
       <table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th></th></tr></thead><tbody>${memberRows || `<tr><td colspan="5" class="muted">No logins yet.</td></tr>`}</tbody></table>
-      <details class="addbox"><summary class="btn small secondary">+ Add user</summary>
-      <form method="post" action="/admin/customers/${customerId}/users" class="row" style="align-items:end;margin-top:12px">
-        <span style="flex:1;min-width:120px"><label>First name <span class="req">*</span></label><input name="first_name" required></span>
-        <span style="flex:1;min-width:120px"><label>Middle name</label><input name="middle_name"></span>
-        <span style="flex:1;min-width:120px"><label>Last name <span class="req">*</span></label><input name="last_name" required></span>
-        <span style="flex:1;min-width:200px"><label>Email <span class="req">*</span></label><input name="email" type="email" required></span>
-        <span style="flex:1;min-width:150px"><label>Access</label><select name="location_id">
-          <option value="">All locations</option>${locOptions}</select></span>
-        <span style="flex:1;min-width:150px"><label>Scope</label><select name="scope">
-          <option value="user">User</option><option value="admin">Location admin</option></select></span>
-        <button class="btn small" type="submit">Send invite</button> <button class="btn small secondary" type="button" data-cancel>Cancel</button></form></details>
+      <p style="margin-top:14px"><a class="btn small secondary" href="/admin/customers/${customerId}/users/new">+ Add user</a></p>
       <p class="muted">The invite email asks them to set a password and finish sign-in. Access starts only with this invite.</p></div>
     <div class="card tab-panel${tab === "manage" ? " active" : ""}" data-panel="manage" style="border-color:#e5b4b0">
       <h3 style="color:var(--bad)">Delete organization</h3>
@@ -582,6 +562,54 @@ export async function addLocationPost(env, request, user, customerId) {
     .bind(customerId, name, address, suite, city, state, zip).run();
   await audit(env.DB, user.id, "location_create", "customer", Number(customerId), name);
   return redirect(`/admin/customers/${customerId}?tab=locations`);
+}
+
+export async function addLocationPage(env, request, user, customerId) {
+  const c = await env.DB.prepare("SELECT * FROM customers WHERE id = ?").bind(customerId).first();
+  if (!c) return redirect("/admin?msg=" + encodeURIComponent("Organization not found."));
+  const body = `${adminNav("")}
+    <p><a href="/admin/customers/${customerId}?tab=locations">&larr; ${esc(c.name)}</a></p>
+    <h1>Add location</h1>
+    <div class="card"><form method="post" action="/admin/customers/${customerId}/locations" data-loc>
+      <label>Location / practice name <span class="req">*</span></label><input name="name" required>
+      <label>Street address <span class="req">*</span></label><input name="address" data-address autocomplete="off" placeholder="Start typing, then pick the address" required>
+      <label>Suite / Unit</label><input name="suite" class="f-suite" placeholder="Suite 200 (optional)">
+      <div class="row"><span style="flex:2"><label>City <span class="req">*</span></label><input name="city" class="f-city" required></span>
+      <span style="flex:1"><label>State <span class="req">*</span></label><input name="state" class="f-state" required></span>
+      <span style="flex:1"><label>ZIP <span class="req">*</span></label><input name="zip" class="f-zip" required></span></div>
+      <p class="muted">Address suggestions come from ${env.GOOGLE_PLACES_API_KEY ? "Google Maps" : "OpenStreetMap"}.</p>
+      <p class="row" style="margin-top:20px">
+        <a class="btn secondary" href="/admin/customers/${customerId}?tab=locations">Cancel</a>
+        <button class="btn" type="submit">Add location</button>
+      </p></form></div>
+    <script src="/assets/address-lookup.js"></script>`;
+  return page({ title: "Add location", user, body, flash: q(request).get("msg") || undefined });
+}
+
+export async function addUserPage(env, request, user, customerId) {
+  const c = await env.DB.prepare("SELECT * FROM customers WHERE id = ?").bind(customerId).first();
+  if (!c) return redirect("/admin?msg=" + encodeURIComponent("Organization not found."));
+  const { results: locations } = await env.DB.prepare(
+    "SELECT id, name FROM locations WHERE customer_id = ? ORDER BY name").bind(customerId).all();
+  const locOptions = (locations || []).map((l) => `<option value="${l.id}">${esc(l.name)}</option>`).join("");
+  const body = `${adminNav("")}
+    <p><a href="/admin/customers/${customerId}?tab=users">&larr; ${esc(c.name)}</a></p>
+    <h1>Add user</h1>
+    <div class="card"><form method="post" action="/admin/customers/${customerId}/users">
+      <div class="row"><span style="flex:1"><label>First name <span class="req">*</span></label><input name="first_name" required></span>
+      <span style="flex:1"><label>Middle name</label><input name="middle_name"></span>
+      <span style="flex:1"><label>Last name <span class="req">*</span></label><input name="last_name" required></span></div>
+      <label>Email <span class="req">*</span></label><input name="email" type="email" required>
+      <div class="row"><span style="flex:1"><label>Access</label><select name="location_id">
+        <option value="">All locations</option>${locOptions}</select></span>
+      <span style="flex:1"><label>Scope</label><select name="scope">
+        <option value="user">User</option><option value="admin">Location admin</option></select></span></div>
+      <p class="muted">The invite email asks them to set a password and finish sign-in. Access starts only with this invite.</p>
+      <p class="row" style="margin-top:20px">
+        <a class="btn secondary" href="/admin/customers/${customerId}?tab=users">Cancel</a>
+        <button class="btn" type="submit">Send invite</button>
+      </p></form></div>`;
+  return page({ title: "Add user", user, body, flash: q(request).get("msg") || undefined });
 }
 
 export async function editLocationPost(env, request, user, locationId) {
