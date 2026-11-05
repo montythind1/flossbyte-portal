@@ -17,6 +17,11 @@
   var current = 1;
 
   function validEmail(v) { return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(v); }
+  function validPhone(v) {
+    var d = String(v || "").replace(/\D/g, "");
+    if (d.length === 11 && d.charAt(0) === "1") d = d.slice(1);
+    return d.length === 10;
+  }
 
   function locationOptions() {
     var opts = [{ value: "", label: "All locations" }];
@@ -74,6 +79,9 @@
     if (!last) { emailMsg.textContent = "Last name is required."; lastInput.classList.add("field-error"); lastInput.focus(); return; }
     if (!email) { emailMsg.textContent = "Customer admin email is required. It becomes the organization's main admin login."; return; }
     if (!validEmail(email)) { emailMsg.textContent = "Enter a valid customer admin email address."; emailInput.classList.add("field-error"); emailInput.focus(); return; }
+    var phoneInput = form.querySelector('input[name="phone"]');
+    phoneInput.classList.remove("field-error");
+    if (!validPhone(phoneInput.value)) { emailMsg.textContent = "A valid 10-digit phone number is required."; phoneInput.classList.add("field-error"); phoneInput.focus(); return; }
     fetch("/admin/customers/check-email?email=" + encodeURIComponent(email))
       .then(function (r) { return r.json(); })
       .then(function (data) {
@@ -164,8 +172,20 @@
     if (event.target.name === "contact_email" && validEmail(event.target.value.trim())) {
       event.target.classList.remove("field-error");
     }
+    if (event.target.name === "phone" && validPhone(event.target.value)) {
+      event.target.classList.remove("field-error");
+    }
   });
   form.addEventListener("submit", function (event) {
+    var phoneInput = form.querySelector('input[name="phone"]');
+    if (!validPhone(phoneInput.value)) {
+      event.preventDefault();
+      show(1);
+      emailMsg.textContent = "A valid 10-digit phone number is required.";
+      phoneInput.classList.add("field-error");
+      phoneInput.focus();
+      return;
+    }
     if (!validateLocations()) { event.preventDefault(); show(2); return; }
     var badLogin = null;
     form.querySelectorAll('input[name="login_email[]"]').forEach(function (input) {
