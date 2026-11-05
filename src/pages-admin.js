@@ -211,6 +211,13 @@ export async function inviteCustomerUserPost(env, request, user, customerId) {
       `INSERT INTO users (email, name, kind, role, status) VALUES (?, ?, 'customer', ?, 'invited')`)
       .bind(email, name, scope === "admin" ? "customer_admin" : "customer_user").run();
     target = { id: res.meta.last_row_id, name, email };
+  } else if (target.kind === "customer") {
+    // A returning login (for example someone removed from another
+    // organization) takes the role of this new grant, never a leftover
+    // role from before. Their old access was deleted at removal and is
+    // not resurrected; the grant below is the only access they get.
+    await env.DB.prepare("UPDATE users SET role = ? WHERE id = ?")
+      .bind(scope === "admin" ? "customer_admin" : "customer_user", target.id).run();
   }
   const grant = await grantUserAccess(env.DB, target.id, customerId, locationId, scope);
   if (!grant.ok) {

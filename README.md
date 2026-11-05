@@ -76,6 +76,24 @@ partial index on the normalized contact email, and triggers on
 `user_access` that abort a second-organization insert or update even if a
 future code path forgets the app-level check.
 
+## Removing a user who left
+
+A customer admin can remove people from their own organization on the
+Team page (`/app/team`, linked from the portal home and location pages).
+Removal runs through `removeUserFromCustomer` in `src/access.js`, which
+checks on the server that the actor is an admin of that same customer,
+that the target belongs to that customer, that nobody removes their own
+login, and that the organization's last remaining admin cannot be
+removed. Removal deletes the person's access rows for the customer,
+disables the login, and revokes their sessions right away; it is written
+to the audit log. The user record itself is kept (disabled, not deleted),
+so tickets, ticket updates, and documents they created stay on record.
+
+Because removal deletes all of the person's access, the freed email can
+later be invited to a different organization: the invite reactivates the
+login with only the new organization's access and the role of the new
+grant. Nothing from the old organization comes back.
+
 ## Local development
 
 ```bash

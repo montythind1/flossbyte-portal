@@ -1,6 +1,7 @@
 // Tenant isolation helpers. Every customer-data query in the portal goes
 // through these functions: a customer login can only reach locations granted
 // in user_access. FlossByte logins (kind = 'flossbyte') reach everything.
+import { revokeAllSessions } from "./auth.js";
 
 export function isFlossByte(user) { return user && user.kind === "flossbyte"; }
 export function isSuperAdmin(user) { return user && user.role === "super_admin"; }
@@ -53,6 +54,89 @@ export async function grantUserAccess(db, userId, customerId, locationId, scope)
     "INSERT INTO user_access (user_id, customer_id, location_id, scope) VALUES (?, ?, ?, ?)")
     .bind(userId, customerId, locationId, scope).run();
   return { ok: true };
+}
+
+// The customer this user administers, or null. A customer admin is a
+// customer login with role 'customer_admin'; the one-org rule means all of
+// their user_access rows sit under a single customer.
+export async function customerAdminOrg(db, user) {
+  if (!user || user.kind !== "customer" || user.role !== "customer_admin") return null;
+  const row = await db.prepare("SELECT customer_id FROM user_access WHERE user_id = ? LIMIT 1")
+    .bind(user.id).first();
+  return row ? row.customer_id : null;
+}
+
+// Users who belong to a customer through user_access, one entry per user,
+// each with the names of the locations their rows cover (a row with no
+// location means every location of the customer).
+export async function orgMembers(db, customerId) {
+  const { results } = await db.prepare(
+    `SELECT DISTINCT u.id, u.name, u.email, u.role, u.status FROM user_access ua
+     JOIN users u ON u.id = ua.user_id WHERE ua.customer_id = ? ORDER BY u.name`)
+    .bind(customerId).all();
+  const members = [];
+  for (const u of results || []) {
+    const { results: rows } = await db.prepare(
+      `SELECT ua.location_id, l.name AS location_name FROM user_access ua
+       LEFT JOIN locations l ON l.id = ua.location_id WHERE ua.user_id = ? AND ua.customer_id = ?`)
+      .bind(u.id, customerId).all();
+    const allLocations = (rows || []).some((r) => r.location_id === null);
+    members.push({
+      ...u,
+      all_locations: allLocations,
+      locations_label: allLocations ? "All locations"
+        : (rows || []).map((r) => r.location_name).filter(Boolean).join(", "),
+    });
+  }
+  return members;
+}
+
+// Removes a user from a customer, for when a staff member leaves. The only
+// caller-facing removal path, so every surface (the Team page today, any
+// future one) inherits the same server-checked guards:
+//   - the actor must be a customer_admin of THIS customer
+//   - the target must belong to the same customer (never another org,
+//     never a FlossByte login)
+//   - nobody can remove their own login
+//   - the organization's last remaining customer_admin cannot be removed
+// Removal deletes the user's access rows for the customer, disables the
+// login, and revokes its sessions right away. The user row itself is kept
+// (disabled, not deleted), so tickets, ticket updates, and documents they
+// created stay on record. With no access left, the freed email can later
+// be invited to a different organization and reactivates cleanly.
+// Returns { ok: true, target } or { ok: false, error }.
+export async function removeUserFromCustomer(db, actor, targetUserId, customerId) {
+  const NOT_MEMBER = "That user is not part of your organization.";
+  const org = await customerAdminOrg(db, actor);
+  if (org === null || Number(org) !== Number(customerId)) {
+    return { ok: false, error: "Only an admin of this organization can remove its users." };
+  }
+  if (Number(targetUserId) === Number(actor.id)) {
+    return { ok: false, error: "You cannot remove your own login." };
+  }
+  const target = await db.prepare("SELECT id, name, email, kind, role, status FROM users WHERE id = ?")
+    .bind(targetUserId).first();
+  if (!target || target.kind !== "customer") return { ok: false, error: NOT_MEMBER };
+  const member = await db.prepare(
+    "SELECT id FROM user_access WHERE user_id = ? AND customer_id = ? LIMIT 1")
+    .bind(targetUserId, customerId).first();
+  if (!member) return { ok: false, error: NOT_MEMBER };
+  if (target.role === "customer_admin") {
+    const remaining = await db.prepare(
+      `SELECT COUNT(*) AS n FROM users u JOIN user_access ua ON ua.user_id = u.id
+       WHERE ua.customer_id = ? AND u.role = 'customer_admin' AND u.status != 'disabled' AND u.id != ?`)
+      .bind(customerId, targetUserId).first();
+    if (!remaining || remaining.n === 0) {
+      return { ok: false, error: "You cannot remove the last admin of your organization." };
+    }
+  }
+  await db.prepare("DELETE FROM user_access WHERE user_id = ? AND customer_id = ?")
+    .bind(targetUserId, customerId).run();
+  await db.prepare("UPDATE users SET status = 'disabled', updated_at = datetime('now') WHERE id = ?")
+    .bind(targetUserId).run();
+  await revokeAllSessions(db, Number(targetUserId));
+  await audit(db, actor.id, "user_remove", "user", Number(targetUserId), `customer ${customerId}`);
+  return { ok: true, target };
 }
 
 export async function getUserAccess(db, user) {
