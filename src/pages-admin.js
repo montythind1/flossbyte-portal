@@ -4,6 +4,7 @@ import { page, redirect, esc } from "./layout.js";
 import { createAuthToken, revokeAllSessions, verifyPassword } from "./auth.js";
 import { audit, isSuperAdmin, grantUserAccess, findCustomerByContactEmail } from "./access.js";
 import { sendEmail, inviteEmail, newCustomerNoticeEmail, ownershipTransferEmail } from "./email.js";
+import { resendInviteEmail } from "./pages-public.js";
 
 function origin(env) { return env.APP_ORIGIN || "https://portal.flossbyte.com"; }
 function q(request) { return new URL(request.url).searchParams; }
@@ -122,7 +123,8 @@ export async function customerPage(env, request, user, customerId) {
         <button class="btn small ${enabled ? "danger" : ""}" name="enabled" value="${enabled ? "0" : "1"}" type="submit">${enabled ? "Turn off" : "Turn on"}</button></form></td></tr>`;
   }).join("");
   const memberRows = (members || []).map((m) => `<tr><td>${esc(m.name)}</td><td>${esc(m.email)}</td>
-    <td>${esc(m.role)}</td><td><span class="pill">${esc(m.status)}</span></td></tr>`).join("");
+    <td>${esc(m.role)}</td><td><span class="pill">${esc(m.status)}</span></td>
+    <td>${m.status === "invited" ? `<form method="post" action="/admin/customers/${customerId}/users/${m.id}/resend" style="display:inline"><button class="btn small secondary" type="submit">Resend invite</button></form>` : ""}</td></tr>`).join("");
   const locOptions = (locations || []).map((l) => `<option value="${l.id}">${esc(l.name)}</option>`).join("");
   const body = `${adminNav("")}<h1>${esc(c.name)}</h1>
     <p class="muted">${esc(c.contact_name || "")} ${esc(c.contact_email || "")} ${esc(c.phone || "")}</p>
@@ -136,7 +138,7 @@ export async function customerPage(env, request, user, customerId) {
       <table><thead><tr><th>Product</th><th>State</th><th>Change</th></tr></thead><tbody>${prodRows}</tbody></table>
       <p class="muted">Switches are enforced on the server. Off means the client sees a locked tile and their data requests for that service are refused.</p></div>
     <div class="card"><h3>Logins for this customer</h3>
-      <table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th></tr></thead><tbody>${memberRows || `<tr><td colspan="4" class="muted">No logins yet.</td></tr>`}</tbody></table>
+      <table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th></th></tr></thead><tbody>${memberRows || `<tr><td colspan="5" class="muted">No logins yet.</td></tr>`}</tbody></table>
       <h4>Invite a login</h4>
       <form method="post" action="/admin/customers/${customerId}/users" class="row" style="align-items:end">
         <span style="flex:1;min-width:160px"><label>Name</label><input name="name" required></span>
@@ -233,6 +235,18 @@ export async function inviteCustomerUserPost(env, request, user, customerId) {
   return redirect(`/admin/customers/${customerId}?msg=` + encodeURIComponent("Invite sent (or queued, if email is not configured yet)."));
 }
 
+export async function customerUserResendPost(env, request, user, customerId, targetId) {
+  const access = await env.DB.prepare(
+    "SELECT id FROM user_access WHERE user_id = ? AND customer_id = ?").bind(targetId, customerId).first();
+  const target = await env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(targetId).first();
+  if (!access || !target || target.kind !== "customer" || target.status !== "invited") {
+    return redirect(`/admin/customers/${customerId}?msg=` + encodeURIComponent("That login cannot be re-invited. Only pending invites can be resent."));
+  }
+  await resendInviteEmail(env, target);
+  await audit(env.DB, user.id, "invite_resent_admin", "user", target.id, target.email);
+  return redirect(`/admin/customers/${customerId}?msg=` + encodeURIComponent(`Invite resent to ${target.email}. The old link no longer works.`));
+}
+
 // ---------- Pending accounts ----------
 export async function pendingPage(env, request, user) {
   const { results: pending } = await env.DB.prepare(
@@ -292,7 +306,10 @@ export async function adminsPage(env, request, user) {
     const isSuper = a.role === "super_admin";
     const controls = isSuper || a.id === user.id
       ? `<span class="muted">Protected</span>`
-      : a.status === "disabled"
+      : a.status === "invited"
+        ? `<form method="post" action="/admin/admins/${a.id}/resend" style="display:inline"><button class="btn small secondary" type="submit">Resend invite</button></form>
+           <form method="post" action="/admin/admins/${a.id}/remove" style="display:inline"><button class="btn small secondary" type="submit">Remove</button></form>`
+        : a.status === "disabled"
         ? `<form method="post" action="/admin/admins/${a.id}/enable" style="display:inline"><button class="btn small" type="submit">Re-enable</button></form>
            <form method="post" action="/admin/admins/${a.id}/remove" style="display:inline"><button class="btn small danger" type="submit">Remove</button></form>`
         : `<form method="post" action="/admin/admins/${a.id}/disable" style="display:inline"><button class="btn small danger" type="submit">Disable</button></form>
@@ -412,6 +429,14 @@ export async function adminActionPost(env, request, user, targetId, action) {
   }
   if (Number(targetId) === user.id) {
     return redirect("/admin/admins?msg=" + encodeURIComponent("You cannot disable or remove your own account."));
+  }
+  if (action === "resend") {
+    if (target.status !== "invited") {
+      return redirect("/admin/admins?msg=" + encodeURIComponent("Only a pending invite can be resent."));
+    }
+    await resendInviteEmail(env, target);
+    await audit(env.DB, user.id, "invite_resent_admin", "user", Number(targetId), target.email);
+    return redirect("/admin/admins?msg=" + encodeURIComponent(`Invite resent to ${target.email}. The old link no longer works.`));
   }
   if (action === "disable") {
     await env.DB.prepare("UPDATE users SET status = 'disabled' WHERE id = ?").bind(targetId).run();

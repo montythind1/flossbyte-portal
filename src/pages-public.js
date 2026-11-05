@@ -186,9 +186,26 @@ export async function signupPost(env, request) {
 }
 
 // ---------- Invite (finish sign-in) ----------
+// Issues a fresh invite for an invited user: any unused invite links are
+// invalidated first, so only the newest link works. Shared by the public
+// "get a new link" form and the admin console's Resend invite buttons.
+export async function resendInviteEmail(env, target) {
+  await env.DB.prepare(
+    "DELETE FROM auth_tokens WHERE user_id = ? AND purpose = 'invite' AND used_at IS NULL").bind(target.id).run();
+  const raw = await createAuthToken(env.DB, target.id, "invite", 7 * 24 * 60);
+  const mail = inviteEmail(env, { name: target.name, link: `${origin(env)}/invite/${raw}` });
+  await sendEmail(env, { to: target.email, template: "invite", ...mail });
+}
+
 export async function invitePage(env, request, tokenRaw) {
   const token = await peekAuthToken(env.DB, tokenRaw, "invite");
-  if (!token) return page({ title: "Link expired", body: `<div class="card narrow"><h1>Link expired</h1><p class="muted">This invite link is no longer valid. Ask FlossByte to send a fresh one.</p></div>` });
+  if (!token) return page({ title: "Link expired", body: `<div class="card narrow"><h1>Link expired</h1>
+    <p class="muted">Invite links work once and last 7 days. Enter the email the invite was sent to and a fresh link will be sent there.</p>
+    <form method="post" action="/invite/resend">
+      <label>Email</label><input name="email" type="email" required autocomplete="email">
+      <p style="margin-top:18px"><button class="btn" type="submit" style="width:100%">Send me a new link</button></p>
+    </form>
+    <p class="muted" style="margin-top:16px">Already finished setting up? <a href="/login">Sign in</a></p></div>` });
   const user = await env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(token.user_id).first();
   const body = `<div class="card narrow"><h1>Finish your sign-in</h1>
     <p class="muted">Hi ${esc(user.name)}, set the password for ${esc(user.email)} to finish.</p>
@@ -219,6 +236,30 @@ export async function invitePost(env, request, tokenRaw) {
   const raw = await createSession(env.DB, user.id);
   const dest = user.kind === "flossbyte" ? "/mfa" : "/app";
   return redirect(dest, { "Set-Cookie": sessionCookie(raw) });
+}
+
+// Public invite resend. The answer is identical whether or not the email
+// has a pending invite, and sends are rate-limited per address, so the
+// form cannot be used to discover customer emails or to spam anyone: the
+// link only ever goes to the mailbox of the invited account.
+export async function inviteResendPost(env, request) {
+  const form = await request.formData();
+  const email = String(form.get("email") || "").trim().toLowerCase();
+  const target = email
+    ? await env.DB.prepare("SELECT * FROM users WHERE email = ?").bind(email).first()
+    : null;
+  if (target && target.status === "invited") {
+    const recent = await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM email_log WHERE recipient = ? AND template = 'invite' AND created_at > datetime('now', '-1 hour')")
+      .bind(email).first();
+    if (!recent || recent.n < 3) {
+      await resendInviteEmail(env, target);
+      await audit(env.DB, target.id, "invite_resent_public", "user", target.id, email);
+    }
+  }
+  return page({ title: "Check your email", body: `<div class="card narrow"><h1>Check your email</h1>
+    <p class="muted">If that email has a pending invite, a new link is on its way. The link works once and lasts 7 days.</p>
+    <p class="muted"><a href="/login">Back to sign in</a></p></div>` });
 }
 
 // ---------- Password reset ----------

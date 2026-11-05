@@ -45,6 +45,7 @@ async function route(request, env) {
   if (path === "/signup" && method === "POST") return pub.signupPost(env, request);
   if (path === "/reset" && method === "GET") return pub.resetRequestPage(request);
   if (path === "/reset" && method === "POST") return pub.resetRequestPost(env, request);
+  if (path === "/invite/resend" && method === "POST") return pub.inviteResendPost(env, request);
   let m = path.match(/^\/invite\/([A-Za-z0-9_-]+)$/);
   if (m && method === "GET") return pub.invitePage(env, request, m[1]);
   if (m && method === "POST") return pub.invitePost(env, request, m[1]);
@@ -86,8 +87,10 @@ async function route(request, env) {
     if (m && method === "POST") return admin.editLocationPost(env, request, user, Number(m[1]));
     m = path.match(/^\/admin\/pending\/(\d+)\/connect$/);
     if (m && method === "POST") return admin.pendingConnectPost(env, request, user, Number(m[1]));
-    m = path.match(/^\/admin\/admins\/(\d+)\/(disable|enable|remove)$/);
+    m = path.match(/^\/admin\/admins\/(\d+)\/(disable|enable|remove|resend)$/);
     if (m && method === "POST") return admin.adminActionPost(env, request, user, Number(m[1]), m[2]);
+    m = path.match(/^\/admin\/customers\/(\d+)\/users\/(\d+)\/resend$/);
+    if (m && method === "POST") return admin.customerUserResendPost(env, request, user, Number(m[1]), Number(m[2]));
     return notFound();
   }
 
