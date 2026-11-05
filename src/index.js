@@ -31,7 +31,7 @@ async function route(request, env) {
 
   // ----- Public -----
   if (path === "/") {
-    if (!user) return (await pub.anyFlossbyteAdmin(db)) ? redirect("/login") : redirect("/setup");
+    if (!user) return (await pub.setupLocked(db)) ? redirect("/login") : redirect("/setup");
     return redirect(user.kind === "flossbyte" ? "/admin" : "/app");
   }
   if (path === "/setup" && method === "GET") return pub.setupPage(env, request);
@@ -56,6 +56,7 @@ async function route(request, env) {
   if (!user) return redirect("/login");
   if (path === "/mfa" && method === "GET") return pub.mfaPage(env, request, user);
   if (path === "/mfa/verify" && method === "POST") return pub.mfaVerifyPost(env, request, user);
+  if (path === "/mfa/skip" && method === "POST") return pub.mfaSkipPost(env, request, user);
 
   // FlossByte admins must finish MFA enrollment before the console.
   const needsMfa = user.kind === "flossbyte" && !user.mfa_enabled;
@@ -88,6 +89,11 @@ async function route(request, env) {
   }
 
   // ----- Client portal -----
+  // Customers are offered MFA (QR code, with a skip) until they enable it
+  // or dismiss the offer; the dismissal is stored on their account.
+  if (user.kind === "customer" && !user.mfa_enabled && !user.mfa_prompt_dismissed) {
+    return redirect("/mfa");
+  }
   if (path === "/app" && method === "GET") return client.appHome(env, request, user);
   if (path === "/app/team" && method === "GET") return client.teamPage(env, request, user);
   m = path.match(/^\/app\/team\/(\d+)\/remove$/);

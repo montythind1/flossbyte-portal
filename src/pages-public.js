@@ -17,9 +17,30 @@ export async function anyFlossbyteAdmin(db) {
   return row && row.n > 0;
 }
 
+// The one-time setup locks permanently (Montek, 2026-11-05): once a Super
+// Admin has been created, a marker in system_state records it forever, so
+// /setup can never reopen, even if every FlossByte user row were deleted
+// directly in the database. Nobody can become Super Admin through the
+// public setup form a second time.
+async function setupCompleted(db) {
+  const row = await db.prepare("SELECT value FROM system_state WHERE key = 'setup_completed'").first();
+  return !!row;
+}
+
+async function markSetupCompleted(db) {
+  await db.prepare(
+    "INSERT OR IGNORE INTO system_state (key, value) VALUES ('setup_completed', datetime('now'))").run();
+}
+
+export async function setupLocked(db) {
+  if (await setupCompleted(db)) return true;
+  if (await anyFlossbyteAdmin(db)) { await markSetupCompleted(db); return true; }
+  return false;
+}
+
 // ---------- One-time setup ----------
 export async function setupPage(env, request) {
-  if (await anyFlossbyteAdmin(env.DB)) return redirect("/login");
+  if (await setupLocked(env.DB)) return redirect("/login");
   const body = `<div class="card narrow"><h1>Create the admin login</h1>
     <p class="muted">This one-time setup creates the FlossByte Super Admin for the portal. After this, the setup screen never appears again.</p>
     <form method="post" action="/setup">
@@ -33,7 +54,7 @@ export async function setupPage(env, request) {
 }
 
 export async function setupPost(env, request) {
-  if (await anyFlossbyteAdmin(env.DB)) return redirect("/login");
+  if (await setupLocked(env.DB)) return redirect("/login");
   const form = await request.formData();
   const name = String(form.get("name") || "").trim();
   const email = String(form.get("email") || "").trim().toLowerCase();
@@ -49,6 +70,7 @@ export async function setupPost(env, request) {
      VALUES (?, ?, ?, 'flossbyte', 'super_admin', 'active', datetime('now'))`)
     .bind(email, name, await hashPassword(pw)).run();
   const userId = res.meta.last_row_id;
+  await markSetupCompleted(env.DB);
   await audit(env.DB, userId, "setup_super_admin", "user", userId, email);
   const raw = await createSession(env.DB, userId);
   return redirect("/mfa", { "Set-Cookie": sessionCookie(raw) });
@@ -137,7 +159,7 @@ export function signupPage(request) {
 }
 
 export async function signupPost(env, request) {
-  if (!(await anyFlossbyteAdmin(env.DB))) return redirect("/setup");
+  if (!(await setupLocked(env.DB))) return redirect("/setup");
   const form = await request.formData();
   const name = String(form.get("name") || "").trim();
   const practice = String(form.get("practice") || "").trim();
@@ -278,9 +300,23 @@ export async function mfaPage(env, request, user) {
       <form method="post" action="/mfa/verify">
         <label>Code from the app</label><input name="code" inputmode="numeric" autocomplete="one-time-code" required>
         <p style="margin-top:18px"><button class="btn" type="submit">Turn on</button></p>
-      </form></div>`;
+      </form>
+      ${user.kind === "customer" ? `<form method="post" action="/mfa/skip" style="margin-top:10px">
+        <button class="btn secondary" type="submit">Skip for now</button>
+        <span class="muted" style="margin-left:8px">You can turn this on later under Security.</span>
+      </form>` : ``}</div>`;
   }
   return page({ title: "Security", user, body, error: q.get("err") || undefined, flash: q.get("msg") || undefined });
+}
+
+// Customers may skip the MFA offer; the dismissal is remembered so they
+// are not re-prompted at every sign-in. FlossByte admins get no skip:
+// their MFA is mandatory, so a skip attempt just returns them to setup.
+export async function mfaSkipPost(env, request, user) {
+  if (user.kind !== "customer") return redirect("/mfa");
+  await env.DB.prepare("UPDATE users SET mfa_prompt_dismissed = 1 WHERE id = ?").bind(user.id).run();
+  await audit(env.DB, user.id, "mfa_setup_skipped", "user", user.id, null);
+  return redirect("/app?msg=" + encodeURIComponent("Two-step verification skipped. You can turn it on any time under Security."));
 }
 
 export async function mfaVerifyPost(env, request, user) {
