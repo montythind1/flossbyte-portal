@@ -76,7 +76,8 @@ function loginBlock() {
     <span style="flex:1"><label>Last name <span class="req">*</span></label><input name="login_last[]"></span></div>
     <div class="row"><span style="flex:1"><label>Email</label><input name="login_email[]" type="email"></span></div>
     <label>Access</label><select name="login_location[]" class="login-loc">
-      <option value="">All locations</option></select></div>`;
+      <option value="">All locations</option></select>
+    <p style="margin-top:8px"><button type="button" class="btn small secondary remove-login">Remove this user</button></p></div>`;
 }
 
 // US phone numbers are stored in exactly one format: (AAA) BBB-CCCC.
@@ -138,9 +139,9 @@ export async function newCustomerPage(env, request, user) {
       <section class="wstep" data-step="4">
         <h3 style="margin:4px 0">Additional user logins (optional)</h3>
         <p class="muted">Additional users are optional. The main admin was set in step 1. Each person added here gets an invite email to set their password and finish sign-in. Leave blank to add logins later.</p>
-        <div id="loginBlocks">${loginBlock()}</div>
+        <div id="loginBlocks"></div>
         <template id="loginTemplate">${loginBlock()}</template>
-        <p style="margin-top:12px"><button class="btn small secondary" type="button" id="addLoginBtn">Add another login</button></p>
+        <p style="margin-top:12px"><button class="btn small secondary" type="button" id="addLoginBtn">+ Add user</button></p>
         <p id="loginCheck" style="color:var(--bad)"></p>
       </section>
       <p class="row" style="margin-top:20px">
@@ -516,6 +517,7 @@ export async function customerPage(env, request, user, customerId) {
         <p style="margin-top:12px"><button class="btn small" type="submit">Save organization</button></p></form></div>
     <div class="card"><h3>Locations</h3>
       <table><thead><tr><th>Name</th><th>Address</th><th>Status</th><th>Edit</th></tr></thead><tbody>${locRows || `<tr><td colspan="4" class="muted">No locations yet.</td></tr>`}</tbody></table>
+      <details class="addbox"><summary class="btn small secondary">+ Add location</summary>
       <form method="post" action="/admin/customers/${customerId}/locations" data-loc style="margin-top:14px">
         <div class="row" style="align-items:end">
           <span style="flex:1;min-width:180px"><label>New location / practice name <span class="req">*</span></label><input name="name" required></span>
@@ -525,7 +527,7 @@ export async function customerPage(env, request, user, customerId) {
           <span style="flex:2"><label>City <span class="req">*</span></label><input name="city" class="f-city" required></span>
           <span style="flex:1"><label>State <span class="req">*</span></label><input name="state" class="f-state" required></span>
           <span style="flex:1"><label>ZIP <span class="req">*</span></label><input name="zip" class="f-zip" required></span>
-          <span><button class="btn small" type="submit">Add location</button></span></div></form></div>
+          <span><button class="btn small" type="submit">Save</button></span></div></form></details></div>
     <script src="/assets/address-lookup.js"></script>
     <script src="/assets/phone-format.js"></script>
     <div class="card"><h3>Products</h3>
@@ -533,8 +535,8 @@ export async function customerPage(env, request, user, customerId) {
       <p class="muted">Switches are enforced on the server. Off means the client sees a locked tile and their data requests for that service are refused.</p></div>
     <div class="card"><h3>Logins for this customer</h3>
       <table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th></th></tr></thead><tbody>${memberRows || `<tr><td colspan="5" class="muted">No logins yet.</td></tr>`}</tbody></table>
-      <h4>Invite a login</h4>
-      <form method="post" action="/admin/customers/${customerId}/users" class="row" style="align-items:end">
+      <details class="addbox"><summary class="btn small secondary">+ Add user</summary>
+      <form method="post" action="/admin/customers/${customerId}/users" class="row" style="align-items:end;margin-top:12px">
         <span style="flex:1;min-width:120px"><label>First name <span class="req">*</span></label><input name="first_name" required></span>
         <span style="flex:1;min-width:120px"><label>Middle name</label><input name="middle_name"></span>
         <span style="flex:1;min-width:120px"><label>Last name <span class="req">*</span></label><input name="last_name" required></span>
@@ -543,7 +545,7 @@ export async function customerPage(env, request, user, customerId) {
           <option value="">All locations</option>${locOptions}</select></span>
         <span style="flex:1;min-width:150px"><label>Scope</label><select name="scope">
           <option value="user">User</option><option value="admin">Location admin</option></select></span>
-        <button class="btn small" type="submit">Send invite</button></form>
+        <button class="btn small" type="submit">Send invite</button></form></details>
       <p class="muted">The invite email asks them to set a password and finish sign-in. Access starts only with this invite.</p></div>
     <div class="card" style="border-color:#e5b4b0">
       <h3 style="color:var(--bad)">Danger zone</h3>

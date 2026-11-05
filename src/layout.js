@@ -29,6 +29,10 @@ nav.top a:hover{color:#fff}
 .btn.secondary:hover{background:#d7e0ea}
 .btn.small{padding:6px 12px;font-size:13px}
 .btn.danger{background:var(--bad)}
+details.addbox{margin-top:14px}
+details.addbox>summary{list-style:none;width:fit-content}
+details.addbox>summary::-webkit-details-marker{display:none}
+details.addbox>summary::marker{content:""}
 form.js-wizard .wstep{display:none}
 form.js-wizard .wstep.active{display:block}
 .wiz-progress{position:relative;margin:22px 4px 26px}

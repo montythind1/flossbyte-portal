@@ -160,6 +160,19 @@
     syncRemoveButtons();
   }
 
+  // Step 4 starts empty (the users are optional): the "+ Add user" button
+  // adds a block, and every block can be removed again, down to zero.
+  var loginBlocksEl = document.getElementById("loginBlocks");
+  if (loginBlocksEl) {
+    loginBlocksEl.addEventListener("click", function (event) {
+      var btn = event.target.closest(".remove-login");
+      if (!btn) return;
+      var block = btn.closest("div");
+      if (block) block.remove();
+      if (loginMsg) loginMsg.textContent = "";
+    });
+  }
+
   form.addEventListener("input", function (event) {
     if (locationFieldNames.indexOf(event.target.name) >= 0 && event.target.value.trim()) {
       event.target.classList.remove("field-error");
