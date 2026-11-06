@@ -132,3 +132,24 @@ export async function peekAuthToken(db, raw, purpose) {
      AND used_at IS NULL AND expires_at > datetime('now')`)
     .bind(await sha256Hex(raw), purpose).first();
 }
+
+// ---------- Shared people-field helpers ----------
+// A login keeps one stored name; forms work in first / middle / last.
+export function splitName(name) {
+  const parts = String(name || "").trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return { first: "", middle: "", last: "" };
+  if (parts.length === 1) return { first: parts[0], middle: "", last: "" };
+  return { first: parts[0], middle: parts.slice(1, -1).join(" "), last: parts[parts.length - 1] };
+}
+export function joinName(first, middle, last) {
+  return [first, middle, last].map((s) => String(s || "").trim()).filter(Boolean).join(" ");
+}
+// US phone numbers are stored in exactly one format: (AAA) BBB-CCCC.
+// Anything that reduces to 10 digits (an optional leading country-code
+// 1 is dropped) is accepted and reformatted; anything else is invalid.
+export function normalizePhone(raw) {
+  let d = String(raw || "").replace(/\D/g, "");
+  if (d.length === 11 && d.startsWith("1")) d = d.slice(1);
+  if (d.length !== 10) return null;
+  return `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}`;
+}

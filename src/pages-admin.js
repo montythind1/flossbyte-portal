@@ -1,7 +1,7 @@
 // FlossByte admin console: clients, locations, product switches, logins,
 // pending signups, and (Super Admin only) admin account management.
 import { page, redirect, esc, icon, fmtDateUS, withStatus } from "./layout.js";
-import { createAuthToken, revokeAllSessions, verifyPassword } from "./auth.js";
+import { createAuthToken, revokeAllSessions, verifyPassword, normalizePhone, splitName, joinName } from "./auth.js";
 import { audit, isSuperAdmin, grantUserAccess, findCustomerByContactEmail, isValidEmail } from "./access.js";
 import { sendEmail, inviteEmail, newCustomerNoticeEmail, ownershipTransferEmail, quoteSentEmail } from "./email.js";
 import { resendInviteEmail } from "./pages-public.js";
@@ -160,6 +160,7 @@ const ACTION_LABEL = {
   password_change: "Changed their password", mfa_disabled: "Turned off two-step verification",
   customer_create: "Created a client", customer_update: "Updated client details",
   signout_others: "Signed out other sessions", mfa_enabled: "Turned on two-step verification",
+  profile_update: "Updated their profile", user_update: "Updated a login's name",
 };
 export async function activityPage(env, request, user) {
   const { results } = await env.DB.prepare(
@@ -204,16 +205,6 @@ function loginBlock() {
     <label>Access</label><select name="login_location[]" class="login-loc">
       <option value="">All locations</option></select>
     <p style="margin-top:8px"><button type="button" class="btn small secondary remove-login">Remove this user</button></p></div>`;
-}
-
-// US phone numbers are stored in exactly one format: (AAA) BBB-CCCC.
-// Anything that reduces to 10 digits (an optional leading country-code
-// 1 is dropped) is accepted and reformatted; anything else is invalid.
-export function normalizePhone(raw) {
-  let d = String(raw || "").replace(/\D/g, "");
-  if (d.length === 11 && d.startsWith("1")) d = d.slice(1);
-  if (d.length !== 10) return null;
-  return `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}`;
 }
 
 // ---------- Create customer (4-step wizard) ----------
@@ -435,6 +426,14 @@ export async function createCustomerPost(env, request, user) {
       // admin of a new organization) takes the admin role; a disabled
       // account is re-invited rather than left locked out.
       await env.DB.prepare("UPDATE users SET role = 'customer_admin' WHERE id = ?").bind(target.id).run();
+      // The name typed in step 1 is the name of record for this login.
+      // An older account under this email can carry a wrong or
+      // placeholder name, and the invite email greets the stored name,
+      // so the fresh typing wins.
+      if (contactName && contactName !== target.name) {
+        await env.DB.prepare("UPDATE users SET name = ? WHERE id = ?").bind(contactName, target.id).run();
+        target = { ...target, name: contactName };
+      }
       if (target.status === "disabled") {
         await env.DB.prepare("UPDATE users SET status = 'invited' WHERE id = ?").bind(target.id).run();
         target = { ...target, status: "invited" };
@@ -502,9 +501,17 @@ export async function createCustomerPost(env, request, user) {
         "INSERT INTO users (email, name, kind, role, status) VALUES (?, ?, 'customer', ?, 'invited')")
         .bind(email, loginName || email, scope === "admin" ? "customer_admin" : "customer_user").run();
       target = { id: ur.meta.last_row_id, name: loginName || email, email, status: "invited" };
-    } else if (!wasPending) {
-      await env.DB.prepare("UPDATE users SET role = ? WHERE id = ?")
-        .bind(scope === "admin" ? "customer_admin" : "customer_user", target.id).run();
+    } else {
+      if (!wasPending) {
+        await env.DB.prepare("UPDATE users SET role = ? WHERE id = ?")
+          .bind(scope === "admin" ? "customer_admin" : "customer_user", target.id).run();
+      }
+      // Same rule as step 1: the name typed here is the name of record
+      // for this login and replaces whatever an older account carries.
+      if (loginName && loginName !== target.name) {
+        await env.DB.prepare("UPDATE users SET name = ? WHERE id = ?").bind(loginName, target.id).run();
+        target = { ...target, name: loginName };
+      }
     }
     const grant = await grantUserAccess(env.DB, target.id, customerId, locationId, scope);
     if (!grant.ok) {
@@ -556,21 +563,22 @@ export async function createCustomerPost(env, request, user) {
   const inviteTotal = invited.length + (adminOutcome === "invited" ? 1 : 0);
   if (inviteTotal === 1 && adminOutcome === "invited") {
     parts.push(emailLive
-      ? `Invitation sent to the main admin, ${adminEmail}.`
+      ? `Invitation sent to the main admin, ${adminEmail}. They set their own password from the link in that email.`
       : `Invitation created for the main admin, ${adminEmail}.`);
   } else if (inviteTotal > 0) {
     const base = emailLive
-      ? `Invitations sent to ${inviteTotal} ${inviteTotal === 1 ? "user" : "users"}`
-      : `Invitations created for ${inviteTotal} ${inviteTotal === 1 ? "user" : "users"}`;
+      ? `Invitations sent to ${inviteTotal} ${inviteTotal === 1 ? "person" : "people"}`
+      : `Invitations created for ${inviteTotal} ${inviteTotal === 1 ? "person" : "people"}`;
     parts.push(adminOutcome === "invited" ? `${base}, including the main admin (${adminEmail}).` : `${base}.`);
+    if (emailLive) parts.push("Each person sets their own password from the link in their email.");
   }
   if (adminOutcome === "connected") {
-    parts.push(`The main admin (${adminEmail}) already had an account and was connected directly, no invite needed.`);
+    parts.push(`The main admin (${adminEmail}) already had an account and was connected directly.`);
   } else if (adminOutcome === "active" && inviteTotal === 0) {
-    parts.push(`The main admin (${adminEmail}) already has an active account, no invite needed.`);
+    parts.push(`The main admin (${adminEmail}) already has an active account.`);
   }
-  if (adminAlsoListed) parts.push("The main admin was also listed under user logins in step 4, so that entry was skipped.");
-  if (connected.length) parts.push(`Already had accounts, connected directly: ${connected.join(", ")}.`);
+  if (adminAlsoListed) parts.push("The main admin also appeared in the step 4 logins, so that duplicate was skipped.");
+  if (connected.length) parts.push(`Connected directly (already had accounts): ${connected.join(", ")}.`);
   if (refused.length) parts.push(`Not added: ${refused.join("; ")}.`);
   if (invitesCreated && !emailLive) {
     parts.push("Email delivery is not connected yet, so nothing has been emailed.");
@@ -591,18 +599,8 @@ export async function updateCustomerPost(env, request, user, customerId) {
       "First name and last name are required. Nothing was saved."));
   }
   const contactName = [first, middle, last].filter(Boolean).join(" ");
-  const contactEmail = String(f.get("contact_email") || "").trim();
-  if (!isValidEmail(contactEmail)) {
-    return redirect(`/admin/customers/${customerId}?tab=organization&msg=` + encodeURIComponent(
-      "Enter a valid client admin email address. Nothing was saved."));
-  }
-  // The one-email-per-organization rule binds edits too: the new email may
-  // not belong to a different organization.
-  const dup = await findCustomerByContactEmail(env.DB, contactEmail);
-  if (dup && dup.id !== Number(customerId)) {
-    return redirect(`/admin/customers/${customerId}?tab=organization&msg=` + encodeURIComponent(
-      `That contact email already belongs to ${dup.name} (organization ${dup.id}).`));
-  }
+  // The client admin email is the practice's identity in the portal and
+  // never changes after creation, so it is not read from the form at all.
   const phone = normalizePhone(f.get("phone"));
   if (!phone) {
     return redirect(`/admin/customers/${customerId}?tab=organization&msg=` + encodeURIComponent(
@@ -610,9 +608,8 @@ export async function updateCustomerPost(env, request, user, customerId) {
   }
   await env.DB.prepare(
     `UPDATE customers SET name = ?, contact_name = ?, contact_first_name = ?, contact_middle_name = ?,
-     contact_last_name = ?, contact_email = ?, phone = ?, updated_at = datetime('now') WHERE id = ?`)
-    .bind(name, contactName, first, middle || null, last,
-      contactEmail || null, phone, customerId).run();
+     contact_last_name = ?, phone = ?, updated_at = datetime('now') WHERE id = ?`)
+    .bind(name, contactName, first, middle || null, last, phone, customerId).run();
   await audit(env.DB, user.id, "customer_update", "customer", Number(customerId), name);
   return redirect(`/admin/customers/${customerId}?tab=organization&msg=` + encodeURIComponent("Organization saved."));
 }
@@ -650,7 +647,7 @@ export async function customerPage(env, request, user, customerId) {
   }).join("");
   const memberRows = (members || []).map((m) => `<tr><td>${esc(m.name)}${m.is_main_admin ? ` <span class="pill on">Main admin</span>` : ""}</td><td>${esc(m.email)}</td>
     <td>${esc(m.role)}</td><td><span class="pill">${esc(m.status)}</span></td>
-    <td>${m.status === "invited" ? `<form method="post" action="/admin/customers/${customerId}/users/${m.id}/resend" style="display:inline"><button class="btn small secondary" type="submit">Resend invite</button></form>` : ""}</td></tr>`).join("");
+    <td><a class="btn small secondary" href="/admin/customers/${customerId}/users/${m.id}/edit">Edit</a>${m.status === "invited" ? ` <form method="post" action="/admin/customers/${customerId}/users/${m.id}/resend" style="display:inline"><button class="btn small secondary" type="submit">Resend invite</button></form>` : ""}</td></tr>`).join("");
   // Quotes and invoices (migration 0008). Best-effort reads: if the tables
   // are not there yet the org page must still render.
   const { results: quoteList } = await db.prepare(
@@ -697,6 +694,51 @@ export async function customerPage(env, request, user, customerId) {
       <span style="flex:1;min-width:90px"><input name="item_price" type="number" step="0.01" min="0" placeholder="Price $"></span></div>`;
   const tabParam = q(request).get("tab");
   const tab = ["organization", "locations", "products", "users", "billing", "manage"].includes(tabParam) ? tabParam : "organization";
+  // Getting started checklist: sits on the Organization tab until every
+  // step is done or the admin dismisses it. Dismissal is a system_state
+  // flag, so it needs no migration.
+  const mainAdminRow = await db.prepare(
+    `SELECT u.email, u.status FROM user_access ua JOIN users u ON u.id = ua.user_id
+     WHERE ua.customer_id = ? AND ua.is_main_admin = 1`).bind(customerId).first().catch(() => null);
+  const svcOn = await db.prepare(
+    "SELECT COUNT(*) AS n FROM customer_products WHERE customer_id = ? AND location_id IS NULL AND enabled = 1").bind(customerId).first().catch(() => ({ n: 0 }));
+  const equipN = await db.prepare(
+    "SELECT COUNT(*) AS n FROM equipment e JOIN locations l ON l.id = e.location_id WHERE l.customer_id = ?").bind(customerId).first().catch(() => ({ n: 0 }));
+  const billN = await db.prepare(
+    `SELECT (SELECT COUNT(*) FROM quotes WHERE customer_id = ? AND status != 'draft') +
+            (SELECT COUNT(*) FROM invoices WHERE customer_id = ?) AS n`).bind(customerId, customerId).first().catch(() => ({ n: 0 }));
+  const clDismissed = await db.prepare("SELECT value FROM system_state WHERE key = ?").bind(`checklist_dismissed_${customerId}`).first().catch(() => null);
+  const firstLoc = (locations || [])[0];
+  const clSteps = [
+    { done: !!mainAdminRow && mainAdminRow.status === "active",
+      label: "Main admin invite accepted",
+      hint: mainAdminRow ? `Waiting on ${mainAdminRow.email} to set a password from the invite email.` : "No main admin on this organization yet.",
+      link: `/admin/customers/${customerId}?tab=users`, linkText: "View logins" },
+    { done: !!svcOn && svcOn.n > 0,
+      label: "Services turned on",
+      hint: "Nothing is on for this client yet. Managed IT, a one-time project, or another service.",
+      link: `/admin/customers/${customerId}?tab=products`, linkText: "Open Products" },
+    { done: !!equipN && equipN.n > 0,
+      label: "Equipment tracked",
+      hint: "No equipment yet. Add the firewall, switch, and workstations, or map a UniFi or Sophos sync.",
+      link: firstLoc ? `/app/locations/${firstLoc.id}/equipment` : `/admin/customers/${customerId}?tab=locations`, linkText: "Add equipment" },
+    { done: !!billN && billN.n > 0,
+      label: "First quote or invoice sent",
+      hint: "Nothing billed yet. Quotes and invoices live on the Billing tab.",
+      link: `/admin/customers/${customerId}?tab=billing`, linkText: "Open Billing" },
+  ];
+  const clDone = clSteps.filter((s) => s.done).length;
+  const checklist = (!clDismissed && clDone < clSteps.length) ? `<div class="card tab-panel${tab === "organization" ? " active" : ""}" data-panel="organization">
+      <div class="row between"><h2 style="margin:0">Getting started</h2>
+      <form method="post" action="/admin/customers/${customerId}/checklist-dismiss"><button class="btn small secondary" type="submit">Dismiss</button></form></div>
+      <p class="muted" style="margin:6px 0 10px">${clDone} of ${clSteps.length} steps done</p>
+      <div style="height:6px;background:#e7edf3;border-radius:3px;overflow:hidden;margin-bottom:8px"><div style="height:100%;width:${Math.round((clDone / clSteps.length) * 100)}%;background:var(--teal)"></div></div>
+      ${clSteps.map((s) => `<div class="row" style="gap:10px;align-items:flex-start;padding:7px 0;border-top:1px solid var(--line)">
+        <span style="flex:none;width:22px;height:22px;border-radius:50%;${s.done ? "background:var(--teal);color:#fff" : "border:2px solid #c3cedb"};display:flex;align-items:center;justify-content:center;margin-top:1px">${s.done ? icon("check") : ""}</span>
+        <span style="flex:1"><strong${s.done ? ' style="color:var(--muted)"' : ""}>${esc(s.label)}</strong>
+        ${s.done ? "" : `<div class="muted">${esc(s.hint)}</div>`}</span>
+        ${s.done ? "" : `<a class="btn small secondary" href="${s.link}">${esc(s.linkText)}</a>`}</div>`).join("")}
+    </div>` : "";
   const locOptions = (locations || []).map((l) => `<option value="${l.id}">${esc(l.name)}</option>`).join("");
   const railBtn = (key, label, ic) => `<button type="button" class="tab-btn rail-item${tab === key ? " active" : ""}" data-tab="${key}">${icon(ic)}${label}</button>`;
   const body = `<div class="shell"><aside class="rail">
@@ -707,13 +749,15 @@ export async function customerPage(env, request, user, customerId) {
     </aside><div class="shell-main"><h1>${esc(c.name)}</h1>
     <p class="muted">${esc(c.contact_name || "")} ${esc(c.contact_email || "")} ${esc(c.phone || "")}</p>
     <noscript><style>.tab-panel{display:block}.rail{display:none}</style></noscript>
+    ${checklist}
     <div class="card tab-panel${tab === "organization" ? " active" : ""}" data-panel="organization">
       <form method="post" action="/admin/customers/${customerId}/edit">
         <label>Organization name <span class="req">*</span></label><input name="name" value="${esc(c.name)}" required>
         <div class="row"><span style="flex:1"><label>First name <span class="req">*</span></label><input name="contact_first_name" value="${esc(c.contact_first_name || "")}" required></span>
         <span style="flex:1"><label>Middle name</label><input name="contact_middle_name" value="${esc(c.contact_middle_name || "")}"></span>
         <span style="flex:1"><label>Last name <span class="req">*</span></label><input name="contact_last_name" value="${esc(c.contact_last_name || "")}" required></span></div>
-        <label>Client admin email <span class="req">*</span></label><input name="contact_email" type="email" value="${esc(c.contact_email || "")}" required>
+        <label>Client admin email</label><input name="contact_email" type="email" value="${esc(c.contact_email || "")}" readonly>
+        <p class="muted" style="margin:4px 0 8px">This email can't be changed. It identifies the practice in the portal.</p>
         <label>Phone <span class="req">*</span></label><input name="phone" data-phone inputmode="tel" value="${esc(c.phone || "")}">
         <p style="margin-top:12px"><button class="btn small" type="submit">Save</button> <button class="btn small secondary" type="button" data-cancel>Cancel</button></p></form></div>
     <div class="card tab-panel${tab === "locations" ? " active" : ""}" data-panel="locations">
@@ -1010,6 +1054,12 @@ export async function inviteCustomerUserPost(env, request, user, customerId) {
     // not resurrected; the grant below is the only access they get.
     await env.DB.prepare("UPDATE users SET role = ? WHERE id = ?")
       .bind(scope === "admin" ? "customer_admin" : "customer_user", target.id).run();
+    // The name typed here is the name of record for this login and
+    // replaces whatever an older account under this email carries.
+    if (name && name !== target.name) {
+      await env.DB.prepare("UPDATE users SET name = ? WHERE id = ?").bind(name, target.id).run();
+      target = { ...target, name };
+    }
     // A disabled login goes back to invited, so the row shows as a
     // pending invite (and can be resent) until they set a password.
     if (target.status === "disabled") {
@@ -1157,6 +1207,53 @@ export async function deleteCustomerPost(env, request, user, customerId) {
   }
   await audit(db, user.id, "customer_delete", "customer", Number(customerId), c.name);
   return redirect("/admin?msg=" + encodeURIComponent(`Organization "${c.name}" was deleted.`));
+}
+
+// ---------- Edit a client login's name ----------
+// Names can be corrected; the email is the login and never changes.
+async function customerMember(db, customerId, targetId) {
+  return db.prepare(
+    `SELECT u.* FROM users u WHERE u.id = ? AND u.kind = 'customer'
+     AND EXISTS (SELECT 1 FROM user_access ua WHERE ua.user_id = u.id AND ua.customer_id = ?)`).bind(targetId, customerId).first();
+}
+
+export async function userEditPage(env, request, user, customerId, targetId) {
+  const target = await customerMember(env.DB, customerId, targetId);
+  if (!target) return redirect(`/admin/customers/${customerId}?tab=users&err=` + encodeURIComponent("That login does not belong to this client."));
+  const np = splitName(target.name);
+  const body = `${adminNav("clients")}<div class="card narrow" style="margin:0;max-width:560px"><h1>Edit login</h1>
+    <form method="post" action="/admin/customers/${customerId}/users/${target.id}/edit">
+      <div class="row"><span style="flex:1"><label>First name <span class="req">*</span></label><input name="first_name" value="${esc(np.first)}" required></span>
+      <span style="flex:1"><label>Middle name</label><input name="middle_name" value="${esc(np.middle)}"></span>
+      <span style="flex:1"><label>Last name <span class="req">*</span></label><input name="last_name" value="${esc(np.last)}" required></span></div>
+      <label>Email</label><input value="${esc(target.email)}" disabled>
+      <p class="muted" style="margin:4px 0 0">The email is the login and can't be changed.</p>
+      <label>Phone</label><input value="${esc(target.phone || "")}" disabled>
+      <p class="muted" style="margin:4px 0 0">They can update their own phone under Account &amp; security.</p>
+      <p style="margin-top:16px"><button class="btn" type="submit">Save name</button>
+      <a class="btn secondary" href="/admin/customers/${customerId}?tab=users">Cancel</a></p>
+    </form></div>`;
+  return page({ title: "Edit login", user, body, error: q(request).get("err") || undefined });
+}
+
+export async function userEditPost(env, request, user, customerId, targetId) {
+  const target = await customerMember(env.DB, customerId, targetId);
+  if (!target) return redirect(`/admin/customers/${customerId}?tab=users&err=` + encodeURIComponent("That login does not belong to this client."));
+  const f = await request.formData();
+  const first = String(f.get("first_name") || "").trim();
+  const middle = String(f.get("middle_name") || "").trim();
+  const last = String(f.get("last_name") || "").trim();
+  if (!first || !last) return redirect(`/admin/customers/${customerId}/users/${target.id}/edit?err=` + encodeURIComponent("First name and last name are required."));
+  const name = joinName(first, middle, last);
+  await env.DB.prepare("UPDATE users SET name = ?, updated_at = datetime('now') WHERE id = ?").bind(name, target.id).run();
+  await audit(env.DB, user.id, "user_update", "user", target.id, `client ${customerId}`);
+  return redirect(`/admin/customers/${customerId}?tab=users&msg=` + encodeURIComponent(`${name}'s name is saved.`));
+}
+
+export async function checklistDismissPost(env, request, user, customerId) {
+  await env.DB.prepare("INSERT INTO system_state (key, value) VALUES (?, '1') ON CONFLICT(key) DO UPDATE SET value = '1'")
+    .bind(`checklist_dismissed_${customerId}`).run();
+  return redirect(`/admin/customers/${customerId}?tab=organization`);
 }
 
 // ---------- Admin accounts (Super Admin only) ----------

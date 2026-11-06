@@ -7,6 +7,7 @@ import {
   removeUserFromCustomer,
 } from "./access.js";
 import { sendEmail, quoteAcceptedNoticeEmail, ticketCreatedNoticeEmail, ticketReplyNoticeEmail, productRequestEmail } from "./email.js";
+import { splitName, joinName } from "./auth.js";
 
 function orgOrigin(env) { return env.APP_ORIGIN || "https://portal.flossbyte.com"; }
 
@@ -227,11 +228,9 @@ export async function teamPage(env, request, user) {
   const members = await orgMembers(env.DB, org);
   const rows = members.map((m) => {
     const isSelf = m.id === user.id;
-    const action = isSelf
-      ? `<span class="muted">You</span>`
-      : m.status === "disabled"
-        ? `<span class="muted">Removed</span>`
-        : `<a class="btn small danger" href="/app/team/${m.id}/remove">Remove</a>`;
+    const action = m.status === "disabled"
+      ? `<span class="muted">Removed</span>`
+      : `<a class="btn small secondary" href="/app/team/${m.id}/edit">Edit</a>${isSelf ? "" : ` <a class="btn small danger" href="/app/team/${m.id}/remove">Remove</a>`}`;
     return `<tr><td>${esc(m.name)}</td><td>${esc(m.email)}</td>
       <td>${m.role === "customer_admin" ? "Admin" : "User"}</td>
       <td>${esc(m.locations_label || "")}</td>
@@ -239,7 +238,7 @@ export async function teamPage(env, request, user) {
       <td>${action}</td></tr>`;
   }).join("");
   const body = `${orgRail(user, "team", cust ? cust.name : "My Portal")}<h1>Team</h1>
-    <p class="muted">People with a login for ${esc(cust ? cust.name : "your organization")}. Removing someone signs them out right away and takes away everything they could see here. Tickets and documents they created stay on record.</p>
+    <p class="muted">People with a login for ${esc(cust ? cust.name : "your organization")}. Use Edit to fix someone's name; an email address can't be changed once a login is created. Removing someone signs them out right away and takes away everything they could see here. Tickets and documents they created stay on record.</p>
     <div class="card" style="padding:8px 14px"><div class="tscroll"><table class="stack"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Sees</th><th>Status</th><th></th></tr></thead>
     <tbody>${rows || `<tr><td colspan="6" class="muted">No logins yet.</td></tr>`}</tbody></table></div></div>`;
   const msg = new URL(request.url).searchParams.get("msg");
@@ -268,6 +267,43 @@ export async function teamRemovePost(env, request, user, targetId) {
   const result = await removeUserFromCustomer(env.DB, user, targetId, org);
   if (!result.ok) return redirect("/app/team?err=" + encodeURIComponent(result.error));
   return redirect("/app/team?msg=" + encodeURIComponent(`${result.target.name} was removed.`));
+}
+
+export async function teamEditPage(env, request, user, targetId) {
+  const org = await customerAdminOrg(env.DB, user);
+  if (org === null) return denied(user, 403);
+  const members = await orgMembers(env.DB, org);
+  const target = members.find((m) => m.id === Number(targetId));
+  if (!target || target.status === "disabled") return denied(user, 404);
+  const np = splitName(target.name);
+  const body = `<div class="card narrow"><h1>Edit name</h1>
+    <form method="post" action="/app/team/${target.id}/edit">
+      <div class="row"><span style="flex:1"><label>First name <span class="req">*</span></label><input name="first_name" value="${esc(np.first)}" required></span>
+      <span style="flex:1"><label>Middle name</label><input name="middle_name" value="${esc(np.middle)}"></span>
+      <span style="flex:1"><label>Last name <span class="req">*</span></label><input name="last_name" value="${esc(np.last)}" required></span></div>
+      <label>Email</label><input value="${esc(target.email)}" disabled>
+      <p class="muted" style="margin:4px 0 0">The email is their login and can't be changed.</p>
+      <p style="margin-top:16px"><button class="btn" type="submit">Save name</button>
+      <a class="btn secondary" href="/app/team">Cancel</a></p>
+    </form></div>`;
+  return page({ title: "Edit name", user, body, error: new URL(request.url).searchParams.get("err") || undefined });
+}
+
+export async function teamEditPost(env, request, user, targetId) {
+  const org = await customerAdminOrg(env.DB, user);
+  if (org === null) return denied(user, 403);
+  const members = await orgMembers(env.DB, org);
+  const target = members.find((m) => m.id === Number(targetId));
+  if (!target || target.status === "disabled") return denied(user, 404);
+  const f = await request.formData();
+  const first = String(f.get("first_name") || "").trim();
+  const middle = String(f.get("middle_name") || "").trim();
+  const last = String(f.get("last_name") || "").trim();
+  if (!first || !last) return redirect(`/app/team/${target.id}/edit?err=` + encodeURIComponent("First name and last name are required."));
+  const name = joinName(first, middle, last);
+  await env.DB.prepare("UPDATE users SET name = ?, updated_at = datetime('now') WHERE id = ?").bind(name, target.id).run();
+  await audit(env.DB, user.id, "user_update", "user", target.id, `client ${org}`);
+  return redirect("/app/team?msg=" + encodeURIComponent(`${name}'s name is saved.`));
 }
 
 // ---------- Product status / locked page ----------

@@ -119,6 +119,11 @@ async function route(request, env) {
     if (m && method === "POST") return admin.adminActionPost(env, request, user, Number(m[1]), m[2]);
     m = path.match(/^\/admin\/customers\/(\d+)\/users\/(\d+)\/resend$/);
     if (m && method === "POST") return admin.customerUserResendPost(env, request, user, Number(m[1]), Number(m[2]));
+    m = path.match(/^\/admin\/customers\/(\d+)\/users\/(\d+)\/edit$/);
+    if (m && method === "GET") return admin.userEditPage(env, request, user, Number(m[1]), Number(m[2]));
+    if (m && method === "POST") return admin.userEditPost(env, request, user, Number(m[1]), Number(m[2]));
+    m = path.match(/^\/admin\/customers\/(\d+)\/checklist-dismiss$/);
+    if (m && method === "POST") return admin.checklistDismissPost(env, request, user, Number(m[1]));
     m = path.match(/^\/admin\/customers\/(\d+)\/quotes$/);
     if (m && method === "POST") return admin.quoteCreatePost(env, request, user, Number(m[1]));
     m = path.match(/^\/admin\/customers\/(\d+)\/quotes\/(\d+)\/(send|delete|final)$/);
@@ -157,6 +162,9 @@ async function route(request, env) {
   m = path.match(/^\/app\/team\/(\d+)\/remove$/);
   if (m && method === "GET") return client.teamRemoveConfirmPage(env, request, user, Number(m[1]));
   if (m && method === "POST") return client.teamRemovePost(env, request, user, Number(m[1]));
+  m = path.match(/^\/app\/team\/(\d+)\/edit$/);
+  if (m && method === "GET") return client.teamEditPage(env, request, user, Number(m[1]));
+  if (m && method === "POST") return client.teamEditPost(env, request, user, Number(m[1]));
   m = path.match(/^\/app\/documents\/(\d+)\/view$/);
   if (m && method === "GET") return client.documentView(env, request, user, Number(m[1]));
   m = path.match(/^\/app\/locations\/(\d+)$/);
