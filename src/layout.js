@@ -209,7 +209,7 @@ nav.top>a{display:none}
 .acct-menu{position:absolute;right:0;top:calc(100% + 10px);background:#fff;border:1px solid var(--line);border-radius:12px;box-shadow:0 12px 32px rgba(10,22,40,.18);min-width:230px;padding:6px;z-index:60}
 .acct-head{padding:8px 10px;border-bottom:1px solid var(--line);margin-bottom:4px}
 .acct-head strong{display:block;font-size:14px;color:var(--ink)}
-.acct-head span{font-size:12px;color:var(--muted)}
+.acct-head span{font-size:12px;color:var(--muted);word-break:break-all}
 .acct-menu a{display:block;padding:9px 10px;border-radius:8px;color:var(--ink) !important;text-decoration:none;font-size:14px}
 .acct-menu a:hover{background:#f0f4f8;text-decoration:none}
 .tile .tile-n{display:block;font-family:var(--font-head);font-size:26px;font-weight:800;color:var(--navy);line-height:1.1}
@@ -300,6 +300,12 @@ ${body}
 ${footer}
 </body></html>`;
   return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+}
+
+// Re-issue a rendered page with a different HTTP status (refusals should
+// not report 200).
+export function withStatus(res, status) {
+  return new Response(res.body, { status, headers: res.headers });
 }
 
 // Styled error page in the normal app shell (replaces bare-text errors).

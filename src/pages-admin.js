@@ -1,6 +1,6 @@
 // FlossByte admin console: clients, locations, product switches, logins,
 // pending signups, and (Super Admin only) admin account management.
-import { page, redirect, esc, icon, fmtDateUS } from "./layout.js";
+import { page, redirect, esc, icon, fmtDateUS, withStatus } from "./layout.js";
 import { createAuthToken, revokeAllSessions, verifyPassword } from "./auth.js";
 import { audit, isSuperAdmin, grantUserAccess, findCustomerByContactEmail, isValidEmail } from "./access.js";
 import { sendEmail, inviteEmail, newCustomerNoticeEmail, ownershipTransferEmail, quoteSentEmail } from "./email.js";
@@ -47,25 +47,34 @@ export async function clientsPage(env, request, user) {
      FROM equipment e JOIN locations l ON l.id = e.location_id JOIN customers c ON c.id = l.customer_id
      WHERE date(e.license_expires) <= date('now', '+90 days') OR date(e.warranty_expires) <= date('now', '+90 days')
      ORDER BY MIN(COALESCE(e.license_expires, '9999'), COALESCE(e.warranty_expires, '9999')) LIMIT 50`).all()).results || [];
-  const expItems = expRows.map((e) => {
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const expAll = expRows.map((e) => {
     const kind = e.license_expires && (!e.warranty_expires || e.license_expires <= e.warranty_expires) ? "License" : "Warranty";
     return { ...e, kind, date: kind === "License" ? e.license_expires : e.warranty_expires };
-  }).sort((a, b) => String(a.date).localeCompare(String(b.date))).slice(0, 5);
+  }).sort((a, b) => String(a.date).localeCompare(String(b.date)));
+  const expiredItems = expAll.filter((e) => e.date && e.date < todayStr);
+  const expiringItems = expAll.filter((e) => e.date && e.date >= todayStr);
+  const expList = (items) => `<ul style="margin:0;padding-left:18px">${items.slice(0, 5).map((e) => `<li><a href="/app/locations/${e.loc_id}/equipment">${esc(e.vendor || "")} ${esc(e.model || e.type || "Equipment")}</a> <span class="muted">${esc(e.cust_name)} · ${e.kind.toLowerCase()} ${esc(fmtDateUS(e.date))}</span></li>`).join("")}</ul>`;
   const openTickets = (await db.prepare(
     `SELECT t.id, t.title, t.priority, t.status, l.id AS loc_id, l.name AS loc_name, c.name AS cust_name
      FROM tickets t JOIN locations l ON l.id = t.location_id JOIN customers c ON c.id = l.customer_id
      WHERE t.status != 'closed' ORDER BY t.updated_at DESC LIMIT 5`).all()).results || [];
   const openTicketCount = await db.prepare("SELECT COUNT(*) AS n FROM tickets WHERE status != 'closed'").first();
   const unpaid = await db.prepare("SELECT COUNT(*) AS n, COALESCE(SUM(amount_cents), 0) AS total FROM invoices WHERE status = 'unpaid'").first().catch(() => ({ n: 0, total: 0 }));
+  const unpaidRows = (await db.prepare(
+    `SELECT i.id, i.title, i.amount_cents, c.id AS cust_id, c.name AS cust_name FROM invoices i
+     JOIN customers c ON c.id = i.customer_id WHERE i.status = 'unpaid' ORDER BY i.created_at DESC LIMIT 5`).all().catch(() => ({ results: [] }))).results || [];
   const pending = await db.prepare("SELECT COUNT(*) AS n FROM users WHERE status = 'pending'").first();
   const attention = `<div class="card"><h2 style="margin-top:0">Needs attention</h2><div class="grid">
-    <div><h3 style="margin-top:0">Expiring in 90 days (${expRows.length})</h3>
-      ${expItems.length ? `<ul style="margin:0;padding-left:18px">${expItems.map((e) => `<li><a href="/app/locations/${e.loc_id}/equipment">${esc(e.vendor || "")} ${esc(e.model || e.type || "Equipment")}</a> <span class="muted">${esc(e.cust_name)} · ${e.kind.toLowerCase()} ${esc(fmtDateUS(e.date))}</span></li>`).join("")}</ul>` : `<p class="muted">Nothing expiring.</p>`}</div>
+    <div>${expiredItems.length ? `<h3 style="margin-top:0">Expired (${expiredItems.length})</h3>${expList(expiredItems)}` : ""}
+      <h3 style="margin-top:${expiredItems.length ? "16px" : "0"}">Expiring in 90 days (${expiringItems.length})</h3>
+      ${expiringItems.length ? expList(expiringItems) : `<p class="muted">Nothing expiring.</p>`}</div>
     <div><h3 style="margin-top:0">Open tickets (${openTicketCount ? openTicketCount.n : 0})</h3>
       ${openTickets.length ? `<ul style="margin:0;padding-left:18px">${openTickets.map((t) => `<li><a href="/app/locations/${t.loc_id}/tickets/${t.id}">${esc(t.title)}</a> <span class="muted">${esc(t.cust_name)} · ${esc(t.priority)}</span></li>`).join("")}</ul><p style="margin:8px 0 0"><a href="/admin/tickets">All tickets</a></p>` : `<p class="muted">No open tickets.</p>`}</div>
     <div><h3 style="margin-top:0">Money and accounts</h3>
       <p style="margin:4px 0">${plural(unpaid.n || 0, "unpaid invoice")} · ${fmtMoney(unpaid.total || 0)} outstanding</p>
-      <p style="margin:4px 0">${pending && pending.n ? `<a href="/admin/pending">${plural(pending.n, "account")} waiting to be connected</a>` : "No pending accounts"}</p></div>
+      ${unpaidRows.length ? `<ul style="margin:0;padding-left:18px">${unpaidRows.map((i) => `<li><a href="/admin/customers/${i.cust_id}?tab=billing">INV-${1000 + i.id} · ${fmtMoney(i.amount_cents)}</a> <span class="muted">${esc(i.cust_name)}</span></li>`).join("")}</ul>` : ""}
+      <p style="margin:8px 0 0">${pending && pending.n ? `<a href="/admin/pending">${plural(pending.n, "account")} waiting to be connected</a>` : "No pending accounts"}</p></div>
     </div></div>`;
   // Client cards, optionally filtered by the search box.
   let sql = `SELECT c.*,
@@ -92,7 +101,7 @@ export async function clientsPage(env, request, user) {
     const stats = [
       plural(c.locations, "location"), plural(c.logins, "login"), `${c.equipment} equipment`,
       c.open_tickets ? `<a href="/admin/tickets">${plural(c.open_tickets, "open ticket")}</a>` : "0 open tickets",
-      exp.n ? `<span class="pill warn">${plural(exp.n, "expiring")} in 90 days</span>` : "0 expiring in 90 days",
+      exp.n ? `<span class="pill warn">${plural(exp.n, "expiry date")} need attention</span>` : "No expiry dates due",
     ].join(" · ");
     cards.push(`<div class="card"><div class="row between"><h3 style="margin:0">${esc(c.name)}</h3>
       <a class="btn small" href="/admin/customers/${c.id}">Manage</a></div>
@@ -107,26 +116,40 @@ export async function clientsPage(env, request, user) {
       ${query ? `<a class="btn small secondary" href="/admin">Clear</a>` : ""}</form>
     ${query ? `<p class="muted">${(results || []).length} result${(results || []).length === 1 ? "" : "s"} for "${esc(query)}"</p>` : ""}
     ${cards.join("") || `<div class="card"><p class="muted">${query ? "No clients match that search." : "No clients yet. Add the first one."}</p></div>`}`;
-  return page({ title: "Clients", user, body, flash: q(request).get("msg") || undefined });
+  return page({ title: "Clients", user, body, flash: q(request).get("msg") || undefined, error: q(request).get("err") || undefined });
 }
 
 // ---------- Ticket inbox (every open ticket, newest activity first) ----------
 export async function ticketsInboxPage(env, request, user) {
+  const params = new URL(request.url).searchParams;
+  const statusF = params.get("status") || "active";
+  const custF = Number(params.get("customer") || 0);
+  const STATUS_FILTERS = { active: "t.status != 'closed'", all: "1 = 1", open: "t.status = 'open'", in_progress: "t.status = 'in_progress'", waiting: "t.status = 'waiting'", closed: "t.status = 'closed'" };
+  const where = [STATUS_FILTERS[statusF] || STATUS_FILTERS.active];
+  const binds = [];
+  if (custF) { where.push("c.id = ?"); binds.push(custF); }
   const { results } = await env.DB.prepare(
     `SELECT t.*, l.name AS loc_name, c.name AS cust_name, u.name AS author_name
      FROM tickets t JOIN locations l ON l.id = t.location_id JOIN customers c ON c.id = l.customer_id
      LEFT JOIN users u ON u.id = t.created_by
-     ORDER BY (t.status = 'closed'), t.updated_at DESC LIMIT 200`).all();
+     WHERE ${where.join(" AND ")} ORDER BY (t.status = 'closed'), t.updated_at DESC LIMIT 200`).bind(...binds).all();
+  const { results: custList } = await env.DB.prepare("SELECT id, name FROM customers ORDER BY name").all();
   const LABEL = { open: "Open", in_progress: "In progress", waiting: "Waiting", closed: "Closed" };
   const rows = (results || []).map((t) => `<tr><td><a href="/app/locations/${t.location_id}/tickets/${t.id}">${esc(t.title)}</a>
       <div class="muted">${esc(t.cust_name)} · ${esc(t.loc_name)}</div></td>
     <td><span class="pill">${esc(LABEL[t.status] || t.status)}</span></td><td>${esc(t.priority)}</td>
     <td>${esc(t.author_name || "")}</td><td>${esc(fmtDateUS(t.updated_at))}</td></tr>`).join("");
-  const open = (results || []).filter((t) => t.status !== "closed").length;
+  const statusOpts = [["active", "Active (not closed)"], ["all", "All"], ["open", "Open"], ["in_progress", "In progress"], ["waiting", "Waiting"], ["closed", "Closed"]]
+    .map(([v, l]) => `<option value="${v}" ${statusF === v ? "selected" : ""}>${l}</option>`).join("");
+  const custOpts = `<option value="0">All clients</option>` + (custList || []).map((c) => `<option value="${c.id}" ${custF === c.id ? "selected" : ""}>${esc(c.name)}</option>`).join("");
   const body = `${adminNav("tickets")}<h1>Tickets</h1>
-    <p class="muted">${open} open across all clients. New tickets and customer replies also come to you by email.</p>
+    <p class="muted">New tickets and customer replies also come to you by email.</p>
+    <form method="get" class="row" style="margin-bottom:14px;align-items:end">
+      <span style="min-width:190px"><label>Status</label><select name="status">${statusOpts}</select></span>
+      <span style="min-width:190px"><label>Client</label><select name="customer">${custOpts}</select></span>
+      <button class="btn small secondary" type="submit">Filter</button></form>
     <div class="card" style="padding:8px 14px"><div class="tscroll"><table class="stack"><thead><tr><th>Ticket</th><th>Status</th><th>Priority</th><th>Opened by</th><th>Last activity</th></tr></thead>
-    <tbody>${rows || `<tr><td colspan="5" class="muted">No tickets yet.</td></tr>`}</tbody></table></div></div>`;
+    <tbody>${rows || `<tr><td colspan="5" class="muted">No tickets match that filter.</td></tr>`}</tbody></table></div></div>`;
   return page({ title: "Tickets", user, body });
 }
 
@@ -254,7 +277,7 @@ export async function newCustomerPage(env, request, user) {
     <script src="/assets/address-lookup.js"></script>
     <script src="/assets/org-wizard.js"></script>
     <script src="/assets/phone-format.js"></script>`;
-  return page({ title: "Add organization", user, body, flash: q(request).get("msg") || undefined });
+  return page({ title: "Add organization", user, body, flash: q(request).get("msg") || undefined, error: q(request).get("err") || undefined });
 }
 
 export async function checkCustomerEmail(env, request) {
@@ -290,22 +313,22 @@ export async function createCustomerPost(env, request, user) {
   // never-duplicate rule. Both are validated before anything is created,
   // so a refused admin email never leaves a half-built organization.
   if (!contactEmail) {
-    return redirect("/admin/customers/new?msg=" + encodeURIComponent(
+    return redirect("/admin/customers/new?err=" + encodeURIComponent(
       "Client admin email is required. It becomes the organization's main admin login."));
   }
   if (!isValidEmail(contactEmail)) {
-    return redirect("/admin/customers/new?msg=" + encodeURIComponent(
+    return redirect("/admin/customers/new?err=" + encodeURIComponent(
       "Enter a valid client admin email address."));
   }
   const dup = await findCustomerByContactEmail(env.DB, contactEmail);
   if (dup) {
-    return redirect("/admin/customers/new?msg=" + encodeURIComponent(
+    return redirect("/admin/customers/new?err=" + encodeURIComponent(
       `An organization with this admin email already exists. It matches ${dup.name} (organization ${dup.id}).`));
   }
   const adminUser = await env.DB.prepare("SELECT * FROM users WHERE email = ?")
     .bind(contactEmail.toLowerCase()).first();
   if (adminUser && adminUser.kind === "flossbyte") {
-    return redirect("/admin/customers/new?msg=" + encodeURIComponent(
+    return redirect("/admin/customers/new?err=" + encodeURIComponent(
       "That client admin email is a FlossByte account and cannot be a client login."));
   }
   if (adminUser && adminUser.kind === "customer") {
@@ -313,13 +336,13 @@ export async function createCustomerPost(env, request, user) {
       `SELECT c.id, c.name FROM user_access ua JOIN customers c ON c.id = ua.customer_id
        WHERE ua.user_id = ? LIMIT 1`).bind(adminUser.id).first();
     if (other) {
-      return redirect("/admin/customers/new?msg=" + encodeURIComponent(
+      return redirect("/admin/customers/new?err=" + encodeURIComponent(
         `That client admin email already belongs to ${other.name}. An email can belong to only one organization.`));
     }
   }
   const phone = normalizePhone(f.get("phone"));
   if (!phone) {
-    return redirect("/admin/customers/new?msg=" + encodeURIComponent(
+    return redirect("/admin/customers/new?err=" + encodeURIComponent(
       "A valid 10-digit phone number is required."));
   }
   // At least one complete office location is required. This is checked
@@ -334,7 +357,7 @@ export async function createCustomerPost(env, request, user) {
   const zips = f.getAll("loc_zip[]");
   const suites = f.getAll("loc_suite[]");
   if (!names.some((value) => String(value || "").trim())) {
-    return redirect("/admin/customers/new?msg=" + encodeURIComponent(
+    return redirect("/admin/customers/new?err=" + encodeURIComponent(
       "At least one office location is required."));
   }
   const locationFields = [
@@ -347,7 +370,7 @@ export async function createCustomerPost(env, request, user) {
     if (!values.some(Boolean)) continue;
     const missing = locationFields.filter((_, j) => !values[j]).map(([, label]) => label);
     if (missing.length) {
-      return redirect("/admin/customers/new?msg=" + encodeURIComponent(
+      return redirect("/admin/customers/new?err=" + encodeURIComponent(
         `Location ${i + 1} is incomplete: ${missing.join(", ")} ${missing.length === 1 ? "is" : "are"} required.`));
     }
   }
@@ -355,7 +378,7 @@ export async function createCustomerPost(env, request, user) {
   const middle = String(f.get("contact_middle_name") || "").trim();
   const last = String(f.get("contact_last_name") || "").trim();
   if (!first || !last) {
-    return redirect("/admin/customers/new?msg=" + encodeURIComponent(
+    return redirect("/admin/customers/new?err=" + encodeURIComponent(
       "First name and last name are required."));
   }
   const contactName = [first, middle, last].filter(Boolean).join(" ");
@@ -597,7 +620,7 @@ export async function updateCustomerPost(env, request, user, customerId) {
 export async function customerPage(env, request, user, customerId) {
   const db = env.DB;
   const c = await db.prepare("SELECT * FROM customers WHERE id = ?").bind(customerId).first();
-  if (!c) return page({ title: "Not found", user, body: `<div class="card narrow"><h1>Not found</h1></div>` });
+  if (!c) return withStatus(page({ title: "Not found", user, body: `<div class="card narrow"><h1>Not found</h1></div>` }), 404);
   const { results: locations } = await db.prepare("SELECT * FROM locations WHERE customer_id = ? ORDER BY name").bind(customerId).all();
   const { results: products } = await db.prepare(
     `SELECT p.key, p.name, p.description, cp.enabled, cp.plan_note FROM products p
@@ -741,14 +764,14 @@ export async function customerPage(env, request, user, customerId) {
       <p class="muted">Deleting this organization permanently removes its locations, equipment, tickets, documents, and login access. This cannot be undone.</p>
       <p><a class="btn danger" href="/admin/customers/${customerId}/delete">Delete this organization</a></p></div>
     <script src="/assets/org-page.js"></script>`;
-  return page({ title: c.name, user, body, flash: q(request).get("msg") || undefined });
+  return page({ title: c.name, user, body, flash: q(request).get("msg") || undefined, error: q(request).get("err") || undefined });
 }
 
 // ---------- Quotes and invoices (admin side) ----------
 export async function quoteCreatePost(env, request, user, customerId) {
   const f = await request.formData();
   const title = String(f.get("title") || "").trim();
-  if (!title) return redirect(`/admin/customers/${customerId}?tab=billing&msg=` + encodeURIComponent("A quote needs a title."));
+  if (!title) return redirect(`/admin/customers/${customerId}?tab=billing&err=` + encodeURIComponent("A quote needs a title."));
   const kind = String(f.get("kind") || "project") === "plan" ? "plan" : "project";
   const deposit = Math.max(0, Math.min(100, Math.round(Number(f.get("deposit_percent") || 0) || 0)));
   const terms = String(f.get("terms") || "").trim();
@@ -772,9 +795,9 @@ export async function quoteCreatePost(env, request, user, customerId) {
 export async function quoteActionPost(env, request, user, customerId, quoteId, action) {
   const db = env.DB;
   const quote = await db.prepare("SELECT * FROM quotes WHERE id = ? AND customer_id = ?").bind(quoteId, customerId).first();
-  if (!quote) return redirect(`/admin/customers/${customerId}?tab=billing&msg=` + encodeURIComponent("Quote not found."));
+  if (!quote) return redirect(`/admin/customers/${customerId}?tab=billing&err=` + encodeURIComponent("Quote not found."));
   if (action === "send") {
-    if (quote.status !== "draft") return redirect(`/admin/customers/${customerId}?tab=billing&msg=` + encodeURIComponent("Only a draft can be sent."));
+    if (quote.status !== "draft") return redirect(`/admin/customers/${customerId}?tab=billing&err=` + encodeURIComponent("Only a draft can be sent."));
     await db.prepare("UPDATE quotes SET status = 'sent', sent_at = datetime('now'), updated_at = datetime('now') WHERE id = ?").bind(quoteId).run();
     await audit(db, user.id, "quote_send", "quote", quoteId, quote.title);
     const cust = await db.prepare("SELECT contact_name, contact_email FROM customers WHERE id = ?").bind(customerId).first();
@@ -788,21 +811,21 @@ export async function quoteActionPost(env, request, user, customerId, quoteId, a
     return redirect(`/admin/customers/${customerId}?tab=billing&msg=` + encodeURIComponent("Quote sent. The customer can review and accept it in the portal."));
   }
   if (action === "delete") {
-    if (quote.status !== "draft") return redirect(`/admin/customers/${customerId}?tab=billing&msg=` + encodeURIComponent("Only a draft quote can be deleted."));
+    if (quote.status !== "draft") return redirect(`/admin/customers/${customerId}?tab=billing&err=` + encodeURIComponent("Only a draft quote can be deleted."));
     await db.prepare("DELETE FROM quote_items WHERE quote_id = ?").bind(quoteId).run();
     await db.prepare("DELETE FROM quotes WHERE id = ?").bind(quoteId).run();
     await audit(db, user.id, "quote_delete", "quote", quoteId, quote.title);
     return redirect(`/admin/customers/${customerId}?tab=billing&msg=` + encodeURIComponent("Draft quote deleted."));
   }
   if (action === "final") {
-    if (quote.status !== "accepted") return redirect(`/admin/customers/${customerId}?tab=billing&msg=` + encodeURIComponent("The quote has to be accepted before the final invoice."));
+    if (quote.status !== "accepted") return redirect(`/admin/customers/${customerId}?tab=billing&err=` + encodeURIComponent("The quote has to be accepted before the final invoice."));
     const totals = await db.prepare(
       `SELECT COALESCE((SELECT SUM(ROUND(qi.qty * qi.unit_price_cents)) FROM quote_items qi WHERE qi.quote_id = q.id), 0) AS total_cents,
               COALESCE((SELECT SUM(amount_cents) FROM invoices WHERE quote_id = q.id AND status != 'void'), 0) AS invoiced_cents,
               (SELECT COUNT(*) FROM invoices WHERE quote_id = q.id AND kind = 'deposit' AND status != 'void') AS deposits
        FROM quotes q WHERE q.id = ?`).bind(quoteId).first();
     const remaining = (totals ? totals.total_cents : 0) - (totals ? totals.invoiced_cents : 0);
-    if (remaining <= 0) return redirect(`/admin/customers/${customerId}?tab=billing&msg=` + encodeURIComponent("This quote is already fully invoiced."));
+    if (remaining <= 0) return redirect(`/admin/customers/${customerId}?tab=billing&err=` + encodeURIComponent("This quote is already fully invoiced."));
     const isFinal = totals && totals.deposits > 0;
     await db.prepare(
       "INSERT INTO invoices (customer_id, quote_id, title, kind, amount_cents, created_by) VALUES (?, ?, ?, ?, ?, ?)")
@@ -817,7 +840,7 @@ export async function invoiceCreatePost(env, request, user, customerId) {
   const f = await request.formData();
   const title = String(f.get("title") || "").trim();
   const amount = parseDollarsToCents(f.get("amount"));
-  if (!title || amount <= 0) return redirect(`/admin/customers/${customerId}?tab=billing&msg=` + encodeURIComponent("An invoice needs a title and an amount."));
+  if (!title || amount <= 0) return redirect(`/admin/customers/${customerId}?tab=billing&err=` + encodeURIComponent("An invoice needs a title and an amount."));
   const due = String(f.get("due_date") || "").trim();
   const payUrl = String(f.get("pay_url") || "").trim();
   const res = await env.DB.prepare(
@@ -830,7 +853,7 @@ export async function invoiceCreatePost(env, request, user, customerId) {
 export async function invoiceActionPost(env, request, user, customerId, invoiceId, action) {
   const db = env.DB;
   const inv = await db.prepare("SELECT * FROM invoices WHERE id = ? AND customer_id = ?").bind(invoiceId, customerId).first();
-  if (!inv) return redirect(`/admin/customers/${customerId}?tab=billing&msg=` + encodeURIComponent("Invoice not found."));
+  if (!inv) return redirect(`/admin/customers/${customerId}?tab=billing&err=` + encodeURIComponent("Invoice not found."));
   if (action === "paid" && inv.status === "unpaid") {
     const f = await request.formData();
     const method = String(f.get("method") || "").trim();
@@ -868,7 +891,7 @@ export async function addLocationPost(env, request, user, customerId) {
 
 export async function addLocationPage(env, request, user, customerId) {
   const c = await env.DB.prepare("SELECT * FROM customers WHERE id = ?").bind(customerId).first();
-  if (!c) return redirect("/admin?msg=" + encodeURIComponent("Organization not found."));
+  if (!c) return redirect("/admin?err=" + encodeURIComponent("Organization not found."));
   const body = `${adminNav("")}
     <p><a href="/admin/customers/${customerId}?tab=locations">&larr; ${esc(c.name)}</a></p>
     <h1>Add location</h1>
@@ -890,7 +913,7 @@ export async function addLocationPage(env, request, user, customerId) {
 
 export async function addUserPage(env, request, user, customerId) {
   const c = await env.DB.prepare("SELECT * FROM customers WHERE id = ?").bind(customerId).first();
-  if (!c) return redirect("/admin?msg=" + encodeURIComponent("Organization not found."));
+  if (!c) return redirect("/admin?err=" + encodeURIComponent("Organization not found."));
   const { results: locations } = await env.DB.prepare(
     "SELECT id, name FROM locations WHERE customer_id = ? ORDER BY name").bind(customerId).all();
   const locOptions = (locations || []).map((l) => `<option value="${l.id}">${esc(l.name)}</option>`).join("");
@@ -1029,7 +1052,7 @@ export async function customerUserResendPost(env, request, user, customerId, tar
 export async function deleteCustomerPage(env, request, user, customerId) {
   const db = env.DB;
   const c = await db.prepare("SELECT * FROM customers WHERE id = ?").bind(customerId).first();
-  if (!c) return page({ title: "Not found", user, body: `<div class="card narrow"><h1>Not found</h1></div>` });
+  if (!c) return withStatus(page({ title: "Not found", user, body: `<div class="card narrow"><h1>Not found</h1></div>` }), 404);
   const one = async (sql) => (await db.prepare(sql).bind(customerId).first()).n;
   const locIds = "(SELECT id FROM locations WHERE customer_id = ?)";
   const counts = {
@@ -1079,7 +1102,7 @@ export async function deleteCustomerPage(env, request, user, customerId) {
         });
       })();
     </script>`;
-  return page({ title: "Delete organization", user, body, flash: q(request).get("msg") || undefined });
+  return page({ title: "Delete organization", user, body, flash: q(request).get("err") ? undefined : (q(request).get("msg") || undefined), error: q(request).get("err") ? (q(request).get("msg") || undefined) : undefined });
 }
 
 export async function deleteCustomerPost(env, request, user, customerId) {
@@ -1155,7 +1178,7 @@ export async function pendingPage(env, request, user) {
   const body = `${adminNav("pending")}<h1>Pending accounts</h1>
     <p class="muted">These people created their own login. They see nothing until you connect them here.</p>
     ${rows.join("") || `<div class="card"><p class="muted">No pending accounts.</p></div>`}`;
-  return page({ title: "Pending accounts", user, body, flash: q(request).get("msg") || undefined });
+  return page({ title: "Pending accounts", user, body, flash: q(request).get("msg") || undefined, error: q(request).get("err") || undefined });
 }
 
 export async function pendingConnectPost(env, request, user, pendingUserId) {
@@ -1170,7 +1193,7 @@ export async function pendingConnectPost(env, request, user, pendingUserId) {
   const grant = await grantUserAccess(env.DB, target.id, loc.customer_id, reachAll ? null : locationId, scope);
   if (!grant.ok) {
     const detail = grant.otherCustomer ? ` It belongs to ${grant.otherCustomer.name}.` : "";
-    return redirect("/admin/pending?msg=" + encodeURIComponent(grant.error + detail));
+    return redirect("/admin/pending?err=" + encodeURIComponent(grant.error + detail));
   }
   await env.DB.prepare("UPDATE users SET status = 'active' WHERE id = ?").bind(target.id).run();
   await audit(env.DB, user.id, "pending_connected", "user", target.id, `customer ${loc.customer_id}`);
@@ -1179,8 +1202,8 @@ export async function pendingConnectPost(env, request, user, pendingUserId) {
 
 // ---------- Admin accounts (Super Admin only) ----------
 function notSuper(user) {
-  return page({ title: "Admins", user, body: `<div class="card narrow"><h1>Super Admin only</h1>
-    <p class="muted">Only the Super Admin can manage admin accounts. Regular admins still run the full client console.</p></div>` });
+  return withStatus(page({ title: "Admins", user, body: `<div class="card narrow"><h1>Super Admin only</h1>
+    <p class="muted">Only the Super Admin can manage admin accounts. Regular admins still run the full client console.</p></div>` }), 403);
 }
 
 export async function adminsPage(env, request, user) {
@@ -1221,7 +1244,7 @@ export async function adminsPage(env, request, user) {
         if (!eligible.length) return `<p class="muted">No admin can receive ownership yet. Create an admin above and have them finish sign-in first.</p>`;
         return eligible.map((a) => `<p><a class="btn small secondary" href="/admin/transfer/${a.id}">Transfer ownership to ${esc(a.name)}</a> <span class="muted">${esc(a.email)}</span></p>`).join("");
       })()}</div>`;
-  return page({ title: "Admins", user, body, flash: q(request).get("msg") || undefined });
+  return page({ title: "Admins", user, body, flash: q(request).get("msg") || undefined, error: q(request).get("err") || undefined });
 }
 
 // ---------- Device sync (UniFi and Sophos) ----------
@@ -1323,7 +1346,7 @@ export async function transferPage(env, request, user, targetId) {
   if (!isSuperAdmin(user)) return notSuper(user);
   const target = await eligibleTransferTarget(env, targetId);
   if (!target || Number(targetId) === user.id) {
-    return redirect("/admin/admins?msg=" + encodeURIComponent("That admin cannot receive ownership. They need an active admin account."));
+    return redirect("/admin/admins?err=" + encodeURIComponent("That admin cannot receive ownership. They need an active admin account."));
   }
   const body = `${adminNav("admins")}<h1>Transfer ownership</h1>
     <div class="card narrow"><h3 style="margin-top:0">Make ${esc(target.name)} the Super Admin</h3>
@@ -1338,15 +1361,15 @@ export async function transferPage(env, request, user, targetId) {
         <p style="margin-top:18px"><button class="btn danger" type="submit">Transfer ownership</button>
         <a class="btn secondary" href="/admin/admins">Cancel</a></p>
       </form></div>`;
-  return page({ title: "Transfer ownership", user, body, flash: q(request).get("msg") || undefined });
+  return page({ title: "Transfer ownership", user, body, flash: q(request).get("msg") || undefined, error: q(request).get("err") || undefined });
 }
 
 export async function transferPost(env, request, user, targetId) {
   if (!isSuperAdmin(user)) return notSuper(user);
-  const back = (msg) => redirect(`/admin/transfer/${targetId}?msg=` + encodeURIComponent(msg));
+  const back = (msg) => redirect(`/admin/transfer/${targetId}?err=` + encodeURIComponent(msg));
   const target = await eligibleTransferTarget(env, targetId);
   if (!target || Number(targetId) === user.id) {
-    return redirect("/admin/admins?msg=" + encodeURIComponent("That admin cannot receive ownership. They need an active admin account."));
+    return redirect("/admin/admins?err=" + encodeURIComponent("That admin cannot receive ownership. They need an active admin account."));
   }
   const f = await request.formData();
   if (String(f.get("confirm") || "") !== "yes") return back("Tick the confirmation box to transfer ownership.");
@@ -1385,11 +1408,11 @@ export async function createAdminPost(env, request, user) {
   const name = [first, middle, last].filter(Boolean).join(" ");
   const email = String(f.get("email") || "").trim().toLowerCase();
   if (!first || !last || !isValidEmail(email)) {
-    return redirect("/admin/admins?msg=" + encodeURIComponent(
+    return redirect("/admin/admins?err=" + encodeURIComponent(
       "Enter the admin's first name, last name, and a valid email address."));
   }
   const existing = await env.DB.prepare("SELECT id FROM users WHERE email = ?").bind(email).first();
-  if (existing) return redirect("/admin/admins?msg=" + encodeURIComponent("That email already has a login."));
+  if (existing) return redirect("/admin/admins?err=" + encodeURIComponent("That email already has a login."));
   const res = await env.DB.prepare(
     `INSERT INTO users (email, name, kind, role, status) VALUES (?, ?, 'flossbyte', 'admin', 'invited')`)
     .bind(email, name).run();
@@ -1405,14 +1428,14 @@ export async function adminActionPost(env, request, user, targetId, action) {
   const target = await env.DB.prepare("SELECT * FROM users WHERE id = ? AND kind = 'flossbyte'").bind(targetId).first();
   if (!target) return redirect("/admin/admins");
   if (target.role === "super_admin") {
-    return redirect("/admin/admins?msg=" + encodeURIComponent("The Super Admin login can never be disabled or removed."));
+    return redirect("/admin/admins?err=" + encodeURIComponent("The Super Admin login can never be disabled or removed."));
   }
   if (Number(targetId) === user.id) {
-    return redirect("/admin/admins?msg=" + encodeURIComponent("You cannot disable or remove your own account."));
+    return redirect("/admin/admins?err=" + encodeURIComponent("You cannot disable or remove your own account."));
   }
   if (action === "resend") {
     if (target.status !== "invited") {
-      return redirect("/admin/admins?msg=" + encodeURIComponent("Only a pending invite can be resent."));
+      return redirect("/admin/admins?err=" + encodeURIComponent("Only a pending invite can be resent."));
     }
     await resendInviteEmail(env, target);
     await audit(env.DB, user.id, "invite_resent_admin", "user", Number(targetId), target.email);

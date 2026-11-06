@@ -1,6 +1,6 @@
 // Client-facing portal pages. Every handler re-checks access to the location
 // on the server; nothing here trusts ids from the browser.
-import { page, redirect, esc, icon, fmtDateUS } from "./layout.js";
+import { page, redirect, esc, icon, fmtDateUS, withStatus } from "./layout.js";
 import {
   canAccessLocation, locationScope, getLocation, productEnabled, productStates,
   expiringItems, audit, accessibleLocationIds, customerAdminOrg, orgMembers,
@@ -40,7 +40,7 @@ async function guard(env, user, locationId) {
 function denied(user, code) {
   const body = `<div class="card narrow"><h1>${code === 404 ? "Not found" : "No access"}</h1>
     <p class="muted">${code === 404 ? "That page does not exist." : "This login does not have access to that practice."}</p></div>`;
-  return page({ title: "Portal", user, body });
+  return withStatus(page({ title: "Portal", user, body }), code);
 }
 
 // App shell openers (see adminNav in pages-admin.js): left rail on
@@ -211,7 +211,7 @@ export async function teamPage(env, request, user) {
     <div class="card" style="padding:8px 14px"><div class="tscroll"><table class="stack"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Sees</th><th>Status</th><th></th></tr></thead>
     <tbody>${rows || `<tr><td colspan="6" class="muted">No logins yet.</td></tr>`}</tbody></table></div></div>`;
   const msg = new URL(request.url).searchParams.get("msg");
-  return page({ title: "Team", user, body, flash: msg || undefined });
+  return page({ title: "Team", user, body, flash: msg || undefined, error: new URL(request.url).searchParams.get("err") || undefined });
 }
 
 export async function teamRemoveConfirmPage(env, request, user, targetId) {
@@ -234,7 +234,7 @@ export async function teamRemovePost(env, request, user, targetId) {
   const org = await customerAdminOrg(env.DB, user);
   if (org === null) return denied(user, 403);
   const result = await removeUserFromCustomer(env.DB, user, targetId, org);
-  if (!result.ok) return redirect("/app/team?msg=" + encodeURIComponent(result.error));
+  if (!result.ok) return redirect("/app/team?err=" + encodeURIComponent(result.error));
   return redirect("/app/team?msg=" + encodeURIComponent(`${result.target.name} was removed.`));
 }
 
@@ -369,7 +369,8 @@ export async function equipmentEditPage(env, request, user, locationId, equipmen
       <form method="post" action="/app/locations/${locationId}/equipment/${row.id}/delete">
         <label style="font-weight:400"><input type="checkbox" name="confirm" value="yes" style="width:auto;margin-right:8px">Yes, delete this equipment record</label>
         <p style="margin-top:12px"><button class="btn danger" type="submit">Delete equipment</button></p></form></div>`}`;
-  return page({ title: "Edit equipment", user, body });
+  const q2 = new URL(request.url).searchParams;
+  return page({ title: "Edit equipment", user, body, flash: q2.get("msg") || undefined, error: q2.get("err") || undefined });
 }
 
 export async function equipmentEditPost(env, request, user, locationId, equipmentId) {
@@ -396,7 +397,7 @@ export async function equipmentDeletePost(env, request, user, locationId, equipm
   if (error) return error;
   if (row.source && row.source !== "manual") return redirect(`/app/locations/${locationId}/equipment`);
   const f = await request.formData();
-  if (String(f.get("confirm") || "") !== "yes") return redirect(`/app/locations/${locationId}/equipment/${equipmentId}/edit`);
+  if (String(f.get("confirm") || "") !== "yes") return redirect(`/app/locations/${locationId}/equipment/${equipmentId}/edit?err=` + encodeURIComponent("Tick the confirmation box to delete this equipment."));
   await env.DB.prepare("DELETE FROM equipment WHERE id = ?").bind(equipmentId).run();
   await audit(env.DB, user.id, "equipment_delete", "equipment", Number(equipmentId), row.model || row.name || "");
   return redirect(`/app/locations/${locationId}/equipment`);
@@ -590,8 +591,8 @@ export async function askAnswer(db, locationId, question) {
   if (wantsExpiry) {
     const items = await expiringItems(db, locationId, 90);
     if (items.length) {
-      parts.push("Expiring in the next 90 days: " + items.map((e) =>
-        `${e.vendor || ""} ${e.model || e.type || "equipment"} (license ${e.license_expires || "n/a"}, warranty ${e.warranty_expires || "n/a"})`).join("; ") + ".");
+      parts.push("Expiring in the next 90 days:\n" + items.map((e) =>
+        `• ${e.vendor || ""} ${e.model || e.type || "equipment"} (license ${e.license_expires ? fmtDateUS(e.license_expires) : "n/a"}, warranty ${e.warranty_expires ? fmtDateUS(e.warranty_expires) : "n/a"})`).join("\n"));
     } else parts.push("Nothing on record expires in the next 90 days.");
   }
   const words = tokenize(question);
@@ -601,14 +602,14 @@ export async function askAnswer(db, locationId, question) {
     for (const w of words) { const l = `%${w}%`; binds.push(l, l, l, l, l, l); }
     const { results: eq } = await db.prepare(`SELECT * FROM equipment WHERE location_id = ? AND (${like}) LIMIT 8`).bind(...binds).all();
     if (eq && eq.length) {
-      parts.push("Equipment on record: " + eq.map((e) =>
-        `${e.vendor || ""} ${e.model || e.type || ""} (serial ${e.serial || "n/a"}, status ${e.status}, firmware ${e.firmware || "n/a"})`).join("; ") + ".");
+      parts.push("Equipment on record:\n" + eq.map((e) =>
+        `• ${e.vendor || ""} ${e.model || e.type || ""} (serial ${e.serial || "n/a"}, status ${e.status}, firmware ${e.firmware || "n/a"})`).join("\n"));
     }
     const tLike = words.map(() => "title LIKE ?").join(" OR ");
     const tBinds = [locationId, ...words.map((w) => `%${w}%`)];
     const { results: tk } = await db.prepare(`SELECT * FROM tickets WHERE location_id = ? AND (${tLike}) LIMIT 5`).bind(...tBinds).all();
     if (tk && tk.length) {
-      parts.push("Tickets on record: " + tk.map((t) => `"${t.title}" (${t.status}, ${t.priority})`).join("; ") + ".");
+      parts.push("Tickets on record:\n" + tk.map((t) => `• "${t.title}" (${STATUS_LABEL[t.status] || t.status}, ${t.priority})`).join("\n"));
     }
     const dLike = words.map(() => "name LIKE ?").join(" OR ");
     const dBinds = [locationId, ...words.map((w) => `%${w}%`)];
@@ -620,7 +621,7 @@ export async function askAnswer(db, locationId, question) {
   if (!parts.length) {
     return "That is not in your portal records yet, so I cannot answer it from your data. Ask about equipment, license or warranty expiry dates, tickets, or documents, or open a ticket and we will look into it.";
   }
-  return parts.join(" ") + " (Answered from your own portal records only.)";
+  return parts.join("\n") + "\n(Answered from your own portal records only.)";
 }
 
 export async function askPage(env, request, user, locationId) {
@@ -727,7 +728,7 @@ export async function quoteViewPage(env, request, user, quoteId) {
     <tbody>${itemRows}</tbody></table></div></div>
     ${quote.terms ? `<div class="card"><h3>Terms</h3><div style="white-space:pre-wrap">${esc(quote.terms)}</div></div>` : ""}`;
   const msg = new URL(request.url).searchParams.get("msg");
-  return page({ title: quote.title, user, body, flash: msg || undefined });
+  return page({ title: quote.title, user, body, flash: msg || undefined, error: new URL(request.url).searchParams.get("err") || undefined });
 }
 
 export async function quoteAcceptPost(env, request, user, quoteId) {
@@ -739,7 +740,7 @@ export async function quoteAcceptPost(env, request, user, quoteId) {
   const f = await request.formData();
   const signer = String(f.get("signer_name") || "").trim();
   if (String(f.get("agree") || "") !== "yes" || !signer) {
-    return redirect(`/app/quotes/${quoteId}?msg=` + encodeURIComponent("Type your full name and check the agreement box to accept."));
+    return redirect(`/app/quotes/${quoteId}?err=` + encodeURIComponent("Type your full name and check the agreement box to accept."));
   }
   const { quote, total } = loaded;
   await env.DB.prepare(
@@ -829,5 +830,5 @@ export async function billingPage(env, request, user) {
     <h2>Quotes</h2>${quotesHtml}
     <h2 style="margin-top:26px">Invoices</h2>${invoicesHtml}`;
   const msg = new URL(request.url).searchParams.get("msg");
-  return page({ title: "Billing", user, body, flash: msg || undefined });
+  return page({ title: "Billing", user, body, flash: msg || undefined, error: new URL(request.url).searchParams.get("err") || undefined });
 }
