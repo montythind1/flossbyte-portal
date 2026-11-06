@@ -488,7 +488,7 @@ export async function networkPage(env, request, user, locationId) {
   const cards = [];
   const inet = snaps.internet || {};
   const isp = inet.isp || null;
-  const wanRows = (inet.wans || []).map((w) => `<tr><td>${esc(w.name || "WAN")}</td><td>${esc(w.ipAddress || w.ip || "—")}</td><td>${esc(w.type || "")}${statePill(w.state || w.status)}</td></tr>`);
+  const wanRows = (inet.wans || []).map((w) => `<tr><td>${esc(w.name || "WAN")}</td><td>${esc(w.ipAddress || w.ip || "")}</td><td>${esc(w.type || "")}${statePill(w.state || w.status)}</td></tr>`);
   if (isp || wanRows.length) {
     const stats = isp ? `<div class="statgrid">
       <div class="stat"><b>${n0(isp.avgLatencyMs)} ms</b><span>Average latency</span></div>

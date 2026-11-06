@@ -104,11 +104,24 @@ async function fetchSiteLocal(env, hostId, consoleMac) {
         for (const f of fields) if (it && it[f] !== undefined && it[f] !== null) o[f] = it[f];
         return o;
       });
-      const section = async (path, fields) => {
-        try { return pick(await paged(path), fields); } catch { return null; }
+      // Per-section read results, kept for diagnosis: consoles whose
+      // Network app predates an integration endpoint answer 404 for it,
+      // and the sync summary should say so instead of failing silently.
+      const sectionStatus = {};
+      const noteStatus = (key, items, err) => {
+        if (err) {
+          const m = /answered (\d{3})/.exec(String(err && err.message || ""));
+          sectionStatus[key] = m ? m[1] : "error";
+        } else {
+          sectionStatus[key] = `ok ${Array.isArray(items) ? items.length : 0}`;
+        }
       };
-      const wans = await section("wans", ["name", "ipAddress", "ip", "state", "status", "type"]);
-      const networks = await section("networks", ["name", "vlanId", "enabled", "default", "management"]);
+      const section = async (key, path, fields) => {
+        try { const items = pick(await paged(path), fields); noteStatus(key, items, null); return items; }
+        catch (err) { noteStatus(key, null, err); return null; }
+      };
+      const wans = await section("wans", "wans", ["name", "ipAddress", "ip", "state", "status", "type"]);
+      const networks = await section("networks", "networks", ["name", "vlanId", "enabled", "default", "management"]);
       let ssids = null;
       try {
         const rawSsids = await paged("wifi/broadcasts");
@@ -117,13 +130,14 @@ async function fetchSiteLocal(env, hostId, consoleMac) {
           const sec = r.security || (r.securityConfiguration && (r.securityConfiguration.type || r.securityConfiguration.mode)) || r.encryption;
           return sec ? { ...s, security: String(sec) } : s;
         });
-      } catch { ssids = null; }
-      const fwPolicies = await section("firewall/policies", ["name", "action", "enabled"]);
-      const fwZones = await section("firewall/zones", ["name"]);
-      const aclRules = await section("acl-rules", ["name", "action", "enabled"]);
-      const vpnServers = await section("vpn/servers", ["name", "type", "enabled"]);
-      const vpnTunnels = await section("vpn/site-to-site-tunnels", ["name", "type", "enabled", "state", "status"]);
-      const radiusProfiles = await section("radius/profiles", ["name"]);
+        noteStatus("ssids", ssids, null);
+      } catch (err) { ssids = null; noteStatus("ssids", null, err); }
+      const fwPolicies = await section("fwPolicies", "firewall/policies", ["name", "action", "enabled"]);
+      const fwZones = await section("fwZones", "firewall/zones", ["name"]);
+      const aclRules = await section("aclRules", "acl-rules", ["name", "action", "enabled"]);
+      const vpnServers = await section("vpnServers", "vpn/servers", ["name", "type", "enabled"]);
+      const vpnTunnels = await section("vpnTunnels", "vpn/site-to-site-tunnels", ["name", "type", "enabled", "state", "status"]);
+      const radiusProfiles = await section("radiusProfiles", "radius/profiles", ["name"]);
       // Latest statistics for each adopted device (uptime, CPU, memory).
       const deviceStats = [];
       for (const d of localDevices.slice(0, 25)) {
@@ -152,7 +166,7 @@ async function fetchSiteLocal(env, hostId, consoleMac) {
           break;
         } catch { protect = null; }
       }
-      return { clients, uuidToMac, deviceParent, sections: { wans, networks, ssids, fwPolicies, fwZones, aclRules, vpnServers, vpnTunnels, radiusProfiles, deviceStats, protect } };
+      return { clients, uuidToMac, deviceParent, sectionStatus, sections: { wans, networks, ssids, fwPolicies, fwZones, aclRules, vpnServers, vpnTunnels, radiusProfiles, deviceStats, protect } };
     } catch { /* try the other connector path spelling */ }
   }
   return null;
@@ -352,6 +366,17 @@ export async function runUnifiSync(env) {
       siteLocal[siteId] = hostId ? await fetchSiteLocal(env, hostId, consoleMacBySite[siteId] || null) : null;
       if (!siteLocal[siteId]) summary.clientsError = "One or more consoles could not be read for connected devices.";
     }
+    // Merge the per-console section results into the run summary, so
+    // the Device sync page shows which reads each console answered.
+    const mergedChecks = {};
+    for (const local of Object.values(siteLocal)) {
+      if (!local || !local.sectionStatus) continue;
+      for (const [k, v] of Object.entries(local.sectionStatus)) {
+        if (!mergedChecks[k]) mergedChecks[k] = v;
+        else if (mergedChecks[k] !== v) mergedChecks[k] = "mixed";
+      }
+    }
+    if (Object.keys(mergedChecks).length) summary.sectionChecks = mergedChecks;
 
     const seenByLocation = {};
     for (const locId of Object.values(locationBySite)) seenByLocation[locId] = new Set();
