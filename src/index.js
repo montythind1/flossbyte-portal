@@ -174,6 +174,12 @@ async function route(request, env) {
   if (m && method === "GET") return client.productPage(env, request, user, Number(m[1]), m[2]);
   m = path.match(/^\/app\/locations\/(\d+)\/equipment$/);
   if (m && method === "GET") return client.equipmentPage(env, request, user, Number(m[1]));
+  m = path.match(/^\/app\/locations\/(\d+)\/equipment\/print$/);
+  if (m && method === "GET") return client.equipmentPrintPage(env, request, user, Number(m[1]));
+  m = path.match(/^\/app\/locations\/(\d+)\/equipment\.csv$/);
+  if (m && method === "GET") return client.equipmentCsv(env, request, user, Number(m[1]));
+  m = path.match(/^\/app\/locations\/(\d+)\/equipment\/(\d+)$/);
+  if (m && method === "GET") return client.equipmentDetailPage(env, request, user, Number(m[1]), Number(m[2]));
   m = path.match(/^\/app\/locations\/(\d+)\/topology$/);
   if (m && method === "GET") return client.topologyPage(env, request, user, Number(m[1]));
   m = path.match(/^\/app\/locations\/(\d+)\/network$/);

@@ -83,6 +83,31 @@ function autoName(e) {
   if (/^SonosZP/i.test(n)) return "Sonos speaker";
   return n;
 }
+function kindIcon(kind) {
+  if (kind === "Computer" || kind === "Tablet") return "monitor";
+  if (kind === "Desk phone" || kind === "Phone") return "phone";
+  if (kind === "Printer") return "printer";
+  if (kind === "Camera" || kind === "Camera recorder") return "camera";
+  if (kind === "Server") return "server";
+  if (kind === "Speaker") return "speaker";
+  if (kind === "Gateway" || kind === "Switch" || kind === "Access point") return "topology";
+  return "box";
+}
+function kindTile(e, size) {
+  const s = size || 34;
+  return `<span style="display:inline-flex;align-items:center;justify-content:center;width:${s}px;height:${s}px;border-radius:9px;background:#EAF7F4;color:#0A7C6E;flex:none">${icon(kindIcon(deviceKind(e)))}</span>`;
+}
+// Filter buckets for the equipment list: the office's own groupings.
+function kindBucket(e) {
+  const k = deviceKind(e);
+  if (k === "Computer" || k === "Server" || k === "Tablet") return "computers";
+  if (k === "Desk phone" || k === "Phone") return "phones";
+  if (k === "Printer") return "printers";
+  if (k === "Gateway" || k === "Switch" || k === "Access point") return "network";
+  return "other";
+}
+const BUCKET_RANK = { network: 0, computers: 1, phones: 2, printers: 3, other: 4 };
+
 function displayName(e, renames) {
   if (renames) {
     if (e.external_id && renames[e.external_id]) return renames[e.external_id];
@@ -419,26 +444,47 @@ export async function equipmentPage(env, request, user, locationId) {
   const q = new URL(request.url).searchParams;
   const search = (q.get("q") || "").trim();
   const vendor = (q.get("vendor") || "").trim();
-  let hasIpCol = false;
-  try {
-    const cols = await env.DB.prepare("PRAGMA table_info(equipment)").all();
-    hasIpCol = (cols.results || []).some((c) => c.name === "ip_address");
-  } catch { hasIpCol = false; }
-  let sql = "SELECT * FROM equipment WHERE location_id = ?";
-  const binds = [locationId];
-  if (search) {
-    const like = `%${search}%`;
-    if (hasIpCol) { sql += " AND (vendor LIKE ? OR model LIKE ? OR type LIKE ? OR serial LIKE ? OR name LIKE ? OR ip_address LIKE ?)"; binds.push(like, like, like, like, like, like); }
-    else { sql += " AND (vendor LIKE ? OR model LIKE ? OR type LIKE ? OR serial LIKE ? OR name LIKE ?)"; binds.push(like, like, like, like, like); }
-  }
-  if (vendor) { sql += " AND vendor = ?"; binds.push(vendor); }
-  sql += " ORDER BY vendor, model";
-  const { results } = await env.DB.prepare(sql).bind(...binds).all();
-  const vendors = [...new Set((await env.DB.prepare("SELECT DISTINCT vendor FROM equipment WHERE location_id = ? AND vendor IS NOT NULL").bind(locationId).all()).results.map((r) => r.vendor))];
+  const { results: allRaw } = await env.DB.prepare("SELECT * FROM equipment WHERE location_id = ?").bind(locationId).all();
+  const allRows = allRaw || [];
+  const vendors = [...new Set(allRows.map((r) => r.vendor).filter(Boolean))];
   const scope = await locationScope(env.DB, user, locationId);
   const canEdit = user.kind === "flossbyte" || scope === "admin";
+  const isFb = user.kind === "flossbyte";
   const renames = await loadRenames(env.DB, locationId);
-  const rows = (results || []).map((e) => {
+  const f = ["all", "computers", "phones", "printers", "network", "other", "offline"].includes(q.get("f") || "") ? q.get("f") : "all";
+  const needle = search.toLowerCase();
+  const filtered = allRows.filter((e) => {
+    if (vendor && e.vendor !== vendor) return false;
+    if (needle && ![e.vendor, e.model, e.type, e.serial, e.name, e.ip_address, displayName(e, renames)].some((v) => v && String(v).toLowerCase().includes(needle))) return false;
+    if (f === "offline") return e.status === "offline";
+    if (f !== "all") return kindBucket(e) === f;
+    return true;
+  }).sort((a, b) => (BUCKET_RANK[kindBucket(a)] - BUCKET_RANK[kindBucket(b)]) || displayName(a, renames).localeCompare(displayName(b, renames)));
+  const onlineCount = allRows.filter((e) => e.status === "online").length;
+  const offlineCount = allRows.filter((e) => e.status === "offline").length;
+  const expSoonRows = allRows.filter((e) => {
+    const x = [e.license_expires, e.warranty_expires].filter(Boolean).sort()[0];
+    return x && daysUntil(x) <= 90;
+  });
+  const tiles = allRows.length ? `<div class="statgrid">
+    <div class="stat"><b>${allRows.length}</b><span>Devices</span></div>
+    <div class="stat"><b>${onlineCount}</b><span>Online</span></div>
+    <div class="stat"><b>${offlineCount}</b><span>Offline</span></div>
+    <div class="stat"><b>${expSoonRows.length}</b><span>Expiring within 90 days</span></div>
+  </div>` : "";
+  const chipBase = new URLSearchParams();
+  if (search) chipBase.set("q", search);
+  if (vendor) chipBase.set("vendor", vendor);
+  const chip = (key, label, n) => {
+    const p = new URLSearchParams(chipBase);
+    if (key !== "all") p.set("f", key);
+    const qs = p.toString();
+    const on = f === key;
+    return `<a href="/app/locations/${locationId}/equipment${qs ? "?" + qs : ""}" style="padding:6px 12px;border-radius:999px;border:1px solid ${on ? "#0A1628" : "#D5DDE8"};background:${on ? "#0A1628" : "#fff"};color:${on ? "#fff" : "#33475E"};font-weight:${on ? "700" : "500"};text-decoration:none;white-space:nowrap">${label} (${n})</a>`;
+  };
+  const bucketCount = (k) => allRows.filter((e) => kindBucket(e) === k).length;
+  const chips = allRows.length ? `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px">${chip("all", "All", allRows.length)}${chip("computers", "Computers", bucketCount("computers"))}${chip("phones", "Phones", bucketCount("phones"))}${chip("printers", "Printers", bucketCount("printers"))}${chip("network", "Network gear", bucketCount("network"))}${chip("other", "Other", bucketCount("other"))}${chip("offline", "Offline", offlineCount)}</div>` : "";
+  const rows = filtered.map((e) => {
     const exp = [e.license_expires, e.warranty_expires].filter(Boolean).sort()[0];
     const days = daysUntil(exp);
     const pill = exp && days <= 90 ? `<span class="pill warn">${esc(fmtDateUS(exp))}</span>` : exp ? esc(fmtDateUS(exp)) : '<span class="muted">Nothing on file</span>';
@@ -449,26 +495,22 @@ export async function equipmentPage(env, request, user, locationId) {
     const sub = [kind !== title ? kind : "", e.vendor, e.model && e.model !== title ? e.model : "", e.serial ? "Serial " + e.serial : "", e.firmware ? "Firmware " + e.firmware : "", !renamed && bn && bn !== title ? `Network name: ${bn}` : ""].filter(Boolean).join(" · ");
     const statusPill = e.status === "online" ? `<span class="pill on">Online</span>`
       : e.status === "offline" ? `<span class="pill off">Offline</span>` : `<span class="pill">${esc(e.status)}</span>`;
+    const lastSeen = e.status === "offline" && e.last_seen_at ? `<br><span class="muted" style="font-size:12px">Last seen ${esc(relTime(e.last_seen_at))}</span>` : "";
     const mode = e.ip_mode === "static" ? ` <span class="pill">Static</span>` : e.ip_mode === "dhcp" ? ` <span class="pill">DHCP</span>` : "";
-    return `<tr><td><b>${esc(title)}</b>${sub ? `<br><span class="muted">${esc(sub)}</span>` : ""}</td>
-      <td>${statusPill}</td><td>${e.ip_address ? esc(e.ip_address) + mode : '<span class="muted">—</span>'}</td><td>${pill}</td>${canEdit ? `<td><a href="/app/locations/${locationId}/equipment/${e.id}/edit">Edit</a></td>` : ""}</tr>`;
+    return `<tr><td><div style="display:flex;gap:10px;align-items:flex-start">${kindTile(e)}<div><a href="/app/locations/${locationId}/equipment/${e.id}" style="font-weight:700;color:inherit;text-decoration:none">${esc(title)}</a>${sub ? `<br><span class="muted">${esc(sub)}</span>` : ""}</div></div></td>
+      <td>${statusPill}${lastSeen}</td><td>${e.ip_address ? esc(e.ip_address) + mode : '<span class="muted">—</span>'}</td>${isFb ? `<td>${pill}</td>` : ""}${canEdit ? `<td><a href="/app/locations/${locationId}/equipment/${e.id}/edit">Edit</a></td>` : ""}</tr>`;
   }).join("");
   // A plain-language "needs attention" strip, only when something is
   // actually wrong: offline devices by the name the office knows, and
   // anything expiring inside 90 days.
   let attention = "";
-  try {
-    const { results: allRows } = await env.DB.prepare("SELECT * FROM equipment WHERE location_id = ?").bind(locationId).all();
-    const off = (allRows || []).filter((e) => e.status === "offline");
-    const expSoon = (allRows || []).filter((e) => {
-      const x = [e.license_expires, e.warranty_expires].filter(Boolean).sort()[0];
-      return x && daysUntil(x) <= 90;
-    });
+  {
+    const off = allRows.filter((e) => e.status === "offline");
     const bits = [];
     if (off.length) bits.push(`${off.length === 1 ? "1 device is" : off.length + " devices are"} offline: ${off.slice(0, 4).map((e) => esc(displayName(e, renames))).join(", ")}${off.length > 4 ? ", and more" : ""}`);
-    if (expSoon.length) bits.push(`${expSoon.length === 1 ? "1 item expires" : expSoon.length + " items expire"} within 90 days`);
+    if (expSoonRows.length) bits.push(`${expSoonRows.length === 1 ? "1 item expires" : expSoonRows.length + " items expire"} within 90 days`);
     if (bits.length) attention = `<div class="card" style="border-left:4px solid #b45309"><p style="margin:0"><b>Needs attention:</b> ${bits.join(". ")}.</p></div>`;
-  } catch { attention = ""; }
+  }
   const addForm = canEdit ? `<div class="card"><h3>Add equipment</h3>
     <form method="post" action="/app/locations/${locationId}/equipment" class="row" style="align-items:end">
       <span style="flex:1;min-width:130px"><label>Vendor</label><input name="vendor" list="eq-vendors" placeholder="Sophos, UniFi, SonicWall">${datalist("eq-vendors", EQ_VENDORS)}</span>
@@ -483,15 +525,143 @@ export async function equipmentPage(env, request, user, locationId) {
       <span style="flex:1;min-width:150px"><label>License expires</label><input name="license_expires" type="date"></span>
       <span style="flex:1;min-width:150px"><label>Warranty expires</label><input name="warranty_expires" type="date"></span>
       <button class="btn small" type="submit">Add</button></form></div>` : "";
-  const body = `${locNav(loc, "equipment")}<h1>Equipment</h1>${locTabs(loc, "equipment")}${attention}
+  const colCount = 3 + (isFb ? 1 : 0) + (canEdit ? 1 : 0);
+  const body = `${locNav(loc, "equipment")}<h1>Equipment</h1>${locTabs(loc, "equipment")}${attention}${tiles}
     <form method="get" class="row" style="margin-bottom:14px">
       <span style="flex:2;min-width:180px"><input name="q" placeholder="Search name, model, serial, IP address" value="${esc(search)}"></span>
       <span style="flex:1;min-width:140px"><select name="vendor"><option value="">All vendors</option>
         ${vendors.map((v) => `<option ${v === vendor ? "selected" : ""}>${esc(v)}</option>`).join("")}</select></span>
-      <button class="btn small secondary" type="submit">Filter</button></form>
-    <div class="card" style="padding:8px 14px"><div class="tscroll"><table class="stack"><thead><tr><th>Device</th><th>Status</th><th>IP address</th><th>Next expiry</th>${canEdit ? "<th></th>" : ""}</tr></thead>
-    <tbody>${rows || `<tr><td colspan="${canEdit ? 5 : 4}" class="muted">No equipment recorded yet.</td></tr>`}</tbody></table></div></div>${addForm}`;
+      ${f !== "all" ? `<input type="hidden" name="f" value="${esc(f)}">` : ""}
+      <button class="btn small secondary" type="submit">Filter</button>
+      <a class="btn small secondary" href="/app/locations/${locationId}/equipment/print">Print inventory</a>
+      <a class="btn small secondary" href="/app/locations/${locationId}/equipment.csv">Download CSV</a></form>
+    ${chips}
+    <div class="card" style="padding:8px 14px"><div class="tscroll"><table class="stack"><thead><tr><th>Device</th><th>Status</th><th>IP address</th>${isFb ? "<th>Next expiry</th>" : ""}${canEdit ? "<th></th>" : ""}</tr></thead>
+    <tbody>${rows || `<tr><td colspan="${colCount}" class="muted">${allRows.length ? "Nothing matches that filter." : "No equipment recorded yet."}</td></tr>`}</tbody></table></div></div>${addForm}`;
   return page({ title: "Equipment", user, body });
+}
+
+// ---------- Device detail, print sheet, CSV ----------
+
+export async function equipmentDetailPage(env, request, user, locationId, equipmentId) {
+  const { loc, error } = await guard(env, user, locationId);
+  if (error) return denied(user, error);
+  if (!(await laneOn(env.DB, loc.customer_id, locationId))) return lockedTile(user, loc, "Equipment", "managed_it");
+  const row = await env.DB.prepare("SELECT * FROM equipment WHERE id = ? AND location_id = ?").bind(equipmentId, locationId).first();
+  if (!row) return denied(user, 404);
+  const scope = await locationScope(env.DB, user, locationId);
+  const canEdit = user.kind === "flossbyte" || scope === "admin";
+  const isFb = user.kind === "flossbyte";
+  const renames = await loadRenames(env.DB, locationId);
+  const title = displayName(row, renames);
+  const kind = deviceKind(row);
+  let parent = null;
+  let children = [];
+  try {
+    const cols = await env.DB.prepare("PRAGMA table_info(equipment)").all();
+    if ((cols.results || []).some((c) => c.name === "parent_mac")) {
+      if (row.parent_mac) parent = await env.DB.prepare("SELECT * FROM equipment WHERE location_id = ? AND mac = ?").bind(locationId, row.parent_mac).first();
+      if (row.mac) {
+        const { results: kids } = await env.DB.prepare("SELECT * FROM equipment WHERE location_id = ? AND parent_mac = ? ORDER BY name").bind(locationId, row.mac).all();
+        children = kids || [];
+      }
+    }
+  } catch { parent = null; children = []; }
+  let stats = null;
+  if (row.mac) {
+    try {
+      const snap = await env.DB.prepare("SELECT payload FROM network_snapshots WHERE location_id = ? AND kind = 'device_stats'").bind(locationId).first();
+      const devs = snap && snap.payload ? (JSON.parse(snap.payload).devices || []) : [];
+      stats = devs.find((d) => d.mac && d.mac.toLowerCase() === String(row.mac).toLowerCase()) || null;
+    } catch { stats = null; }
+  }
+  const statusPill = row.status === "online" ? `<span class="pill on">Online</span>`
+    : row.status === "offline" ? `<span class="pill off">Offline</span>` : `<span class="pill">${esc(row.status)}</span>`;
+  const upFmt = (sec) => { if (typeof sec !== "number") return ""; const d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600); return d ? `${d}d ${h}h` : `${h}h`; };
+  const expField = (label, d) => {
+    if (!d) return "";
+    const days = daysUntil(d);
+    return `<div><span class="muted">${label}</span><br><b>${esc(fmtDateUS(d))}</b>${days <= 90 ? ` <span class="pill warn">${days < 0 ? "expired" : days + " days left"}</span>` : ""}</div>`;
+  };
+  const bn = baseName(row);
+  const renamed = (row.external_id && renames[row.external_id]) || (row.mac && renames[row.mac]);
+  const fields = [
+    row.ip_address ? `<div><span class="muted">IP address</span><br><b>${esc(row.ip_address)}</b>${row.ip_mode === "static" ? ' <span class="pill">Static</span>' : row.ip_mode === "dhcp" ? ' <span class="pill">DHCP</span>' : ""}</div>` : "",
+    parent ? `<div><span class="muted">Plugged into</span><br><a href="/app/locations/${locationId}/equipment/${parent.id}"><b>${esc(displayName(parent, renames))}</b></a></div>` : "",
+    row.model ? `<div><span class="muted">Model</span><br>${esc(row.vendor ? row.vendor + " " : "")}${esc(row.model)}</div>` : "",
+    row.serial ? `<div><span class="muted">Serial number</span><br>${esc(row.serial)}</div>` : "",
+    row.firmware ? `<div><span class="muted">Firmware</span><br>${esc(row.firmware)}</div>` : "",
+    isFb && row.mac ? `<div><span class="muted">MAC address</span><br>${esc(row.mac)}</div>` : "",
+    !renamed && bn && bn !== title ? `<div><span class="muted">Network name</span><br>${esc(bn)}</div>` : "",
+    row.last_seen_at ? `<div><span class="muted">Last seen</span><br>${esc(relTime(row.last_seen_at))}</div>` : "",
+    expField("License expires", row.license_expires),
+    expField("Warranty expires", row.warranty_expires),
+    `<div><span class="muted">Record</span><br>${row.source === "unifi" || row.source === "unifi-client" ? "Synced from UniFi" : row.source === "sophos" ? "Synced from Sophos" : "Added by FlossByte"}</div>`,
+  ].filter(Boolean).join("");
+  const health = stats ? `<div class="card"><h3 style="margin-top:0">Health</h3>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px">
+      ${typeof stats.cpu === "number" ? `<div><span class="muted">Processor</span><br><b>${Math.round(stats.cpu)}%</b> used</div>` : ""}
+      ${typeof stats.mem === "number" ? `<div><span class="muted">Memory</span><br><b>${Math.round(stats.mem)}%</b> used</div>` : ""}
+      ${typeof stats.uptimeSec === "number" ? `<div><span class="muted">Uptime</span><br><b>${upFmt(stats.uptimeSec)}</b></div>` : ""}
+    </div></div>` : "";
+  const kids = children.length ? `<div class="card"><h3 style="margin-top:0">Plugged into this device</h3>
+    ${children.slice(0, 15).map((c) => `<p style="margin:6px 0"><a href="/app/locations/${locationId}/equipment/${c.id}">${esc(displayName(c, renames))}</a> <span class="muted">${esc(deviceKind(c))}${c.ip_address ? " · " + esc(c.ip_address) : ""}</span></p>`).join("")}
+    ${children.length > 15 ? `<p class="muted">and ${children.length - 15} more</p>` : ""}</div>` : "";
+  const body = `${locNav(loc, "equipment")}<p class="flash-print-hide"><a href="/app/locations/${locationId}/equipment">&larr; Equipment</a></p>
+    <div class="card"><div style="display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap">
+      ${kindTile(row, 46)}
+      <div style="flex:1;min-width:220px"><h1 style="margin:0 0 4px">${esc(title)}</h1>
+      <p class="muted" style="margin:0">${esc(kind)} at ${esc(loc.name)}</p></div>
+      <div>${statusPill}</div></div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px;margin-top:18px">${fields}</div>
+      ${row.notes ? `<p style="margin:16px 0 0"><span class="muted">Notes</span><br>${esc(row.notes)}</p>` : ""}
+      ${canEdit ? `<p style="margin:18px 0 0"><a class="btn small" href="/app/locations/${locationId}/equipment/${row.id}/edit">Edit this device</a></p>` : ""}
+    </div>${health}${kids}`;
+  return page({ title: title, user, body });
+}
+
+export async function equipmentPrintPage(env, request, user, locationId) {
+  const { loc, error } = await guard(env, user, locationId);
+  if (error) return denied(user, error);
+  if (!(await laneOn(env.DB, loc.customer_id, locationId))) return lockedTile(user, loc, "Equipment", "managed_it");
+  const { results } = await env.DB.prepare("SELECT * FROM equipment WHERE location_id = ?").bind(locationId).all();
+  const renames = await loadRenames(env.DB, locationId);
+  const rows = (results || []).sort((a, b) => (BUCKET_RANK[kindBucket(a)] - BUCKET_RANK[kindBucket(b)]) || displayName(a, renames).localeCompare(displayName(b, renames)));
+  const today = fmtDateUS(new Date().toISOString().slice(0, 10));
+  const trs = rows.map((e) => {
+    const exp = [e.license_expires, e.warranty_expires].filter(Boolean).sort()[0];
+    return `<tr><td><b>${esc(displayName(e, renames))}</b></td><td>${esc(deviceKind(e))}</td><td>${esc(e.ip_address || "")}</td><td>${esc(e.serial || "")}</td><td>${esc(e.status)}</td><td>${exp ? esc(fmtDateUS(exp)) : ""}</td></tr>`;
+  }).join("");
+  const body = `${locNav(loc, "equipment")}<p class="flash-print-hide"><a href="/app/locations/${locationId}/equipment">&larr; Equipment</a></p>
+    <div class="card"><h1 style="margin-top:0">Equipment inventory</h1>
+    <p class="muted">${esc(loc.customer_name)} · ${esc(loc.name)} · ${esc(today)} · ${rows.length} devices</p>
+    <div class="tscroll"><table class="stack"><thead><tr><th>Device</th><th>Type</th><th>IP address</th><th>Serial</th><th>Status</th><th>Next expiry</th></tr></thead>
+    <tbody>${trs || `<tr><td colspan="6" class="muted">No equipment recorded yet.</td></tr>`}</tbody></table></div>
+    <p class="muted" style="margin-bottom:0">Kept by FlossByte. This list is updated automatically from the office network.</p></div>
+    <p class="flash-print-hide"><button class="btn" type="button" onclick="window.print()">Print this sheet</button></p>
+    <script>window.addEventListener("load",function(){setTimeout(function(){window.print()},400)})</script>`;
+  return page({ title: "Equipment inventory", user, body });
+}
+
+function csvCell(v) {
+  const s = v == null ? "" : String(v);
+  return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+
+export async function equipmentCsv(env, request, user, locationId) {
+  const { loc, error } = await guard(env, user, locationId);
+  if (error) return new Response("Not found", { status: error });
+  if (!(await laneOn(env.DB, loc.customer_id, locationId))) return new Response("Not available", { status: 403 });
+  const { results } = await env.DB.prepare("SELECT * FROM equipment WHERE location_id = ?").bind(locationId).all();
+  const renames = await loadRenames(env.DB, locationId);
+  const head = ["Device", "Type", "Vendor", "Model", "Serial", "IP address", "IP type", "Status", "Firmware", "MAC address", "License expires", "Warranty expires"];
+  const lines = [head.join(",")];
+  for (const e of results || []) {
+    lines.push([displayName(e, renames), deviceKind(e), e.vendor, e.model, e.serial, e.ip_address, e.ip_mode, e.status, e.firmware, e.mac, e.license_expires, e.warranty_expires].map(csvCell).join(","));
+  }
+  return new Response(lines.join("\n") + "\n", {
+    headers: { "Content-Type": "text/csv; charset=utf-8", "Content-Disposition": `attachment; filename="equipment-${locationId}.csv"` },
+  });
 }
 
 // ---------- Topology ----------
