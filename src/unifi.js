@@ -611,6 +611,10 @@ export async function runUnifiSync(env) {
                   for (const s of nc.ssids || []) {
                     const o = oldSsid[s.name || s.ssid];
                     if (o && (o.security || "") !== (s.security || "")) events.push(`WiFi security changed for ${s.name || s.ssid}: ${o.security || "none"} to ${s.security || "none"}`);
+                    // Password changes are logged, never with the value;
+                    // the snapshot itself carries the new password.
+                    if (o && o.pass && s.pass && o.pass !== s.pass) events.push(`WiFi password changed for ${s.name || s.ssid}`);
+                    else if (o && !o.pass && s.pass) events.push(`WiFi password is now on record for ${s.name || s.ssid}`);
                   }
                   const oldTun = {};
                   for (const t of oc.vpnTunnels || []) oldTun[t.name] = t;
