@@ -76,7 +76,9 @@ textarea{min-height:90px}
 table{width:100%;border-collapse:collapse;font-size:14px}
 th,td{text-align:left;padding:9px 8px;border-bottom:1px solid var(--line);vertical-align:top}
 th{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.5px}
-.pill{display:inline-block;padding:2px 9px;border-radius:999px;font-size:12px;font-weight:600;background:#e7edf3}
+.pill{display:inline-block;padding:2px 9px;border-radius:999px;font-size:12px;font-weight:600;background:#e7edf3;white-space:nowrap}
+.tscroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+.tscroll>table{min-width:600px}
 .pill.on{background:#e0f5ef;color:var(--ok)}
 .pill.off{background:#f3e2e0;color:var(--bad)}
 .pill.warn{background:var(--warn-bg);color:var(--warn)}
