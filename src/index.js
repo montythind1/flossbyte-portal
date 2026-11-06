@@ -178,6 +178,10 @@ async function route(request, env) {
   if (m && method === "GET") return client.topologyPage(env, request, user, Number(m[1]));
   m = path.match(/^\/app\/locations\/(\d+)\/network$/);
   if (m && method === "GET") return client.networkPage(env, request, user, Number(m[1]));
+  m = path.match(/^\/app\/locations\/(\d+)\/wifi$/);
+  if (m && method === "POST") return client.wifiAddPost(env, request, user, Number(m[1]));
+  m = path.match(/^\/app\/locations\/(\d+)\/wifi\/delete$/);
+  if (m && method === "POST") return client.wifiDeletePost(env, request, user, Number(m[1]));
   if (m && method === "POST") return client.equipmentPost(env, request, user, Number(m[1]));
   m = path.match(/^\/app\/locations\/(\d+)\/equipment\/(\d+)\/edit$/);
   if (m && method === "GET") return client.equipmentEditPage(env, request, user, Number(m[1]), Number(m[2]));

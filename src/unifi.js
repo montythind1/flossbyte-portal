@@ -70,9 +70,11 @@ async function fetchSiteLocal(env, hostId, consoleMac) {
       };
       const localDevices = await paged("devices");
       const uuidToMac = {};
+      const ipByMac = {};
       for (const d of localDevices) {
         const m = normMac(d.macAddress || d.mac);
         if (d.id && m) uuidToMac[String(d.id)] = m;
+        if (m && d.ipAddress) ipByMac[m] = String(d.ipAddress);
       }
       // Each local device's parent: its own uplink when the console will
       // say (a details read per device), otherwise the console itself,
@@ -128,7 +130,13 @@ async function fetchSiteLocal(env, hostId, consoleMac) {
         ssids = pick(rawSsids, ["name", "ssid", "enabled"]).map((s, i) => {
           const r = rawSsids[i] || {};
           const sec = r.security || (r.securityConfiguration && (r.securityConfiguration.type || r.securityConfiguration.mode)) || r.encryption;
-          return sec ? { ...s, security: String(sec) } : s;
+          // Personal (PSK) security configurations carry the passphrase
+          // in the API; keep it when a console provides it so the office
+          // can see its own WiFi password in the portal.
+          const pass = (r.securityConfiguration && r.securityConfiguration.passphrase) || r.passphrase || null;
+          const out = sec ? { ...s, security: String(sec) } : { ...s };
+          if (pass) out.pass = String(pass);
+          return out;
         });
         noteStatus("ssids", ssids, null);
       } catch (err) { ssids = null; noteStatus("ssids", null, err); }
@@ -166,7 +174,7 @@ async function fetchSiteLocal(env, hostId, consoleMac) {
           break;
         } catch { protect = null; }
       }
-      return { clients, uuidToMac, deviceParent, sectionStatus, sections: { wans, networks, ssids, fwPolicies, fwZones, aclRules, vpnServers, vpnTunnels, radiusProfiles, deviceStats, protect } };
+      return { clients, uuidToMac, deviceParent, ipByMac, sectionStatus, sections: { wans, networks, ssids, fwPolicies, fwZones, aclRules, vpnServers, vpnTunnels, radiusProfiles, deviceStats, protect } };
     } catch { /* try the other connector path spelling */ }
   }
   return null;
@@ -341,6 +349,8 @@ export async function runUnifiSync(env) {
     // column exists, so this sync keeps working before it is applied.
     let hasParent = true;
     try { await env.DB.prepare("SELECT parent_mac FROM equipment LIMIT 1").all(); } catch { hasParent = false; }
+    let hasIp = true;
+    try { await env.DB.prepare("SELECT ip_address FROM equipment LIMIT 1").all(); } catch { hasIp = false; }
     // Snapshots (migration 0011) are stored only when the table exists,
     // so this sync keeps working before it is applied.
     let hasSnapshots = true;
@@ -418,38 +428,33 @@ export async function runUnifiSync(env) {
       }
       const local = siteId ? siteLocal[String(siteId)] : null;
       const parentMac = hasParent && local && mac ? (local.deviceParent[mac] ?? null) : null;
+      // The console's own device list carries each box's LAN address;
+      // store it when this run actually read it (never erase a known
+      // address with an unread console's silence).
+      const ipVal = hasIp && local && mac ? (local.ipByMac && local.ipByMac[mac]) || null : null;
       if (row) {
         if (row.source !== "unifi") summary.claimed++;
-        if (hasParent) {
-          await env.DB.prepare(
-            `UPDATE equipment SET location_id = ?, vendor = 'UniFi', type = ?, model = ?, name = ?,
-               serial = COALESCE(?, serial), status = ?, firmware = ?, mac = ?, source = 'unifi',
-               external_id = ?, parent_mac = COALESCE(?, parent_mac),
-               last_seen_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`)
-            .bind(locationId, fields.type, fields.model, fields.name, fields.serial,
-              fields.status, fields.firmware, mac, externalId, parentMac, row.id).run();
-        } else {
-          await env.DB.prepare(
-            `UPDATE equipment SET location_id = ?, vendor = 'UniFi', type = ?, model = ?, name = ?,
-               serial = COALESCE(?, serial), status = ?, firmware = ?, mac = ?, source = 'unifi',
-               external_id = ?, last_seen_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`)
-            .bind(locationId, fields.type, fields.model, fields.name, fields.serial,
-              fields.status, fields.firmware, mac, externalId, row.id).run();
-        }
+        const binds = [locationId, fields.type, fields.model, fields.name, fields.serial,
+          fields.status, fields.firmware, mac, externalId];
+        let sql = `UPDATE equipment SET location_id = ?, vendor = 'UniFi', type = ?, model = ?, name = ?,
+          serial = COALESCE(?, serial), status = ?, firmware = ?, mac = ?, source = 'unifi', external_id = ?`;
+        if (ipVal) { sql += ", ip_address = ?"; binds.push(ipVal); }
+        if (hasParent) { sql += ", parent_mac = COALESCE(?, parent_mac)"; binds.push(parentMac); }
+        sql += ", last_seen_at = datetime('now'), updated_at = datetime('now') WHERE id = ?";
+        binds.push(row.id);
+        await env.DB.prepare(sql).bind(...binds).run();
         summary.updated++;
         seenByLocation[locationId].add(row.id);
       } else {
-        const ins = hasParent
-          ? await env.DB.prepare(
-            `INSERT INTO equipment (location_id, vendor, type, model, serial, status, firmware, name, mac, source, external_id, parent_mac, last_seen_at)
-             VALUES (?, 'UniFi', ?, ?, ?, ?, ?, ?, ?, 'unifi', ?, ?, datetime('now'))`)
-            .bind(locationId, fields.type, fields.model, fields.serial, fields.status,
-              fields.firmware, fields.name, mac, externalId, parentMac).run()
-          : await env.DB.prepare(
-            `INSERT INTO equipment (location_id, vendor, type, model, serial, status, firmware, name, mac, source, external_id, last_seen_at)
-             VALUES (?, 'UniFi', ?, ?, ?, ?, ?, ?, ?, 'unifi', ?, datetime('now'))`)
-            .bind(locationId, fields.type, fields.model, fields.serial, fields.status,
-              fields.firmware, fields.name, mac, externalId).run();
+        const cols = ["location_id", "vendor", "type", "model", "serial", "status", "firmware", "name", "mac", "source", "external_id"];
+        const vals = ["?", "'UniFi'", "?", "?", "?", "?", "?", "?", "?", "'unifi'", "?"];
+        const binds = [locationId, fields.type, fields.model, fields.serial, fields.status,
+          fields.firmware, fields.name, mac, externalId];
+        if (ipVal) { cols.push("ip_address"); vals.push("?"); binds.push(ipVal); }
+        if (hasParent) { cols.push("parent_mac"); vals.push("?"); binds.push(parentMac); }
+        cols.push("last_seen_at"); vals.push("datetime('now')");
+        const ins = await env.DB.prepare(
+          `INSERT INTO equipment (${cols.join(", ")}) VALUES (${vals.join(", ")})`).bind(...binds).run();
         summary.inserted++;
         seenByLocation[locationId].add(ins.meta.last_row_id);
       }
@@ -502,33 +507,27 @@ export async function runUnifiSync(env) {
             row = await env.DB.prepare(
               "SELECT * FROM equipment WHERE location_id = ? AND mac = ?").bind(locationId, mac).first();
           }
+          const clientIp = hasIp ? (c.ipAddress || c.ip || null) : null;
           if (row) {
-            if (hasParent) {
-              await env.DB.prepare(
-                `UPDATE equipment SET location_id = ?, vendor = 'UniFi', type = 'Connected device', name = ?,
-                   status = 'online', mac = ?, source = 'unifi-client', external_id = ?,
-                   parent_mac = COALESCE(?, parent_mac),
-                   last_seen_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`)
-                .bind(locationId, name, mac, externalId, parentMac, row.id).run();
-            } else {
-              await env.DB.prepare(
-                `UPDATE equipment SET location_id = ?, vendor = 'UniFi', type = 'Connected device', name = ?,
-                   status = 'online', mac = ?, source = 'unifi-client', external_id = ?,
-                   last_seen_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`)
-                .bind(locationId, name, mac, externalId, row.id).run();
-            }
+            const binds = [locationId, name, mac, externalId];
+            let sql = `UPDATE equipment SET location_id = ?, vendor = 'UniFi', type = 'Connected device', name = ?,
+              status = 'online', mac = ?, source = 'unifi-client', external_id = ?`;
+            if (clientIp) { sql += ", ip_address = ?"; binds.push(String(clientIp)); }
+            if (hasParent) { sql += ", parent_mac = COALESCE(?, parent_mac)"; binds.push(parentMac); }
+            sql += ", last_seen_at = datetime('now'), updated_at = datetime('now') WHERE id = ?";
+            binds.push(row.id);
+            await env.DB.prepare(sql).bind(...binds).run();
             summary.clientsUpdated++;
             seen.add(row.id);
           } else {
-            const ins = hasParent
-              ? await env.DB.prepare(
-                `INSERT INTO equipment (location_id, vendor, type, model, serial, status, firmware, name, mac, source, external_id, parent_mac, last_seen_at)
-                 VALUES (?, 'UniFi', 'Connected device', NULL, NULL, 'online', NULL, ?, ?, 'unifi-client', ?, ?, datetime('now'))`)
-                .bind(locationId, name, mac, externalId, parentMac).run()
-              : await env.DB.prepare(
-                `INSERT INTO equipment (location_id, vendor, type, model, serial, status, firmware, name, mac, source, external_id, last_seen_at)
-                 VALUES (?, 'UniFi', 'Connected device', NULL, NULL, 'online', NULL, ?, ?, 'unifi-client', ?, datetime('now'))`)
-                .bind(locationId, name, mac, externalId).run();
+            const cols = ["location_id", "vendor", "type", "model", "serial", "status", "firmware", "name", "mac", "source", "external_id"];
+            const vals = ["?", "'UniFi'", "'Connected device'", "NULL", "NULL", "'online'", "NULL", "?", "?", "'unifi-client'", "?"];
+            const binds = [locationId, name, mac, externalId];
+            if (clientIp) { cols.push("ip_address"); vals.push("?"); binds.push(String(clientIp)); }
+            if (hasParent) { cols.push("parent_mac"); vals.push("?"); binds.push(parentMac); }
+            cols.push("last_seen_at"); vals.push("datetime('now')");
+            const ins = await env.DB.prepare(
+              `INSERT INTO equipment (${cols.join(", ")}) VALUES (${vals.join(", ")})`).bind(...binds).run();
             summary.clientsAdded++;
             seen.add(ins.meta.last_row_id);
           }

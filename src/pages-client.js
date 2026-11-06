@@ -53,8 +53,8 @@ function locNav(loc, active) {
   return `<div class="shell"><aside class="rail">
     <div class="rail-context"><div class="rc-t">${esc(loc.name)}</div><div class="rc-s">${esc(loc.customer_name)}</div></div>
     ${item("overview", base, "Overview", "grid")}${item("equipment", base + "/equipment", "Equipment", "monitor")}
-    ${item("topology", base + "/topology", "Topology", "topology")}
-    ${item("network", base + "/network", "Network", "activity")}
+    ${item("topology", base + "/topology", "Network map", "topology")}
+    ${item("network", base + "/network", "WiFi & Internet", "activity")}
     ${item("tickets", base + "/tickets", "Tickets", "ticket")}${item("documents", base + "/documents", "Documents", "folder")}
     ${item("ask", base + "/ask", "Ask", "chat")}
     <div class="rail-sep"></div>
@@ -334,9 +334,18 @@ export async function equipmentPage(env, request, user, locationId) {
   const q = new URL(request.url).searchParams;
   const search = (q.get("q") || "").trim();
   const vendor = (q.get("vendor") || "").trim();
+  let hasIpCol = false;
+  try {
+    const cols = await env.DB.prepare("PRAGMA table_info(equipment)").all();
+    hasIpCol = (cols.results || []).some((c) => c.name === "ip_address");
+  } catch { hasIpCol = false; }
   let sql = "SELECT * FROM equipment WHERE location_id = ?";
   const binds = [locationId];
-  if (search) { sql += " AND (vendor LIKE ? OR model LIKE ? OR type LIKE ? OR serial LIKE ?)"; const like = `%${search}%`; binds.push(like, like, like, like); }
+  if (search) {
+    const like = `%${search}%`;
+    if (hasIpCol) { sql += " AND (vendor LIKE ? OR model LIKE ? OR type LIKE ? OR serial LIKE ? OR name LIKE ? OR ip_address LIKE ?)"; binds.push(like, like, like, like, like, like); }
+    else { sql += " AND (vendor LIKE ? OR model LIKE ? OR type LIKE ? OR serial LIKE ? OR name LIKE ?)"; binds.push(like, like, like, like, like); }
+  }
   if (vendor) { sql += " AND vendor = ?"; binds.push(vendor); }
   sql += " ORDER BY vendor, model";
   const { results } = await env.DB.prepare(sql).bind(...binds).all();
@@ -347,18 +356,23 @@ export async function equipmentPage(env, request, user, locationId) {
     const exp = [e.license_expires, e.warranty_expires].filter(Boolean).sort()[0];
     const days = daysUntil(exp);
     const pill = exp && days <= 90 ? `<span class="pill warn">${esc(fmtDateUS(exp))}</span>` : esc(fmtDateUS(exp));
-    const modelCell = e.name ? (e.model ? `${e.name} (${e.model})` : e.name) : (e.model || "");
+    const title = e.name || e.model || e.type || "Device";
+    const sub = [e.vendor, e.type, e.model && e.model !== title ? e.model : "", e.serial ? "Serial " + e.serial : "", e.firmware ? "Firmware " + e.firmware : ""].filter(Boolean).join(" · ");
     const statusPill = e.status === "online" ? `<span class="pill on">Online</span>`
       : e.status === "offline" ? `<span class="pill off">Offline</span>` : `<span class="pill">${esc(e.status)}</span>`;
-    return `<tr><td>${esc(e.vendor || "")}</td><td>${esc(e.type || "")}</td><td>${esc(modelCell)}</td>
-      <td>${esc(e.serial || "")}</td><td>${statusPill}</td><td>${esc(e.firmware || "")}</td><td>${pill}</td>${canEdit ? `<td><a href="/app/locations/${locationId}/equipment/${e.id}/edit">Edit</a></td>` : ""}</tr>`;
+    const mode = e.ip_mode === "static" ? ` <span class="pill">Static</span>` : e.ip_mode === "dhcp" ? ` <span class="pill">DHCP</span>` : "";
+    return `<tr><td><b>${esc(title)}</b>${sub ? `<br><span class="muted">${esc(sub)}</span>` : ""}</td>
+      <td>${statusPill}</td><td>${e.ip_address ? esc(e.ip_address) + mode : '<span class="muted">—</span>'}</td><td>${pill}</td>${canEdit ? `<td><a href="/app/locations/${locationId}/equipment/${e.id}/edit">Edit</a></td>` : ""}</tr>`;
   }).join("");
   const addForm = canEdit ? `<div class="card"><h3>Add equipment</h3>
     <form method="post" action="/app/locations/${locationId}/equipment" class="row" style="align-items:end">
       <span style="flex:1;min-width:130px"><label>Vendor</label><input name="vendor" list="eq-vendors" placeholder="Sophos, UniFi, SonicWall">${datalist("eq-vendors", EQ_VENDORS)}</span>
       <span style="flex:1;min-width:110px"><label>Type</label><input name="type" list="eq-types" placeholder="Firewall">${datalist("eq-types", EQ_TYPES)}</span>
+      <span style="flex:1;min-width:130px"><label>Name</label><input name="name" placeholder="Front desk PC"></span>
       <span style="flex:1;min-width:130px"><label>Model</label><input name="model"></span>
       <span style="flex:1;min-width:130px"><label>Serial</label><input name="serial"></span>
+      <span style="flex:1;min-width:120px"><label>IP address</label><input name="ip_address" placeholder="192.168.1.50"></span>
+      <span style="flex:1;min-width:130px"><label>IP type</label><select name="ip_mode"><option value="">Not set</option><option value="dhcp">DHCP (automatic)</option><option value="static">Static (fixed)</option></select></span>
       <span style="flex:1;min-width:110px"><label>Status</label><select name="status"><option>online</option><option>offline</option><option>unknown</option></select></span>
       <span style="flex:1;min-width:130px"><label>Firmware</label><input name="firmware"></span>
       <span style="flex:1;min-width:150px"><label>License expires</label><input name="license_expires" type="date"></span>
@@ -366,12 +380,12 @@ export async function equipmentPage(env, request, user, locationId) {
       <button class="btn small" type="submit">Add</button></form></div>` : "";
   const body = `${locNav(loc, "equipment")}<h1>Equipment</h1>
     <form method="get" class="row" style="margin-bottom:14px">
-      <span style="flex:2;min-width:180px"><input name="q" placeholder="Search model, serial, type" value="${esc(search)}"></span>
+      <span style="flex:2;min-width:180px"><input name="q" placeholder="Search name, model, serial, IP address" value="${esc(search)}"></span>
       <span style="flex:1;min-width:140px"><select name="vendor"><option value="">All vendors</option>
         ${vendors.map((v) => `<option ${v === vendor ? "selected" : ""}>${esc(v)}</option>`).join("")}</select></span>
       <button class="btn small secondary" type="submit">Filter</button></form>
-    <div class="card" style="padding:8px 14px"><div class="tscroll"><table class="stack"><thead><tr><th>Vendor</th><th>Type</th><th>Model</th><th>Serial</th><th>Status</th><th>Firmware</th><th>Next expiry</th>${canEdit ? "<th></th>" : ""}</tr></thead>
-    <tbody>${rows || `<tr><td colspan="${canEdit ? 8 : 7}" class="muted">No equipment recorded yet.</td></tr>`}</tbody></table></div></div>${addForm}`;
+    <div class="card" style="padding:8px 14px"><div class="tscroll"><table class="stack"><thead><tr><th>Device</th><th>Status</th><th>IP address</th><th>Next expiry</th>${canEdit ? "<th></th>" : ""}</tr></thead>
+    <tbody>${rows || `<tr><td colspan="${canEdit ? 5 : 4}" class="muted">No equipment recorded yet.</td></tr>`}</tbody></table></div></div>${addForm}`;
   return page({ title: "Equipment", user, body });
 }
 
@@ -384,25 +398,36 @@ export async function equipmentPage(env, request, user, locationId) {
 export async function topologyPage(env, request, user, locationId) {
   const { loc, error } = await guard(env, user, locationId);
   if (error) return denied(user, error);
-  if (!(await laneOn(env.DB, loc.customer_id, locationId))) return lockedTile(user, loc, "Topology", "managed_it");
+  if (!(await laneOn(env.DB, loc.customer_id, locationId))) return lockedTile(user, loc, "Network map", "managed_it");
   let hasParent = false;
   try {
     const cols = await env.DB.prepare("PRAGMA table_info(equipment)").all();
     hasParent = (cols.results || []).some((c) => c.name === "parent_mac");
   } catch { hasParent = false; }
   if (!hasParent) {
-    const body = `${locNav(loc, "topology")}<h1>Network topology</h1>
-      <div class="card"><p style="margin:0">The topology view needs the latest portal database update before it can draw. Once that update is in, this page builds itself from the hourly sync, with no setup here.</p></div>`;
-    return page({ title: "Topology", user, body });
+    const body = `${locNav(loc, "topology")}<h1>Network map</h1>
+      <div class="card"><p style="margin:0">The network map needs the latest portal database update before it can draw. Once that update is in, this page builds itself from the hourly sync, with no setup here.</p></div>`;
+    return page({ title: "Network map", user, body });
   }
   const { results } = await env.DB.prepare("SELECT * FROM equipment WHERE location_id = ?").bind(locationId).all();
   const all = results || [];
   if (!all.length) {
-    const body = `${locNav(loc, "topology")}<h1>Network topology</h1>
-      <div class="card"><p class="muted" style="margin:0">No equipment recorded yet, so there is nothing to draw. Synced network gear appears here as a tree once it is on the <a href="/app/locations/${locationId}/equipment">Equipment</a> list.</p></div>`;
-    return page({ title: "Topology", user, body });
+    const body = `${locNav(loc, "topology")}<h1>Network map</h1>
+      <div class="card"><p class="muted" style="margin:0">No equipment recorded yet, so there is nothing to draw. Synced network gear appears here once it is on the <a href="/app/locations/${locationId}/equipment">Equipment</a> list.</p></div>`;
+    return page({ title: "Network map", user, body });
   }
-  const label = (e) => e.name ? (e.model ? `${e.name} (${e.model})` : e.name) : (e.model || e.type || "Equipment");
+  // Friendly display name: UniFi appends a fragment of a device's own
+  // MAC address to names it cannot identify ("iPhone 20:74"); strip
+  // that fragment when it matches the row's MAC so the map reads like
+  // a list of things in the office, not a list of codes.
+  const friendlyName = (e) => {
+    let n = e.name || "";
+    const macHex = String(e.mac || "").replace(/[^0-9a-f]/gi, "").toLowerCase();
+    const m = /\s([0-9a-f]{2}):([0-9a-f]{2})$/i.exec(n);
+    if (m && macHex.endsWith((m[1] + m[2]).toLowerCase())) n = n.slice(0, m.index);
+    return n;
+  };
+  const label = (e) => { const n = friendlyName(e); return n ? (e.model && e.type !== "Connected device" ? `${n} (${e.model})` : n) : (e.model || e.type || "Equipment"); };
   const byMac = new Map();
   for (const e of all) if (e.mac) byMac.set(e.mac, e);
   const kids = new Map();
@@ -423,18 +448,19 @@ export async function topologyPage(env, request, user, locationId) {
     if (seen.has(e.id) || depth > 8) return "";
     seen.add(e.id);
     const children = (kids.get(e.id) || []).map((c) => nodeHtml(c, depth + 1)).join("");
-    return `<li><span class="topo-node${e.status === "offline" ? " off" : ""}${depth === 0 ? " root" : ""}"><span class="topo-dot"></span><span class="topo-name">${esc(label(e))}</span><span class="topo-meta">${esc(e.type || "")}</span></span>${children ? `<ul>${children}</ul>` : ""}</li>`;
+    const meta = [e.type, e.ip_address].filter(Boolean).join(" · ");
+    return `<li><span class="topo-node${e.status === "offline" ? " off" : ""}${depth === 0 ? " root" : ""}"><span class="topo-dot"></span><span class="topo-name">${esc(label(e))}</span><span class="topo-meta">${esc(meta)}</span></span>${children ? `<ul>${children}</ul>` : ""}</li>`;
   };
   let tree = roots.map((e) => nodeHtml(e, 0)).join("");
   const leftovers = all.filter((e) => !seen.has(e.id));
   if (leftovers.length) {
-    tree += leftovers.map((e) => `<li><span class="topo-node${e.status === "offline" ? " off" : ""}"><span class="topo-dot"></span><span class="topo-name">${esc(label(e))}</span><span class="topo-meta">${esc(e.type || "")}</span></span></li>`).join("");
+    tree += leftovers.map((e) => { const meta = [e.type, e.ip_address].filter(Boolean).join(" · "); return `<li><span class="topo-node${e.status === "offline" ? " off" : ""}"><span class="topo-dot"></span><span class="topo-name">${esc(label(e))}</span><span class="topo-meta">${esc(meta)}</span></span></li>`; }).join("");
   }
   const online = all.filter((e) => e.status === "online").length;
-  const body = `${locNav(loc, "topology")}<h1>Network topology</h1>
-    <p class="muted" style="margin-top:0">${all.length} devices on record, ${online} online. Drawn from the equipment record and refreshed by the hourly sync. Gear behind a non-UniFi switch shows under the gateway, because UniFi cannot see through it.</p>
+  const body = `${locNav(loc, "topology")}<h1>Network map</h1>
+    <p class="muted" style="margin-top:0">${all.length} devices, ${online} online right now. Devices are grouped under whatever they plug into, starting from the main internet box at the top. A green dot means the device is on; red means it is off or unreachable.</p>
     <div class="card"><div class="topo"><ul>${tree}</ul></div></div>`;
-  return page({ title: "Topology", user, body });
+  return page({ title: "Network map", user, body });
 }
 
 // The Network page renders the snapshots the UniFi sync stores per
@@ -445,15 +471,15 @@ export async function topologyPage(env, request, user, locationId) {
 export async function networkPage(env, request, user, locationId) {
   const { loc, error } = await guard(env, user, locationId);
   if (error) return denied(user, error);
-  if (!(await laneOn(env.DB, loc.customer_id, locationId))) return lockedTile(user, loc, "Network", "managed_it");
+  if (!(await laneOn(env.DB, loc.customer_id, locationId))) return lockedTile(user, loc, "WiFi & Internet", "managed_it");
   let hasTable = false;
   try {
     hasTable = !!(await env.DB.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'network_snapshots'").first());
   } catch { hasTable = false; }
   if (!hasTable) {
-    const body = `${locNav(loc, "network")}<h1>Network</h1>
-      <div class="card"><p style="margin:0">The Network page needs the latest portal database update before it can fill in. Once that update is in, this page builds itself from the hourly sync, with no setup here.</p></div>`;
-    return page({ title: "Network", user, body });
+    const body = `${locNav(loc, "network")}<h1>WiFi &amp; Internet</h1>
+      <div class="card"><p style="margin:0">This page needs the latest portal database update before it can fill in. Once that update is in, this page builds itself from the hourly sync, with no setup here.</p></div>`;
+    return page({ title: "WiFi & Internet", user, body });
   }
   const { results } = await env.DB.prepare(
     "SELECT kind, payload, captured_at FROM network_snapshots WHERE location_id = ?").bind(locationId).all();
@@ -461,15 +487,11 @@ export async function networkPage(env, request, user, locationId) {
   let captured = "";
   for (const r of results || []) {
     try { snaps[r.kind] = JSON.parse(r.payload || "{}"); } catch { snaps[r.kind] = {}; }
-    if (r.captured_at && r.captured_at > captured) captured = r.captured_at;
+    if (r.captured_at && r.captured_at > captured && r.kind !== "wifi") captured = r.captured_at;
   }
-  if (!Object.keys(snaps).length) {
-    const body = `${locNav(loc, "network")}<h1>Network</h1>
-      <div class="card"><p class="muted" style="margin:0">No network data captured yet. For UniFi offices, the hourly sync fills this page in: internet health, network and WiFi settings, firewall and VPN setup, device health, and cameras where UniFi Protect is running.</p></div>`;
-    return page({ title: "Network", user, body });
-  }
-  const n0 = (v) => (typeof v === "number" && Number.isFinite(v)) ? Math.round(v).toLocaleString("en-US") : "—";
+  const isFb = user.kind === "flossbyte";
   const n1 = (v) => (typeof v === "number" && Number.isFinite(v)) ? v.toFixed(1) : "—";
+  const n0 = (v) => (typeof v === "number" && Number.isFinite(v)) ? Math.round(v).toLocaleString("en-US") : "—";
   const pct = (v) => (typeof v === "number" && Number.isFinite(v)) ? `${Math.round(v)}%` : "—";
   const uptimeFmt = (sec) => {
     if (typeof sec !== "number" || !(sec > 0)) return "—";
@@ -485,55 +507,157 @@ export async function networkPage(env, request, user, locationId) {
   };
   const table = (head, rows) => rows.length
     ? `<div class="tscroll"><table class="stack"><thead><tr>${head.map((h) => `<th>${esc(h)}</th>`).join("")}</tr></thead><tbody>${rows.join("")}</tbody></table></div>` : "";
-  const cards = [];
+  const cfg = snaps.config || {};
   const inet = snaps.internet || {};
   const isp = inet.isp || null;
+  let eqTotal = 0, eqOn = 0;
+  try {
+    const r = await env.DB.prepare("SELECT COUNT(*) AS n, SUM(CASE WHEN status = 'online' THEN 1 ELSE 0 END) AS o FROM equipment WHERE location_id = ?").bind(locationId).first();
+    eqTotal = (r && r.n) || 0; eqOn = (r && r.o) || 0;
+  } catch { /* equipment counts are a bonus tile, never a blocker */ }
+
+  // ---- WiFi card: what the front desk actually gets asked for. ----
+  // Passwords come from the sync when a console provides them, and
+  // from the list FlossByte keeps for the office (stored as a 'wifi'
+  // snapshot) when it does not.
+  const manualWifi = (snaps.wifi && Array.isArray(snaps.wifi.networks)) ? snaps.wifi.networks : [];
+  const syncedSsids = cfg.ssids || [];
+  const manualNames = new Set(manualWifi.map((w) => String(w.name || "").toLowerCase()));
+  const wifiEntries = [];
+  for (const w of manualWifi) if (w && w.name) wifiEntries.push({ name: w.name, pass: w.pass || "", kind: w.kind || "", security: "", manual: true });
+  for (const s of syncedSsids) {
+    const nm = s.name || s.ssid;
+    if (!nm || manualNames.has(String(nm).toLowerCase())) continue;
+    wifiEntries.push({ name: nm, pass: s.pass || "", kind: "", security: s.security || "", manual: false });
+  }
+  let anyPass = false;
+  const wifiRow = (w) => {
+    const kindPill = w.kind === "guest" ? ` <span class="pill">For patients</span>` : w.kind === "staff" ? ` <span class="pill on">Staff</span>` : "";
+    const sec = w.security ? ` <span class="muted">${esc(w.security)}</span>` : "";
+    let passHtml;
+    if (w.pass) {
+      anyPass = true;
+      passHtml = `<span class="muted">Password:</span> <code class="wp" data-p="${esc(w.pass)}" style="font-size:15px;letter-spacing:.4px">••••••••••</code>
+        <button type="button" class="btn small secondary" onclick="wpToggle(this)">Show</button>
+        <button type="button" class="btn small secondary" onclick="wpCopy(this)">Copy</button>`;
+    } else {
+      passHtml = `<span class="muted">Password not recorded yet.${isFb ? " Add it below so the office can find it here." : " FlossByte can add it here for you."}</span>`;
+    }
+    const del = w.manual && isFb ? ` <form method="post" action="/app/locations/${locationId}/wifi/delete" style="display:inline"><input type="hidden" name="name" value="${esc(w.name)}"><button class="btn small secondary" type="submit">Remove</button></form>` : "";
+    return `<div style="padding:12px 0;border-bottom:1px solid #eef1f4"><div><b style="font-size:17px">${esc(w.name)}</b>${kindPill}${sec}</div><div style="margin-top:6px">${passHtml}${del}</div></div>`;
+  };
+  const wifiForm = isFb ? `<form method="post" action="/app/locations/${locationId}/wifi" class="row" style="align-items:end;margin-top:14px">
+      <span style="flex:1;min-width:150px"><label>WiFi name</label><input name="name" required placeholder="OfficeWiFi"></span>
+      <span style="flex:1;min-width:150px"><label>Password</label><input name="pass" placeholder="WiFi password"></span>
+      <span style="min-width:140px"><label>Who uses it</label><select name="kind"><option value="staff">Staff</option><option value="guest">Patients (guest)</option><option value="other">Other</option></select></span>
+      <button class="btn small" type="submit">Save WiFi</button></form>
+    <p class="muted" style="margin-bottom:0">Kept here by FlossByte so the office always has it. Saving a name that is already listed replaces its password.</p>` : "";
+  const wifiCard = `<div class="card"><h2 style="margin-top:0">WiFi</h2>
+    ${wifiEntries.length ? wifiEntries.map(wifiRow).join("") : `<p class="muted" style="margin:0">No WiFi networks recorded yet.</p>`}${wifiForm}</div>`;
+  const wifiScript = `<script>
+function wpToggle(b){var c=b.parentElement.querySelector('.wp');if(!c)return;var hidden=c.textContent.indexOf('•')===0;c.textContent=hidden?c.getAttribute('data-p'):'••••••••••';b.textContent=hidden?'Hide':'Show';}
+function wpCopy(b){var c=b.parentElement.querySelector('.wp');if(!c||!navigator.clipboard)return;navigator.clipboard.writeText(c.getAttribute('data-p'));b.textContent='Copied';setTimeout(function(){b.textContent='Copy';},1500);}
+</script>`;
+
+  // ---- Internet card: the answer to "is our internet OK?" ----
+  let internetCard = "";
+  if (isp || eqTotal) {
+    const working = !isp || (isp.uptimePct == null ? true : isp.uptimePct >= 99);
+    const tiles = `<div class="statgrid">
+      <div class="stat"><b>${isp ? (working ? "Working" : "Having trouble") : "—"}</b><span>Internet status${isp && isp.ispName ? " · " + esc(isp.ispName) : ""}</span></div>
+      ${isp && isp.downMbps != null ? `<div class="stat"><b>${n1(isp.downMbps)} Mbps</b><span>Download speed</span></div>` : ""}
+      ${isp && isp.upMbps != null ? `<div class="stat"><b>${n1(isp.upMbps)} Mbps</b><span>Upload speed</span></div>` : ""}
+      ${isp && isp.uptimePct != null ? `<div class="stat"><b>${n1(isp.uptimePct)}%</b><span>Uptime, last ${isp.hours || 24} hours</span></div>` : ""}
+      ${eqTotal ? `<div class="stat"><b>${eqOn} of ${eqTotal}</b><span>Devices online</span></div>` : ""}
+    </div>`;
+    const note = isp && (isp.downtimeSec || 0) > 0 ? `<p class="muted" style="margin-bottom:0">Total time down in the last ${isp.hours || 24} hours: ${n1((isp.downtimeSec || 0) / 60)} minutes.</p>` : "";
+    internetCard = `<div class="card"><h2 style="margin-top:0">Internet</h2>${tiles}${note}</div>`;
+  }
+
+  // ---- Cameras and recent changes stay plain and visible. ----
+  const camRows = ((snaps.protect || {}).cameras || []).map((c) => `<tr><td>${esc(c.name || "Camera")}</td><td>${esc(c.model || "")}</td><td>${esc(c.state || c.status || "")}</td></tr>`);
+  const camerasCard = camRows.length ? `<div class="card"><h2 style="margin-top:0">Cameras</h2>${table(["Camera", "Model", "State"], camRows)}</div>` : "";
+  const changeEvents = ((snaps.changes || {}).events || []).slice(0, 15);
+  const changesCard = changeEvents.length ? `<div class="card"><h2 style="margin-top:0">Recent changes</h2>${changeEvents.map((e) => `<p style="margin:4px 0"><span class="muted">${esc(fmtDateUS(String(e.at || "").slice(0, 10)))}</span> · ${esc(e.text || "")}</p>`).join("")}</div>` : "";
+
+  // ---- Everything an engineer would want, one tap down. ----
+  const tech = [];
   const wanRows = (inet.wans || []).map((w) => `<tr><td>${esc(w.name || "WAN")}</td><td>${esc(w.ipAddress || w.ip || "")}</td><td>${esc(w.type || "")}${statePill(w.state || w.status)}</td></tr>`);
-  if (isp || wanRows.length) {
-    const stats = isp ? `<div class="statgrid">
-      <div class="stat"><b>${n0(isp.avgLatencyMs)} ms</b><span>Average latency</span></div>
-      <div class="stat"><b>${n0(isp.maxLatencyMs)} ms</b><span>Peak latency</span></div>
-      <div class="stat"><b>${n1(isp.packetLossPct)}%</b><span>Packet loss</span></div>
-      <div class="stat"><b>${n1(isp.uptimePct)}%</b><span>Uptime, last ${isp.hours || 24} hours</span></div>
-      <div class="stat"><b>${n1((isp.downtimeSec || 0) / 60)} min</b><span>Downtime, last ${isp.hours || 24} hours</span></div>
-      <div class="stat"><b>${n1(isp.downMbps)} Mbps</b><span>Average download</span></div>
-      <div class="stat"><b>${n1(isp.upMbps)} Mbps</b><span>Average upload</span></div>
-    </div>` : "";
-    cards.push(`<div class="card"><h2 style="margin-top:0">Internet</h2>
-      ${isp && isp.ispName ? `<p class="muted" style="margin-top:0">Provider: ${esc(isp.ispName)}</p>` : ""}
-      ${stats}${table(["Interface", "IP address", "Status"], wanRows)}</div>`);
-  }
+  if (wanRows.length) tech.push(`<h3>Internet connections</h3>${table(["Interface", "IP address", "Status"], wanRows)}`);
+  if (isp) tech.push(`<h3>Internet measurements (last ${isp.hours || 24} hours)</h3><p class="muted" style="margin-top:0">Average latency ${n0(isp.avgLatencyMs)} ms · peak ${n0(isp.maxLatencyMs)} ms · packet loss ${n1(isp.packetLossPct)}% · downtime ${n1((isp.downtimeSec || 0) / 60)} min</p>`);
   const statRows = ((snaps.device_stats || {}).devices || []).map((d) => `<tr><td>${esc(d.name || d.mac || "Device")}</td><td>${uptimeFmt(d.uptimeSec)}</td><td>${pct(d.cpu)}</td><td>${pct(d.mem)}</td><td>${typeof d.load1 === "number" ? d.load1.toFixed(2) : "—"}</td></tr>`);
-  if (statRows.length) cards.push(`<div class="card"><h2 style="margin-top:0">Device health</h2>${table(["Device", "Uptime", "CPU", "Memory", "Load"], statRows)}</div>`);
-  const cfg = snaps.config || {};
+  if (statRows.length) tech.push(`<h3>Device health</h3>${table(["Device", "Uptime", "CPU", "Memory", "Load"], statRows)}`);
   const netRows = (cfg.networks || []).map((n) => `<tr><td>${esc(n.name || "Network")}${n.default ? ` <span class="pill">Default</span>` : ""}</td><td>${n.vlanId != null ? "VLAN " + esc(String(n.vlanId)) : "—"}</td><td>${onPill(n.enabled)}</td></tr>`);
-  const ssidRows = (cfg.ssids || []).map((s) => `<tr><td>${esc(s.name || s.ssid || "WiFi network")}</td><td>${esc(s.security || "—")}</td><td>${onPill(s.enabled)}</td></tr>`);
-  if (netRows.length || ssidRows.length) {
-    cards.push(`<div class="card"><h2 style="margin-top:0">Networks and WiFi</h2>
-      ${netRows.length ? `<h3>Networks</h3>${table(["Name", "VLAN", "Status"], netRows)}` : ""}
-      ${ssidRows.length ? `<h3>WiFi networks</h3>${table(["Name", "Security", "Status"], ssidRows)}` : ""}</div>`);
-  }
+  if (netRows.length) tech.push(`<h3>Networks</h3>${table(["Name", "VLAN", "Status"], netRows)}`);
   const polRows = (cfg.firewallPolicies || []).map((p) => `<tr><td>${esc(p.name || "Policy")}</td><td>${esc(p.action || "")}</td><td>${onPill(p.enabled)}</td></tr>`);
   const srvRows = (cfg.vpnServers || []).map((v) => `<tr><td>${esc(v.name || "VPN server")}</td><td>${esc(v.type || "")}</td><td>${onPill(v.enabled)}</td></tr>`);
   const tunRows = (cfg.vpnTunnels || []).map((v) => `<tr><td>${esc(v.name || "Tunnel")}</td><td>${esc(v.type || "")}${statePill(v.state || v.status)}</td><td>${onPill(v.enabled)}</td></tr>`);
   if (polRows.length || srvRows.length || tunRows.length || (cfg.firewallZones || []).length || (cfg.aclRules || []).length || (cfg.radiusProfiles || []).length) {
-    cards.push(`<div class="card"><h2 style="margin-top:0">Firewall and VPN</h2>
+    tech.push(`<h3>Firewall and VPN</h3>
       ${(cfg.firewallZones || []).length ? `<p style="margin-top:0">Zones: ${(cfg.firewallZones || []).map((z) => `<span class="pill">${esc(z.name || "Zone")}</span>`).join(" ")}</p>` : ""}
-      ${polRows.length ? `<h3>Firewall policies</h3>${table(["Policy", "Action", "Status"], polRows)}` : ""}
+      ${polRows.length ? table(["Policy", "Action", "Status"], polRows) : ""}
       ${(cfg.aclRules || []).length ? `<p class="muted">${(cfg.aclRules || []).length} switch access rules in place.</p>` : ""}
-      ${srvRows.length ? `<h3>VPN servers</h3>${table(["Server", "Type", "Status"], srvRows)}` : ""}
-      ${tunRows.length ? `<h3>Site-to-site tunnels</h3>${table(["Tunnel", "Type", "Status"], tunRows)}` : ""}
-      ${(cfg.radiusProfiles || []).length ? `<p class="muted">RADIUS profiles: ${(cfg.radiusProfiles || []).map((r) => esc(r.name || "")).filter(Boolean).join(", ")}</p>` : ""}</div>`);
+      ${srvRows.length ? table(["Server", "Type", "Status"], srvRows) : ""}
+      ${tunRows.length ? table(["Tunnel", "Type", "Status"], tunRows) : ""}
+      ${(cfg.radiusProfiles || []).length ? `<p class="muted">RADIUS profiles: ${(cfg.radiusProfiles || []).map((r) => esc(r.name || "")).filter(Boolean).join(", ")}</p>` : ""}`);
   }
-  const camRows = ((snaps.protect || {}).cameras || []).map((c) => `<tr><td>${esc(c.name || "Camera")}</td><td>${esc(c.model || "")}</td><td>${esc(c.state || c.status || "")}</td></tr>`);
-  if (camRows.length) cards.push(`<div class="card"><h2 style="margin-top:0">Cameras</h2>${table(["Camera", "Model", "State"], camRows)}</div>`);
-  const changeEvents = ((snaps.changes || {}).events || []).slice(0, 15);
-  if (changeEvents.length) {
-    cards.push(`<div class="card"><h2 style="margin-top:0">Recent changes</h2>${changeEvents.map((e) => `<p style="margin:4px 0"><span class="muted">${esc(fmtDateUS(String(e.at || "").slice(0, 10)))}</span> · ${esc(e.text || "")}</p>`).join("")}</div>`);
+  const techCard = tech.length ? `<details class="card"><summary style="cursor:pointer;font-weight:600">Technical details</summary><div style="margin-top:10px">${tech.join("")}</div></details>` : "";
+
+  const sections = [wifiCard, internetCard, camerasCard, changesCard, techCard].filter(Boolean);
+  if (!Object.keys(snaps).length && !isFb) {
+    const body = `${locNav(loc, "network")}<h1>WiFi &amp; Internet</h1>
+      <div class="card"><p class="muted" style="margin:0">Nothing here yet. Once FlossByte connects this office, this page shows its WiFi names and passwords, internet health, and cameras, all kept up to date automatically.</p></div>`;
+    return page({ title: "WiFi & Internet", user, body });
   }
-  const capLine = captured ? `<p class="muted" style="margin-top:0">Captured ${esc(fmtDateUS(captured.slice(0, 10)))} at ${esc(captured.slice(11, 16))} UTC by the hourly sync. Read-only: nothing on this page can change the office's network.</p>` : "";
-  const body = `${locNav(loc, "network")}<h1>Network</h1>${capLine}${cards.join("")}`;
-  return page({ title: "Network", user, body });
+  const capLine = captured ? `<p class="muted" style="margin-top:0">Updated ${esc(fmtDateUS(captured.slice(0, 10)))} at ${esc(captured.slice(11, 16))} UTC by the hourly check. This page only reads the office's setup; nothing here can change it.</p>` : "";
+  const body = `${locNav(loc, "network")}<h1>WiFi &amp; Internet</h1>${capLine}${sections.join("")}${anyPass ? wifiScript : ""}`;
+  return page({ title: "WiFi & Internet", user, body });
+}
+
+// The WiFi list FlossByte keeps for an office lives in a 'wifi'
+// snapshot row (name, password, who it is for). Only FlossByte logins
+// can change it; the office reads it on the WiFi & Internet page and
+// through Ask. UniFi cannot hand passwords over for offices on the
+// older console setup, so this list is the reliable copy.
+async function loadWifiList(env, locationId) {
+  try {
+    const r = await env.DB.prepare("SELECT payload FROM network_snapshots WHERE location_id = ? AND kind = 'wifi'").bind(locationId).first();
+    if (r) { const p = JSON.parse(r.payload || "{}"); if (Array.isArray(p.networks)) return p.networks; }
+  } catch { /* table missing: treated as an empty list */ }
+  return [];
+}
+async function saveWifiList(env, locationId, networks) {
+  await env.DB.prepare("INSERT INTO network_snapshots (location_id, kind, payload) VALUES (?, 'wifi', ?) ON CONFLICT(location_id, kind) DO UPDATE SET payload = excluded.payload, captured_at = datetime('now')")
+    .bind(locationId, JSON.stringify({ networks })).run();
+}
+export async function wifiAddPost(env, request, user, locationId) {
+  const { loc, error } = await guard(env, user, locationId);
+  if (error) return denied(user, error);
+  if (!(await laneOn(env.DB, loc.customer_id, locationId))) return lockedTile(user, loc, "WiFi & Internet", "managed_it");
+  if (user.kind !== "flossbyte") return denied(user, 403);
+  const f = await request.formData();
+  const name = String(f.get("name") || "").trim();
+  if (!name) return redirect(`/app/locations/${locationId}/network?err=` + encodeURIComponent("The WiFi name is required."));
+  const kind = ["staff", "guest", "other"].includes(String(f.get("kind") || "")) ? String(f.get("kind")) : "staff";
+  const entry = { name, pass: String(f.get("pass") || "").trim(), kind };
+  const list = await loadWifiList(env, locationId);
+  const i = list.findIndex((w) => String(w.name || "").toLowerCase() === name.toLowerCase());
+  if (i >= 0) list[i] = entry; else list.push(entry);
+  await saveWifiList(env, locationId, list);
+  await audit(env.DB, user.id, "wifi_save", "location", locationId, name);
+  return redirect(`/app/locations/${locationId}/network?msg=` + encodeURIComponent(`WiFi "${name}" is saved for this office.`));
+}
+export async function wifiDeletePost(env, request, user, locationId) {
+  const { loc, error } = await guard(env, user, locationId);
+  if (error) return denied(user, error);
+  if (!(await laneOn(env.DB, loc.customer_id, locationId))) return lockedTile(user, loc, "WiFi & Internet", "managed_it");
+  if (user.kind !== "flossbyte") return denied(user, 403);
+  const f = await request.formData();
+  const name = String(f.get("name") || "").trim();
+  const list = (await loadWifiList(env, locationId)).filter((w) => String(w.name || "").toLowerCase() !== name.toLowerCase());
+  await saveWifiList(env, locationId, list);
+  await audit(env.DB, user.id, "wifi_remove", "location", locationId, name);
+  return redirect(`/app/locations/${locationId}/network?msg=` + encodeURIComponent(`WiFi "${name}" was removed.`));
 }
 
 export async function equipmentPost(env, request, user, locationId) {
@@ -543,12 +667,22 @@ export async function equipmentPost(env, request, user, locationId) {
   const scope = await locationScope(env.DB, user, locationId);
   if (!(user.kind === "flossbyte" || scope === "admin")) return denied(user, 403);
   const f = await request.formData();
+  let hasMode = false, hasIp = false;
+  try {
+    const cols = await env.DB.prepare("PRAGMA table_info(equipment)").all();
+    const names = (cols.results || []).map((c) => c.name);
+    hasMode = names.includes("ip_mode");
+    hasIp = names.includes("ip_address");
+  } catch { hasMode = false; hasIp = false; }
+  const ipMode = ["dhcp", "static"].includes(String(f.get("ip_mode") || "")) ? String(f.get("ip_mode")) : "";
+  const cols = ["location_id", "vendor", "type", "name", "model", "serial", "status", "firmware", "warranty_expires", "license_expires", "notes"];
+  const binds = [locationId, f.get("vendor") || null, f.get("type") || null, f.get("name") || null, f.get("model") || null,
+    f.get("serial") || null, String(f.get("status") || "online"), f.get("firmware") || null,
+    f.get("warranty_expires") || null, f.get("license_expires") || null, f.get("notes") || null];
+  if (hasIp) { cols.push("ip_address"); binds.push(String(f.get("ip_address") || "").trim() || null); }
+  if (hasMode) { cols.push("ip_mode"); binds.push(ipMode || null); }
   await env.DB.prepare(
-    `INSERT INTO equipment (location_id, vendor, type, model, serial, status, firmware, warranty_expires, license_expires, notes)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .bind(locationId, f.get("vendor") || null, f.get("type") || null, f.get("model") || null,
-      f.get("serial") || null, String(f.get("status") || "online"), f.get("firmware") || null,
-      f.get("warranty_expires") || null, f.get("license_expires") || null, f.get("notes") || null).run();
+    `INSERT INTO equipment (${cols.join(", ")}) VALUES (${cols.map(() => "?").join(", ")})`).bind(...binds).run();
   await audit(env.DB, user.id, "equipment_add", "location", locationId, String(f.get("model") || ""));
   return redirect(`/app/locations/${locationId}/equipment`);
 }
@@ -586,11 +720,15 @@ export async function equipmentEditPage(env, request, user, locationId, equipmen
        <label>Model</label><input name="model" value="${esc(row.model || "")}">
        <label>Serial</label><input name="serial" value="${esc(row.serial || "")}">
        <label>Status</label><select name="status">${["online", "offline", "unknown"].map((s) => `<option ${row.status === s ? "selected" : ""}>${s}</option>`).join("")}</select>
-       <label>Firmware</label><input name="firmware" value="${esc(row.firmware || "")}">`;
+       <label>Firmware</label><input name="firmware" value="${esc(row.firmware || "")}">
+       <label>IP address</label><input name="ip_address" value="${esc(row.ip_address || "")}" placeholder="192.168.1.50">`;
+  const modeField = "ip_mode" in row ? `<label>IP type</label><select name="ip_mode"><option value="" ${!row.ip_mode ? "selected" : ""}>Not set</option><option value="dhcp" ${row.ip_mode === "dhcp" ? "selected" : ""}>DHCP (automatic)</option><option value="static" ${row.ip_mode === "static" ? "selected" : ""}>Static (fixed address)</option></select>
+      <p class="muted" style="margin-top:2px">The sync cannot tell whether a device keeps its address or gets a new one each time, so this is set here. The device's IP address itself is ${synced ? "filled in by the sync" : "editable on manual records"}: ${esc(row.ip_address || "none recorded yet")}.</p>` : "";
   const body = `${locNav(loc, "equipment")}<p><a href="/app/locations/${locationId}/equipment">&larr; Equipment</a></p>
     <div class="card"><h2>Edit equipment</h2>
     <form method="post" action="/app/locations/${locationId}/equipment/${row.id}/edit">
       ${fields}
+      ${modeField}
       <label>License expires</label><input name="license_expires" type="date" value="${esc(row.license_expires || "")}">
       <label>Warranty expires</label><input name="warranty_expires" type="date" value="${esc(row.warranty_expires || "")}">
       <label>Notes</label><textarea name="notes">${esc(row.notes || "")}</textarea>
@@ -609,15 +747,26 @@ export async function equipmentEditPost(env, request, user, locationId, equipmen
   if (error) return error;
   const f = await request.formData();
   const synced = row.source && row.source !== "manual";
+  const hasMode = "ip_mode" in row;
+  const ipMode = ["dhcp", "static"].includes(String(f.get("ip_mode") || "")) ? String(f.get("ip_mode")) : null;
   if (synced) {
-    await env.DB.prepare("UPDATE equipment SET license_expires = ?, warranty_expires = ?, notes = ? WHERE id = ?")
-      .bind(f.get("license_expires") || null, f.get("warranty_expires") || null, f.get("notes") || null, equipmentId).run();
+    if (hasMode) {
+      await env.DB.prepare("UPDATE equipment SET license_expires = ?, warranty_expires = ?, notes = ?, ip_mode = ? WHERE id = ?")
+        .bind(f.get("license_expires") || null, f.get("warranty_expires") || null, f.get("notes") || null, ipMode, equipmentId).run();
+    } else {
+      await env.DB.prepare("UPDATE equipment SET license_expires = ?, warranty_expires = ?, notes = ? WHERE id = ?")
+        .bind(f.get("license_expires") || null, f.get("warranty_expires") || null, f.get("notes") || null, equipmentId).run();
+    }
   } else {
-    await env.DB.prepare(`UPDATE equipment SET vendor = ?, type = ?, name = ?, model = ?, serial = ?, status = ?, firmware = ?,
-      license_expires = ?, warranty_expires = ?, notes = ? WHERE id = ?`)
-      .bind(f.get("vendor") || null, f.get("type") || null, f.get("name") || null, f.get("model") || null,
-        f.get("serial") || null, String(f.get("status") || "online"), f.get("firmware") || null,
-        f.get("license_expires") || null, f.get("warranty_expires") || null, f.get("notes") || null, equipmentId).run();
+    const sets = ["vendor = ?", "type = ?", "name = ?", "model = ?", "serial = ?", "status = ?", "firmware = ?",
+      "license_expires = ?", "warranty_expires = ?", "notes = ?"];
+    const binds = [f.get("vendor") || null, f.get("type") || null, f.get("name") || null, f.get("model") || null,
+      f.get("serial") || null, String(f.get("status") || "online"), f.get("firmware") || null,
+      f.get("license_expires") || null, f.get("warranty_expires") || null, f.get("notes") || null];
+    if ("ip_address" in row) { sets.push("ip_address = ?"); binds.push(String(f.get("ip_address") || "").trim() || null); }
+    if (hasMode) { sets.push("ip_mode = ?"); binds.push(ipMode); }
+    binds.push(equipmentId);
+    await env.DB.prepare(`UPDATE equipment SET ${sets.join(", ")} WHERE id = ?`).bind(...binds).run();
   }
   await audit(env.DB, user.id, "equipment_edit", "equipment", Number(equipmentId), row.model || row.name || "");
   return redirect(`/app/locations/${locationId}/equipment`);
@@ -852,8 +1001,19 @@ export async function askAnswer(db, locationId, question) {
       if (lines.length) parts.push("Internet:\n" + lines.join("\n"));
     }
     const cfg = snaps.config || {};
-    if (/wi-?fi|ssid|wireless/.test(q) && (cfg.ssids || []).length) {
-      parts.push("WiFi networks:\n" + cfg.ssids.map((s) => `• ${s.name || s.ssid} (${s.security || "security not recorded"}, ${s.enabled === false ? "off" : "on"})`).join("\n"));
+    const wifiManual = (snaps.wifi && Array.isArray(snaps.wifi.networks)) ? snaps.wifi.networks : [];
+    if (/wi-?fi|ssid|wireless|password/.test(q) && ((cfg.ssids || []).length || wifiManual.length)) {
+      const lines = [];
+      for (const w of wifiManual) {
+        if (!w || !w.name) continue;
+        lines.push(`• ${w.name}${w.kind === "guest" ? " (for patients)" : w.kind === "staff" ? " (staff)" : ""}: ${w.pass ? `password ${w.pass}` : "password not recorded"}`);
+      }
+      for (const s of cfg.ssids || []) {
+        const nm = s.name || s.ssid;
+        if (!nm || wifiManual.some((w) => String(w.name || "").toLowerCase() === String(nm).toLowerCase())) continue;
+        lines.push(`• ${nm} (${s.security || "security not recorded"}, ${s.enabled === false ? "off" : "on"})${s.pass ? `: password ${s.pass}` : ""}`);
+      }
+      if (lines.length) parts.push("WiFi networks:\n" + lines.join("\n"));
     }
     if (/vpn|tunnel/.test(q) && ((cfg.vpnTunnels || []).length || (cfg.vpnServers || []).length)) {
       const lines = [
