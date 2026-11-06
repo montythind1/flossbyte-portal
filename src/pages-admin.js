@@ -747,8 +747,7 @@ export async function customerPage(env, request, user, customerId) {
       </form>
       <p class="muted">Drafts are not visible to the customer. When you send, the customer gets an email and can review and accept in the portal. Accepting creates the deposit invoice automatically when a deposit is set.</p>
       <script>(function(){var k=document.getElementById('quoteKind'),t=document.getElementById('quoteTerms');if(!k||!t)return;var T=${JSON.stringify({ project: PROJECT_TERMS, plan: PLAN_TERMS })};k.addEventListener('change',function(){if(t.value===T.project||t.value===T.plan){t.value=T[k.value]||t.value;}});})();</script>
-    </div>
-    <h3 style="margin-top:28px">Invoices</h3>
+      <h3 style="margin-top:28px">Invoices</h3>
       <div class="tscroll"><table class="stack"><thead><tr><th>Number</th><th>Invoice</th><th>Type</th><th class="num">Amount</th><th>Status</th><th>Due</th><th></th></tr></thead>
       <tbody>${invoiceRows || `<tr><td colspan="7" class="muted">No invoices yet.</td></tr>`}</tbody></table></div>
       <h3 style="margin-top:22px">New invoice</h3>
