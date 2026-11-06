@@ -74,7 +74,7 @@ function loginBlock() {
     <div class="row"><span style="flex:1"><label>First name <span class="req">*</span></label><input name="login_first[]"></span>
     <span style="flex:1"><label>Middle name</label><input name="login_middle[]"></span>
     <span style="flex:1"><label>Last name <span class="req">*</span></label><input name="login_last[]"></span></div>
-    <div class="row"><span style="flex:1"><label>Email</label><input name="login_email[]" type="email"></span></div>
+    <div class="row"><span style="flex:1"><label>Email <span class="req">*</span></label><input name="login_email[]" type="email"></span></div>
     <label>Access</label><select name="login_location[]" class="login-loc">
       <option value="">All locations</option></select>
     <p style="margin-top:8px"><button type="button" class="btn small secondary remove-login">Remove this user</button></p></div>`;
@@ -271,10 +271,12 @@ export async function createCustomerPost(env, request, user) {
   for (let i = 0; i < names.length; i++) {
     const locName = String(names[i] || "").trim();
     if (!locName) continue;
+    // suite is NOT NULL in the schema (migration 0006): bind the string,
+    // "" when empty, never null, or this insert fails and kills creation.
     const lr = await env.DB.prepare(
       "INSERT INTO locations (customer_id, name, address, suite, city, state, zip) VALUES (?, ?, ?, ?, ?, ?, ?)")
       .bind(customerId, locName, String(addrs[i] || "").trim() || null,
-        String(suites[i] || "").trim() || null,
+        String(suites[i] || "").trim(),
         String(cities[i] || "").trim() || null, String(states[i] || "").trim() || null,
         String(zips[i] || "").trim() || null).run();
     locIdByIndex[i] = lr.meta.last_row_id;
@@ -350,12 +352,19 @@ export async function createCustomerPost(env, request, user) {
     const email = String(loginEmails[i] || "").trim().toLowerCase();
     const loginName = [loginFirsts[i], loginMiddles[i], loginLasts[i]]
       .map((v) => String(v || "").trim()).filter(Boolean).join(" ");
-    if (!email) continue;
+    // A completely untouched block is ignored. A block the admin started
+    // filling in must be complete: email (marked required on the form)
+    // plus first and last name. And whatever goes wrong with one login,
+    // it lands in the summary as a refusal; it never fails the
+    // organization itself.
+    if (!email && !loginName) continue;
+    if (!email) { refused.push(`${loginName} (email is required)`); continue; }
     if (!isValidEmail(email)) { refused.push(`${email} (invalid email address)`); continue; }
     if (!String(loginFirsts[i] || "").trim() || !String(loginLasts[i] || "").trim()) {
       refused.push(`${email} (first and last name are required)`); continue;
     }
     if (email === adminEmail) { adminAlsoListed = true; continue; }
+    try {
     const scope = "user";
     const locPick = String(loginLocs[i] || "");
     const locationId = locPick === "" ? null : (locIdByIndex[Number(locPick)] ?? null);
@@ -390,6 +399,9 @@ export async function createCustomerPost(env, request, user) {
       invited.push(email);
     } else {
       invited.push(email);
+    }
+    } catch {
+      refused.push(`${email} (could not be added; add them from the organization page instead)`);
     }
   }
   await audit(env.DB, user.id, "customer_create", "customer", customerId, name);
@@ -552,7 +564,7 @@ export async function addLocationPost(env, request, user, customerId) {
   const city = String(f.get("city") || "").trim();
   const state = String(f.get("state") || "").trim();
   const zip = String(f.get("zip") || "").trim();
-  const suite = String(f.get("suite") || "").trim() || null;
+  const suite = String(f.get("suite") || "").trim();
   if (!name || !address || !city || !state || !zip) {
     return redirect(`/admin/customers/${customerId}?tab=locations&msg=` + encodeURIComponent(
       "Name, street address, city, state, and ZIP are all required for a location."));
@@ -625,7 +637,7 @@ export async function editLocationPost(env, request, user, locationId) {
     return redirect(`/admin/customers/${loc.customer_id}?tab=locations&msg=` + encodeURIComponent(
       "Name, street address, city, state, and ZIP are all required for a location. Nothing was saved."));
   }
-  const suite2 = String(f.get("suite") || "").trim() || null;
+  const suite2 = String(f.get("suite") || "").trim();
   await env.DB.prepare(
     "UPDATE locations SET name = ?, address = ?, suite = ?, city = ?, state = ?, zip = ?, updated_at = datetime('now') WHERE id = ?")
     .bind(name, address, suite2, city, state, zip, locationId).run();

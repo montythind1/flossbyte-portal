@@ -200,37 +200,32 @@
       return;
     }
     if (!validateLocations()) { event.preventDefault(); show(2); return; }
-    var badLogin = null;
-    form.querySelectorAll('input[name="login_email[]"]').forEach(function (input) {
-      input.classList.remove("field-error");
-      var v = input.value.trim();
-      if (v && !validEmail(v) && !badLogin) badLogin = input;
-    });
-    if (badLogin) {
-      event.preventDefault();
-      show(4);
-      if (loginMsg) loginMsg.textContent = "Enter valid email addresses for additional users, or leave a row blank.";
-      badLogin.classList.add("field-error");
-      badLogin.focus();
-      return;
-    }
-    var badName = null;
+    // Additional users are optional, but a block the admin started
+    // filling in must be complete: a valid email (the field is marked
+    // required) plus first and last name. A completely untouched block
+    // is ignored.
+    var badField = null, badWhy = "";
     form.querySelectorAll("#loginBlocks > div").forEach(function (block) {
       var email = block.querySelector('input[name="login_email[]"]');
       var first = block.querySelector('input[name="login_first[]"]');
+      var middle = block.querySelector('input[name="login_middle[]"]');
       var last = block.querySelector('input[name="login_last[]"]');
-      if (first) first.classList.remove("field-error");
-      if (last) last.classList.remove("field-error");
-      if (!email || !email.value.trim() || badName) return;
-      if (first && !first.value.trim()) badName = first;
-      else if (last && !last.value.trim()) badName = last;
+      [email, first, last].forEach(function (el) { if (el) el.classList.remove("field-error"); });
+      if (badField) return;
+      var started = [email, first, middle, last].some(function (el) { return el && el.value.trim(); });
+      if (!started) return;
+      if (!email || !email.value.trim()) { badField = email; badWhy = "Email is required for each additional user once you start adding one."; }
+      else if (!validEmail(email.value.trim())) { badField = email; badWhy = "Enter a valid email address for each additional user."; }
+      else if (first && !first.value.trim()) { badField = first; badWhy = "First and last name are required for each additional user."; }
+      else if (last && !last.value.trim()) { badField = last; badWhy = "First and last name are required for each additional user."; }
     });
-    if (badName) {
+    if (badField) {
       event.preventDefault();
       show(4);
-      if (loginMsg) loginMsg.textContent = "First and last name are required for each additional user.";
-      badName.classList.add("field-error");
-      badName.focus();
+      if (loginMsg) loginMsg.textContent = badWhy;
+      badField.classList.add("field-error");
+      badField.focus();
+      return;
     }
   });
 
