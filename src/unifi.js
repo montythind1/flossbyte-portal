@@ -93,13 +93,28 @@ export async function runUnifiSync(env) {
       summary.message = "Database update needed first: migration 0007 has not been applied.";
       return finish();
     }
+    // Hosts are fetched first: on real accounts a site often carries no
+    // friendly name of its own (its API "name" is just the site id), and
+    // the name the admin recognizes is the console's reported name, the
+    // same one unifi.ui.com shows. The hosts list is reused below for
+    // the grouped-devices fallback.
+    let hosts = [];
+    try { hosts = pickArray(await fetchApi(env, "/v1/hosts"), "hosts"); } catch { hosts = []; }
+    const hostNameById = {};
+    for (const h of hosts) {
+      const hn = h && h.reportedState && h.reportedState.name ? String(h.reportedState.name)
+        : h && h.name ? String(h.name) : "";
+      if (h && h.id && hn) hostNameById[String(h.id)] = hn;
+    }
     // Discover the account's sites and remember them for the mapping page.
     const sites = pickArray(await fetchApi(env, "/v1/sites"), "sites");
     const hostToSites = {};
     for (const s of sites) {
       const siteId = String(s.id || s.siteId || "");
       if (!siteId) continue;
-      const siteName = String(s.desc || s.name || siteId);
+      const rawName = String(s.desc || s.name || "");
+      const hostName = s.hostId ? hostNameById[String(s.hostId)] : "";
+      const siteName = rawName && rawName !== siteId ? rawName : hostName || rawName || siteId;
       await env.DB.prepare(
         `INSERT INTO sync_sites (provider, site_id, site_name) VALUES ('unifi', ?, ?)
          ON CONFLICT(provider, site_id) DO UPDATE SET site_name = excluded.site_name, updated_at = datetime('now')`)
@@ -111,7 +126,6 @@ export async function runUnifiSync(env) {
     let devices = pickArray(await fetchApi(env, "/v1/devices"), "devices");
     if (!devices.length) {
       // Some accounts expose devices grouped under their hosts instead.
-      const hosts = pickArray(await fetchApi(env, "/v1/hosts"), "hosts");
       for (const h of hosts) {
         for (const d of h.devices || []) devices.push({ ...d, hostId: d.hostId || h.id });
       }
