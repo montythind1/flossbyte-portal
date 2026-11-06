@@ -36,6 +36,7 @@ const ICON_PATHS = {
   chat: '<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/>',
   home: '<path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/>',
   headset: '<path d="M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M21 14h-3a2 2 0 0 0-2 2v3a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2z"/><path d="M3 14v-2a9 9 0 0 1 18 0v2"/>',
+  activity: '<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>',
 };
 export function icon(name) {
   return `<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON_PATHS[name] || ""}</svg>`;
@@ -195,9 +196,23 @@ footer.slim a{color:var(--muted)}
 header.site{min-height:56px}
 .header-in{flex-wrap:nowrap;padding-top:0;padding-bottom:0}
 nav.top{width:auto;flex-wrap:nowrap;gap:14px}
-nav.top a:nth-child(2),nav.top a:nth-child(3){display:none}
+nav.top>a{display:none}
+.acct-name{display:none}
 .brand-name{font-size:18px}
 }
+.pill.off{background:#fdecec;color:#9c2b2b}
+.acct{position:relative}
+.acct summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:8px}
+.acct summary::-webkit-details-marker{display:none}
+.avatar{width:32px;height:32px;border-radius:50%;background:var(--teal);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;font-family:var(--font-head)}
+.acct-name{color:#fff;font-weight:600;font-size:14px}
+.acct-menu{position:absolute;right:0;top:calc(100% + 10px);background:#fff;border:1px solid var(--line);border-radius:12px;box-shadow:0 12px 32px rgba(10,22,40,.18);min-width:230px;padding:6px;z-index:60}
+.acct-head{padding:8px 10px;border-bottom:1px solid var(--line);margin-bottom:4px}
+.acct-head strong{display:block;font-size:14px;color:var(--ink)}
+.acct-head span{font-size:12px;color:var(--muted)}
+.acct-menu a{display:block;padding:9px 10px;border-radius:8px;color:var(--ink) !important;text-decoration:none;font-size:14px}
+.acct-menu a:hover{background:#f0f4f8;text-decoration:none}
+.tile .tile-n{display:block;font-family:var(--font-head);font-size:26px;font-weight:800;color:var(--navy);line-height:1.1}
 @media print{
 header.site,footer.site,footer.slim,.rail,.btn,form,nav.top,.flash-print-hide{display:none !important}
 body{background:#fff}
@@ -243,11 +258,13 @@ ${body}
 </body></html>`;
     return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
   }
+  const initials = user ? user.name.split(/\s+/).filter(Boolean).map((w) => w[0]).slice(0, 2).join("").toUpperCase() : "";
   const nav = user
     ? `${user.kind === "flossbyte" ? `<a href="/admin">Clients</a>` : `<a href="/app">My Portal</a>`}
-       <a href="/mfa">Security</a>
        <a href="https://flossbyte.com/remote" target="_blank" rel="noopener">Remote Support</a>
-       <a href="/logout">Sign out (${esc(user.name.split(" ")[0])})</a>`
+       <details class="acct"><summary><span class="avatar">${esc(initials)}</span><span class="acct-name">${esc(user.name.split(" ")[0])}</span></summary>
+       <div class="acct-menu"><div class="acct-head"><strong>${esc(user.name)}</strong><span>${esc(user.email)}</span></div>
+       <a href="/mfa">Security</a><a href="/logout">Sign out</a></div></details>`
     : `<a href="/login">Sign in</a><a href="/signup">Create account</a>
        <a href="https://flossbyte.com/remote" target="_blank" rel="noopener">Remote Support</a>`;
   // Signed-in pages get a one-line footer; the full marketing footer only
@@ -283,6 +300,14 @@ ${body}
 ${footer}
 </body></html>`;
   return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+}
+
+// Styled error page in the normal app shell (replaces bare-text errors).
+export function errorPage({ title, message, user }) {
+  const home = user ? (user.kind === "flossbyte" ? "/admin" : "/app") : "/login";
+  return page({ title, user, body: `<div class="card narrow"><h1>${esc(title)}</h1>
+    <p class="muted">${esc(message)}</p>
+    <p style="margin-top:16px"><a class="btn secondary" href="${home}">Go back</a></p></div>` });
 }
 
 export function redirect(location, extraHeaders = {}) {

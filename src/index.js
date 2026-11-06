@@ -2,7 +2,7 @@
 // Server-rendered pages plus a document download route. All customer data
 // access is scoped server-side by the signed-in user's user_access rows.
 import { resolveSession } from "./auth.js";
-import { redirect } from "./layout.js";
+import { redirect, errorPage } from "./layout.js";
 import * as pub from "./pages-public.js";
 import * as client from "./pages-client.js";
 import * as admin from "./pages-admin.js";
@@ -10,7 +10,10 @@ import * as places from "./places.js";
 import { runUnifiSync } from "./unifi.js";
 import { runSophosSync } from "./sophos.js";
 
-function notFound() { return new Response("Not found", { status: 404 }); }
+function notFound(user) {
+  const res = errorPage({ title: "Not found", message: "That page does not exist.", user });
+  return new Response(res.body, { status: 404, headers: res.headers });
+}
 
 export default {
   async fetch(request, env) {
@@ -83,6 +86,8 @@ async function route(request, env) {
     if (path === "/admin/pending" && method === "GET") return admin.pendingPage(env, request, user);
     if (path === "/admin/admins" && method === "GET") return admin.adminsPage(env, request, user);
     if (path === "/admin/admins" && method === "POST") return admin.createAdminPost(env, request, user);
+    if (path === "/admin/tickets" && method === "GET") return admin.ticketsInboxPage(env, request, user);
+    if (path === "/admin/activity" && method === "GET") return admin.activityPage(env, request, user);
     if (path === "/admin/sync" && method === "GET") return admin.syncPage(env, request, user);
     if (path === "/admin/sync/map" && method === "POST") return admin.syncMapPost(env, request, user);
     if (path === "/admin/sync/run" && method === "POST") return admin.syncRunPost(env, request, user);
@@ -123,7 +128,7 @@ async function route(request, env) {
     if (m && method === "POST") return admin.invoiceCreatePost(env, request, user, Number(m[1]));
     m = path.match(/^\/admin\/customers\/(\d+)\/invoices\/(\d+)\/(paid|void)$/);
     if (m && method === "POST") return admin.invoiceActionPost(env, request, user, Number(m[1]), Number(m[2]), m[3]);
-    return notFound();
+    return notFound(user);
   }
 
   // ----- Client portal -----
@@ -137,6 +142,8 @@ async function route(request, env) {
   if (path === "/app/billing" && method === "GET") return client.billingPage(env, request, user);
   if (path === "/app/quotes" && method === "GET") return redirect("/app/billing");
   if (path === "/app/invoices" && method === "GET") return redirect("/app/billing");
+  m = path.match(/^\/app\/invoices\/(\d+)$/);
+  if (m && method === "GET") return client.invoiceViewPage(env, request, user, Number(m[1]));
   m = path.match(/^\/app\/quotes\/(\d+)$/);
   if (m && method === "GET") return client.quoteViewPage(env, request, user, Number(m[1]));
   m = path.match(/^\/app\/quotes\/(\d+)\/accept$/);
@@ -155,6 +162,13 @@ async function route(request, env) {
   m = path.match(/^\/app\/locations\/(\d+)\/equipment$/);
   if (m && method === "GET") return client.equipmentPage(env, request, user, Number(m[1]));
   if (m && method === "POST") return client.equipmentPost(env, request, user, Number(m[1]));
+  m = path.match(/^\/app\/locations\/(\d+)\/equipment\/(\d+)\/edit$/);
+  if (m && method === "GET") return client.equipmentEditPage(env, request, user, Number(m[1]), Number(m[2]));
+  if (m && method === "POST") return client.equipmentEditPost(env, request, user, Number(m[1]), Number(m[2]));
+  m = path.match(/^\/app\/locations\/(\d+)\/equipment\/(\d+)\/delete$/);
+  if (m && method === "POST") return client.equipmentDeletePost(env, request, user, Number(m[1]), Number(m[2]));
+  m = path.match(/^\/app\/locations\/(\d+)\/request-product$/);
+  if (m && method === "POST") return client.productRequestPost(env, request, user, Number(m[1]));
   m = path.match(/^\/app\/locations\/(\d+)\/tickets$/);
   if (m && method === "GET") return client.ticketsPage(env, request, user, Number(m[1]));
   if (m && method === "POST") return client.ticketCreatePost(env, request, user, Number(m[1]));
@@ -171,5 +185,5 @@ async function route(request, env) {
   if (m && method === "GET") return client.askPage(env, request, user, Number(m[1]));
   if (m && method === "POST") return client.askPost(env, request, user, Number(m[1]));
 
-  return notFound();
+  return notFound(user);
 }

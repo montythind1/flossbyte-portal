@@ -30,22 +30,54 @@ function adminNav(active) {
     `<a class="rail-item${active === key ? " active" : ""}" href="${href}">${icon(ic)}${label}</a>`;
   return `<div class="shell"><aside class="rail">
     <div class="rail-context"><div class="rc-t">FlossByte</div><div class="rc-s">Admin console</div></div>
-    ${item("clients", "/admin", "Clients", "users")}${item("new", "/admin/customers/new", "Add customer", "userPlus")}
+    ${item("clients", "/admin", "Clients", "users")}${item("tickets", "/admin/tickets", "Tickets", "ticket")}${item("new", "/admin/customers/new", "Add client", "userPlus")}
     ${item("pending", "/admin/pending", "Pending accounts", "clock")}${item("admins", "/admin/admins", "Admins", "shield")}
-    ${item("sync", "/admin/sync", "Device sync", "refresh")}</aside><div class="shell-main">`;
+    ${item("sync", "/admin/sync", "Device sync", "refresh")}${item("activity", "/admin/activity", "Activity", "activity")}</aside><div class="shell-main">`;
 }
 
-// ---------- Clients list ----------
+const plural = (n, one, many) => `${n} ${n === 1 ? one : (many || one + "s")}`;
+
+// ---------- Clients list (with Needs Attention + search) ----------
 export async function clientsPage(env, request, user) {
   const db = env.DB;
-  const { results } = await db.prepare(
-    `SELECT c.*,
+  const query = (new URL(request.url).searchParams.get("q") || "").trim();
+  // Needs Attention: the day in one card. Every count is one query away.
+  const expRows = (await db.prepare(
+    `SELECT e.vendor, e.model, e.type, e.name, e.license_expires, e.warranty_expires, l.id AS loc_id, l.name AS loc_name, c.name AS cust_name
+     FROM equipment e JOIN locations l ON l.id = e.location_id JOIN customers c ON c.id = l.customer_id
+     WHERE date(e.license_expires) <= date('now', '+90 days') OR date(e.warranty_expires) <= date('now', '+90 days')
+     ORDER BY MIN(COALESCE(e.license_expires, '9999'), COALESCE(e.warranty_expires, '9999')) LIMIT 50`).all()).results || [];
+  const expItems = expRows.map((e) => {
+    const kind = e.license_expires && (!e.warranty_expires || e.license_expires <= e.warranty_expires) ? "License" : "Warranty";
+    return { ...e, kind, date: kind === "License" ? e.license_expires : e.warranty_expires };
+  }).sort((a, b) => String(a.date).localeCompare(String(b.date))).slice(0, 5);
+  const openTickets = (await db.prepare(
+    `SELECT t.id, t.title, t.priority, t.status, l.id AS loc_id, l.name AS loc_name, c.name AS cust_name
+     FROM tickets t JOIN locations l ON l.id = t.location_id JOIN customers c ON c.id = l.customer_id
+     WHERE t.status != 'closed' ORDER BY t.updated_at DESC LIMIT 5`).all()).results || [];
+  const openTicketCount = await db.prepare("SELECT COUNT(*) AS n FROM tickets WHERE status != 'closed'").first();
+  const unpaid = await db.prepare("SELECT COUNT(*) AS n, COALESCE(SUM(amount_cents), 0) AS total FROM invoices WHERE status = 'unpaid'").first().catch(() => ({ n: 0, total: 0 }));
+  const pending = await db.prepare("SELECT COUNT(*) AS n FROM users WHERE status = 'pending'").first();
+  const attention = `<div class="card"><h2 style="margin-top:0">Needs attention</h2><div class="grid">
+    <div><h3 style="margin-top:0">Expiring in 90 days (${expRows.length})</h3>
+      ${expItems.length ? `<ul style="margin:0;padding-left:18px">${expItems.map((e) => `<li><a href="/app/locations/${e.loc_id}/equipment">${esc(e.vendor || "")} ${esc(e.model || e.type || "Equipment")}</a> <span class="muted">${esc(e.cust_name)} · ${e.kind.toLowerCase()} ${esc(fmtDateUS(e.date))}</span></li>`).join("")}</ul>` : `<p class="muted">Nothing expiring.</p>`}</div>
+    <div><h3 style="margin-top:0">Open tickets (${openTicketCount ? openTicketCount.n : 0})</h3>
+      ${openTickets.length ? `<ul style="margin:0;padding-left:18px">${openTickets.map((t) => `<li><a href="/app/locations/${t.loc_id}/tickets/${t.id}">${esc(t.title)}</a> <span class="muted">${esc(t.cust_name)} · ${esc(t.priority)}</span></li>`).join("")}</ul><p style="margin:8px 0 0"><a href="/admin/tickets">All tickets</a></p>` : `<p class="muted">No open tickets.</p>`}</div>
+    <div><h3 style="margin-top:0">Money and accounts</h3>
+      <p style="margin:4px 0">${plural(unpaid.n || 0, "unpaid invoice")} · ${fmtMoney(unpaid.total || 0)} outstanding</p>
+      <p style="margin:4px 0">${pending && pending.n ? `<a href="/admin/pending">${plural(pending.n, "account")} waiting to be connected</a>` : "No pending accounts"}</p></div>
+    </div></div>`;
+  // Client cards, optionally filtered by the search box.
+  let sql = `SELECT c.*,
       (SELECT COUNT(*) FROM locations WHERE customer_id = c.id) AS locations,
       (SELECT COUNT(*) FROM user_access WHERE customer_id = c.id) AS logins,
       (SELECT COUNT(*) FROM equipment e JOIN locations l ON l.id = e.location_id WHERE l.customer_id = c.id) AS equipment,
       (SELECT COUNT(*) FROM tickets t JOIN locations l ON l.id = t.location_id WHERE l.customer_id = c.id AND t.status != 'closed') AS open_tickets
-     FROM customers c ORDER BY c.name`).all();
-  const pending = await db.prepare("SELECT COUNT(*) AS n FROM users WHERE status = 'pending'").first();
+     FROM customers c`;
+  const binds = [];
+  if (query) { sql += " WHERE c.name LIKE ? OR c.contact_email LIKE ?"; const like = `%${query}%`; binds.push(like, like); }
+  sql += " ORDER BY c.name";
+  const { results } = await db.prepare(sql).bind(...binds).all();
   const cards = [];
   for (const c of results || []) {
     const exp = await db.prepare(
@@ -56,16 +88,68 @@ export async function clientsPage(env, request, user) {
       `SELECT p.key, p.name, COALESCE(cp.enabled, 0) AS enabled
        FROM products p LEFT JOIN customer_products cp ON cp.product = p.key AND cp.customer_id = ? AND cp.location_id IS NULL
        ORDER BY p.key`).bind(c.id).all();
-    const prodPills = (prods || []).map((p) => `<span class="pill ${p.enabled ? "on" : "off"}">${esc(p.name)} ${p.enabled ? "on" : "off"}</span>`).join(" ");
+    const onPills = (prods || []).filter((p) => p.enabled).map((p) => `<span class="pill on">${esc(p.name)}</span>`).join(" ");
+    const stats = [
+      plural(c.locations, "location"), plural(c.logins, "login"), `${c.equipment} equipment`,
+      c.open_tickets ? `<a href="/admin/tickets">${plural(c.open_tickets, "open ticket")}</a>` : "0 open tickets",
+      exp.n ? `<span class="pill warn">${plural(exp.n, "expiring")} in 90 days</span>` : "0 expiring in 90 days",
+    ].join(" · ");
     cards.push(`<div class="card"><div class="row between"><h3 style="margin:0">${esc(c.name)}</h3>
       <a class="btn small" href="/admin/customers/${c.id}">Manage</a></div>
-      <p class="muted">${c.locations} location(s) , ${c.logins} login(s) , ${c.equipment} equipment , ${c.open_tickets} open ticket(s) , ${exp.n} expiring in 90 days</p>
-      <p>${prodPills}</p></div>`);
+      <p class="muted">${stats}</p>
+      <p>${onPills || `<span class="muted">No services on yet</span>`}</p></div>`);
   }
   const body = `${adminNav("clients")}<h1>Clients</h1>
-    ${pending && pending.n ? `<div class="notice"><strong>${pending.n} account(s)</strong> waiting to be connected. See Pending accounts.</div>` : ""}
-    ${cards.join("") || `<div class="card"><p class="muted">No organizations yet. Add the first one.</p></div>`}`;
+    ${attention}
+    <form method="get" class="row" style="margin:16px 0 4px">
+      <span style="flex:1;min-width:200px"><input name="q" placeholder="Search clients by name or contact email" value="${esc(query)}"></span>
+      <button class="btn small secondary" type="submit">Search</button>
+      ${query ? `<a class="btn small secondary" href="/admin">Clear</a>` : ""}</form>
+    ${query ? `<p class="muted">${(results || []).length} result${(results || []).length === 1 ? "" : "s"} for "${esc(query)}"</p>` : ""}
+    ${cards.join("") || `<div class="card"><p class="muted">${query ? "No clients match that search." : "No clients yet. Add the first one."}</p></div>`}`;
   return page({ title: "Clients", user, body, flash: q(request).get("msg") || undefined });
+}
+
+// ---------- Ticket inbox (every open ticket, newest activity first) ----------
+export async function ticketsInboxPage(env, request, user) {
+  const { results } = await env.DB.prepare(
+    `SELECT t.*, l.name AS loc_name, c.name AS cust_name, u.name AS author_name
+     FROM tickets t JOIN locations l ON l.id = t.location_id JOIN customers c ON c.id = l.customer_id
+     LEFT JOIN users u ON u.id = t.created_by
+     ORDER BY (t.status = 'closed'), t.updated_at DESC LIMIT 200`).all();
+  const LABEL = { open: "Open", in_progress: "In progress", waiting: "Waiting", closed: "Closed" };
+  const rows = (results || []).map((t) => `<tr><td><a href="/app/locations/${t.location_id}/tickets/${t.id}">${esc(t.title)}</a>
+      <div class="muted">${esc(t.cust_name)} · ${esc(t.loc_name)}</div></td>
+    <td><span class="pill">${esc(LABEL[t.status] || t.status)}</span></td><td>${esc(t.priority)}</td>
+    <td>${esc(t.author_name || "")}</td><td>${esc(fmtDateUS(t.updated_at))}</td></tr>`).join("");
+  const open = (results || []).filter((t) => t.status !== "closed").length;
+  const body = `${adminNav("tickets")}<h1>Tickets</h1>
+    <p class="muted">${open} open across all clients. New tickets and customer replies also come to you by email.</p>
+    <div class="card" style="padding:8px 14px"><div class="tscroll"><table class="stack"><thead><tr><th>Ticket</th><th>Status</th><th>Priority</th><th>Opened by</th><th>Last activity</th></tr></thead>
+    <tbody>${rows || `<tr><td colspan="5" class="muted">No tickets yet.</td></tr>`}</tbody></table></div></div>`;
+  return page({ title: "Tickets", user, body });
+}
+
+// ---------- Activity (the audit log, readable) ----------
+const ACTION_LABEL = {
+  ticket_create: "Opened a ticket", ticket_status: "Changed a ticket status", equipment_add: "Added equipment",
+  equipment_edit: "Edited equipment", equipment_delete: "Deleted equipment", document_upload: "Uploaded a document",
+  quote_accept: "Accepted a quote", product_request: "Requested a service", user_remove: "Removed a user",
+  customer_delete: "Deleted a client", sync_map: "Mapped a sync site",
+};
+export async function activityPage(env, request, user) {
+  const { results } = await env.DB.prepare(
+    `SELECT a.*, u.name AS actor_name, u.email AS actor_email FROM audit_log a
+     LEFT JOIN users u ON u.id = a.actor_user_id ORDER BY a.id DESC LIMIT 200`).all();
+  const rows = (results || []).map((a) => `<tr><td>${esc(fmtDateUS(a.created_at))} <span class="muted">${esc(String(a.created_at).slice(11, 16))}</span></td>
+    <td>${esc(a.actor_name || a.actor_email || "System")}</td>
+    <td>${esc(ACTION_LABEL[a.action] || a.action.replace(/_/g, " "))}</td>
+    <td>${esc(a.entity || "")}${a.entity_id ? " #" + a.entity_id : ""}</td><td>${esc(a.detail || "")}</td></tr>`).join("");
+  const body = `${adminNav("activity")}<h1>Activity</h1>
+    <p class="muted">The last 200 recorded actions across the portal: who did what, and when.</p>
+    <div class="card" style="padding:8px 14px"><div class="tscroll"><table class="stack"><thead><tr><th>When</th><th>Who</th><th>Action</th><th>On</th><th>Detail</th></tr></thead>
+    <tbody>${rows || `<tr><td colspan="5" class="muted">No activity recorded yet.</td></tr>`}</tbody></table></div></div>`;
+  return page({ title: "Activity", user, body });
 }
 
 // One location block on the create form. The address field carries the
@@ -132,12 +216,12 @@ export async function newCustomerPage(env, request, user) {
       <section class="wstep" data-step="1">
         <label>Organization name <span class="req">*</span></label><input name="name" required>
         <p class="muted">The organization is the business that signs and pays. Each of its practices is a location in step 2.</p>
-        <h3 style="margin:16px 0 4px">Customer admin</h3>
+        <h3 style="margin:16px 0 4px">Client admin</h3>
         <p class="muted">The main admin for this organization. They get a login invite, see every location, and can manage the organization's team. Everyone added in step 4 is a regular user. An email can belong to only one organization.</p>
         <div class="row"><span style="flex:1"><label>First name <span class="req">*</span></label><input name="contact_first_name" required></span>
         <span style="flex:1"><label>Middle name</label><input name="contact_middle_name"></span>
         <span style="flex:1"><label>Last name <span class="req">*</span></label><input name="contact_last_name" required></span></div>
-        <label>Customer admin email <span class="req">*</span></label><input name="contact_email" type="email">
+        <label>Client admin email <span class="req">*</span></label><input name="contact_email" type="email">
         <label>Phone <span class="req">*</span></label><input name="phone" data-phone inputmode="tel" autocomplete="tel">
         <p id="emailCheck" style="color:var(--bad)"></p>
       </section>
@@ -207,11 +291,11 @@ export async function createCustomerPost(env, request, user) {
   // so a refused admin email never leaves a half-built organization.
   if (!contactEmail) {
     return redirect("/admin/customers/new?msg=" + encodeURIComponent(
-      "Customer admin email is required. It becomes the organization's main admin login."));
+      "Client admin email is required. It becomes the organization's main admin login."));
   }
   if (!isValidEmail(contactEmail)) {
     return redirect("/admin/customers/new?msg=" + encodeURIComponent(
-      "Enter a valid customer admin email address."));
+      "Enter a valid client admin email address."));
   }
   const dup = await findCustomerByContactEmail(env.DB, contactEmail);
   if (dup) {
@@ -222,7 +306,7 @@ export async function createCustomerPost(env, request, user) {
     .bind(contactEmail.toLowerCase()).first();
   if (adminUser && adminUser.kind === "flossbyte") {
     return redirect("/admin/customers/new?msg=" + encodeURIComponent(
-      "That customer admin email is a FlossByte account and cannot be a customer login."));
+      "That client admin email is a FlossByte account and cannot be a client login."));
   }
   if (adminUser && adminUser.kind === "customer") {
     const other = await env.DB.prepare(
@@ -230,7 +314,7 @@ export async function createCustomerPost(env, request, user) {
        WHERE ua.user_id = ? LIMIT 1`).bind(adminUser.id).first();
     if (other) {
       return redirect("/admin/customers/new?msg=" + encodeURIComponent(
-        `That customer admin email already belongs to ${other.name}. An email can belong to only one organization.`));
+        `That client admin email already belongs to ${other.name}. An email can belong to only one organization.`));
     }
   }
   const phone = normalizePhone(f.get("phone"));
@@ -486,7 +570,7 @@ export async function updateCustomerPost(env, request, user, customerId) {
   const contactEmail = String(f.get("contact_email") || "").trim();
   if (!isValidEmail(contactEmail)) {
     return redirect(`/admin/customers/${customerId}?tab=organization&msg=` + encodeURIComponent(
-      "Enter a valid customer admin email address. Nothing was saved."));
+      "Enter a valid client admin email address. Nothing was saved."));
   }
   // The one-email-per-organization rule binds edits too: the new email may
   // not belong to a different organization.
@@ -605,7 +689,7 @@ export async function customerPage(env, request, user, customerId) {
         <div class="row"><span style="flex:1"><label>First name <span class="req">*</span></label><input name="contact_first_name" value="${esc(c.contact_first_name || "")}" required></span>
         <span style="flex:1"><label>Middle name</label><input name="contact_middle_name" value="${esc(c.contact_middle_name || "")}"></span>
         <span style="flex:1"><label>Last name <span class="req">*</span></label><input name="contact_last_name" value="${esc(c.contact_last_name || "")}" required></span></div>
-        <label>Customer admin email <span class="req">*</span></label><input name="contact_email" type="email" value="${esc(c.contact_email || "")}" required>
+        <label>Client admin email <span class="req">*</span></label><input name="contact_email" type="email" value="${esc(c.contact_email || "")}" required>
         <label>Phone <span class="req">*</span></label><input name="phone" data-phone inputmode="tel" value="${esc(c.phone || "")}">
         <p style="margin-top:12px"><button class="btn small" type="submit">Save</button> <button class="btn small secondary" type="button" data-cancel>Cancel</button></p></form></div>
     <div class="card tab-panel${tab === "locations" ? " active" : ""}" data-panel="locations">
@@ -960,13 +1044,13 @@ export async function deleteCustomerPage(env, request, user, customerId) {
     <h1 style="color:var(--bad)">Delete ${esc(c.name)}</h1>
     <p>This permanently deletes the organization and everything under it:</p>
     <ul>
-      <li>${counts.locations} location(s)</li>
-      <li>${counts.equipment} equipment record(s)</li>
-      <li>${counts.tickets} ticket(s) with their full history</li>
+      <li>${plural(counts.locations, "location")}</li>
+      <li>${plural(counts.equipment, "equipment record")}</li>
+      <li>${plural(counts.tickets, "ticket")} with their full history</li>
       <li>${counts.documents} document(s), including the stored files</li>
       <li>Product settings for this organization</li>
     </ul>
-    <p>The ${counts.logins} login(s) lose access immediately and are signed out. Their accounts are disabled, not erased, so ticket history keeps its authors.</p>
+    <p>${counts.logins === 1 ? "The 1 login is" : `The ${counts.logins} logins are`} signed out immediately and lose access. Their accounts are disabled, not erased, so ticket history keeps its authors.</p>
     <p><strong>This cannot be undone.</strong></p>
     <form method="post" action="/admin/customers/${customerId}/delete" id="deleteOrgForm">
       <label>Type the organization (${esc(c.name)}) name to confirm <span class="req">*</span></label>
@@ -1057,12 +1141,12 @@ export async function pendingPage(env, request, user) {
   for (const p of pending || []) {
     const { results: locs } = await env.DB.prepare("SELECT id, name, customer_id FROM locations ORDER BY name").all();
     rows.push(`<div class="card"><div class="row between"><div><strong>${esc(p.name)}</strong>
-      <div class="muted">${esc(p.email)} , signed up ${esc(fmtDateUS(p.created_at))}</div></div></div>
+      <div class="muted">${esc(p.email)} · signed up ${esc(fmtDateUS(p.created_at))}</div></div></div>
       <form method="post" action="/admin/pending/${p.id}/connect" class="row" style="margin-top:10px;align-items:end">
         <span style="flex:1;min-width:200px"><label>Connect to location (or customer-wide by picking any of its locations, then scope) <span class="req">*</span></label>
         <select name="location_id" required>${(locs || []).map((l) => {
           const cust = (customers || []).find((c) => c.id === l.customer_id);
-          return `<option value="${l.id}">${esc(cust ? cust.name + " , " : "")}${esc(l.name)}</option>`;
+          return `<option value="${l.id}">${esc(cust ? cust.name + " — " : "")}${esc(l.name)}</option>`;
         }).join("")}</select></span>
         <span style="min-width:150px"><label>Scope</label><select name="scope"><option value="user">User</option><option value="admin">Location admin</option></select></span>
         <span style="min-width:170px"><label>Reach</label><select name="reach"><option value="location">This location only</option><option value="customer">All locations of that customer</option></select></span>

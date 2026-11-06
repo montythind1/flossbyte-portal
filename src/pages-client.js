@@ -6,7 +6,7 @@ import {
   expiringItems, audit, accessibleLocationIds, customerAdminOrg, orgMembers,
   removeUserFromCustomer,
 } from "./access.js";
-import { sendEmail, quoteAcceptedNoticeEmail } from "./email.js";
+import { sendEmail, quoteAcceptedNoticeEmail, ticketCreatedNoticeEmail, ticketReplyNoticeEmail, productRequestEmail } from "./email.js";
 
 function orgOrigin(env) { return env.APP_ORIGIN || "https://portal.flossbyte.com"; }
 
@@ -68,11 +68,48 @@ function orgRail(user, active, orgName) {
     ${user.role === "customer_admin" ? item("team", "/app/team", "Team", "users") : ""}</aside><div class="shell-main">`;
 }
 
-function lockedTile(user, loc, productName) {
+function lockedTile(user, loc, productName, productKey) {
   const body = `${locNav(loc, "")}<div class="card"><h2>${esc(productName)}</h2>
     <p><span class="pill off">Not included</span></p>
-    <p class="muted">This service is not turned on for your practice. Ask FlossByte if you want it added.</p></div>`;
+    <p class="muted">This service is not turned on for your practice.</p>
+    ${productKey ? requestForm(loc, productKey) : ""}</div>`;
   return page({ title: productName, user, body });
+}
+
+// One-click "ask FlossByte for this service" — emails the FlossByte team.
+function requestForm(loc, productKey) {
+  return `<form method="post" action="/app/locations/${loc.id}/request-product" style="margin-top:12px">
+    <input type="hidden" name="product" value="${esc(productKey)}">
+    <button class="btn small" type="submit">Request this service</button></form>`;
+}
+
+// Alert the FlossByte team: the configured alert address when set,
+// otherwise every active FlossByte admin's inbox.
+async function alertFlossByte(env, template, mail) {
+  let targets = [];
+  if (env.ADMIN_ALERT_EMAIL) targets = [env.ADMIN_ALERT_EMAIL];
+  else {
+    const { results } = await env.DB.prepare("SELECT email FROM users WHERE kind = 'flossbyte' AND status = 'active'").all();
+    targets = (results || []).map((r) => r.email);
+  }
+  for (const to of targets) { try { await sendEmail(env, { to, template, ...mail }); } catch (e) { /* email never blocks the action */ } }
+}
+
+export async function productRequestPost(env, request, user, locationId) {
+  const { loc, error } = await guard(env, user, locationId);
+  if (error) return denied(user, error);
+  const f = await request.formData();
+  const key = String(f.get("product") || "");
+  const prod = await env.DB.prepare("SELECT * FROM products WHERE key = ?").bind(key).first();
+  if (prod) {
+    await audit(env.DB, user.id, "product_request", "location", locationId, prod.name);
+    const mail = productRequestEmail(env, {
+      customerName: loc.customer_name, locationName: loc.name, productName: prod.name,
+      requestedBy: user.name, link: `${orgOrigin(env)}/admin/customers/${loc.customer_id}`,
+    });
+    await alertFlossByte(env, "product_request", mail);
+  }
+  return redirect(`/app/locations/${locationId}?msg=` + encodeURIComponent("Request sent. FlossByte will be in touch about it."));
 }
 
 // ---------- Entry: /app ----------
@@ -90,7 +127,7 @@ export async function appHome(env, request, user) {
   for (const id of ids) {
     const loc = await getLocation(env.DB, id);
     if (loc) cards.push(`<a class="tile" href="/app/locations/${id}"><span class="t">${esc(loc.name)}</span>
-      <span class="d">${esc(loc.customer_name)}${loc.city ? " , " + esc(loc.city) : ""}</span></a>`);
+      <span class="d">${esc(loc.customer_name)}${loc.city ? ", " + esc(loc.city) : ""}</span></a>`);
   }
   if (user.role === "customer_admin") {
     cards.push(`<a class="tile" href="/app/team"><span class="t">Team</span>
@@ -131,19 +168,23 @@ export async function locationOverview(env, request, user, locationId) {
         }).join("")}</ul></div>` : "";
   const tiles = states.map((p) => p.enabled
     ? `<a class="tile" href="/app/locations/${locationId}/products/${p.key}"><span class="t">${esc(p.name)}</span><span class="d"><span class="pill on">On</span> ${esc(p.description || "")}</span></a>`
-    : `<a class="tile" href="/app/locations/${locationId}/products/${p.key}"><span class="t">${esc(p.name)}</span><span class="d"><span class="pill off">Not included</span> Ask FlossByte about adding it.</span></a>`).join("");
-  const body = `${locNav(loc, "overview")}${user.role === "customer_admin"
-    ? `<p style="margin:-6px 0 14px"><a href="/app/team">Manage your team</a></p>` : ""}
-    <p style="margin:-6px 0 14px"><a href="/app/billing">Billing</a>${billing && billing.sent_quotes ? ` (${billing.sent_quotes} quote${billing.sent_quotes > 1 ? "s" : ""} waiting for you)` : ""}${billing && billing.unpaid_invoices ? ` (${billing.unpaid_invoices} unpaid invoice${billing.unpaid_invoices > 1 ? "s" : ""})` : ""}</p><h1>${esc(loc.name)}</h1>
+    : `<div class="tile"><span class="t">${esc(p.name)}</span><span class="d"><span class="pill off">Not included</span> ${esc(p.description || "")}</span>${requestForm(loc, p.key)}</div>`).join("");
+  const quickLinks = [
+    `<a href="/app/billing">Billing</a>${billing && billing.sent_quotes ? ` (${billing.sent_quotes} quote${billing.sent_quotes > 1 ? "s" : ""} waiting for you)` : ""}${billing && billing.unpaid_invoices ? ` (${billing.unpaid_invoices} unpaid invoice${billing.unpaid_invoices > 1 ? "s" : ""})` : ""}`,
+    user.role === "customer_admin" ? `<a href="/app/team">Manage your team</a>` : "",
+  ].filter(Boolean).join(" &nbsp;·&nbsp; ");
+  const body = `${locNav(loc, "overview")}<h1>${esc(loc.name)}</h1>
+    <p class="muted" style="margin:-6px 0 16px">${quickLinks}</p>
     ${expiringHtml}
     <div class="grid">
-      <div class="tile"><span class="t">${counts.equipment}</span><span class="d">Pieces of equipment on record</span></div>
-      <div class="tile"><span class="t">${counts.open_tickets}</span><span class="d">Open tickets</span></div>
-      <div class="tile"><span class="t">${counts.documents}</span><span class="d">Documents</span></div>
+      <a class="tile" href="/app/locations/${locationId}/equipment"><span class="tile-n">${counts.equipment}</span><span class="d">Equipment on record</span></a>
+      <a class="tile" href="/app/locations/${locationId}/tickets"><span class="tile-n">${counts.open_tickets}</span><span class="d">Open tickets</span></a>
+      <a class="tile" href="/app/locations/${locationId}/documents"><span class="tile-n">${counts.documents}</span><span class="d">Documents</span></a>
       <a class="tile" href="${REMOTE_URL}" target="_blank" rel="noopener"><span class="t">Remote Support</span><span class="d">Start a session: download the app, then read us the 9-digit code it shows.</span></a>
     </div>
     <h2 style="margin-top:28px">Your services</h2><div class="grid">${tiles}</div>`;
-  return page({ title: loc.name, user, body });
+  const msg = new URL(request.url).searchParams.get("msg");
+  return page({ title: loc.name, user, body, flash: msg || undefined });
 }
 
 // ---------- Team (customer_admin only) ----------
@@ -204,7 +245,7 @@ export async function productPage(env, request, user, locationId, productKey) {
   const prod = await env.DB.prepare("SELECT * FROM products WHERE key = ?").bind(productKey).first();
   if (!prod) return denied(user, 404);
   const on = await productEnabled(env.DB, loc.customer_id, locationId, productKey);
-  if (!on) return lockedTile(user, loc, prod.name);
+  if (!on) return lockedTile(user, loc, prod.name, prod.key);
   if (productKey === "managed_it") return redirect(`/app/locations/${locationId}/equipment`);
   const states = await productStates(env.DB, loc.customer_id, locationId);
   const state = states.find((s) => s.key === productKey);
@@ -219,7 +260,7 @@ export async function productPage(env, request, user, locationId, productKey) {
 export async function equipmentPage(env, request, user, locationId) {
   const { loc, error } = await guard(env, user, locationId);
   if (error) return denied(user, error);
-  if (!(await laneOn(env.DB, loc.customer_id, locationId))) return lockedTile(user, loc, "Equipment");
+  if (!(await laneOn(env.DB, loc.customer_id, locationId))) return lockedTile(user, loc, "Equipment", "managed_it");
   const q = new URL(request.url).searchParams;
   const search = (q.get("q") || "").trim();
   const vendor = (q.get("vendor") || "").trim();
@@ -237,13 +278,15 @@ export async function equipmentPage(env, request, user, locationId) {
     const days = daysUntil(exp);
     const pill = exp && days <= 90 ? `<span class="pill warn">${esc(fmtDateUS(exp))}</span>` : esc(fmtDateUS(exp));
     const modelCell = e.name ? (e.model ? `${e.name} (${e.model})` : e.name) : (e.model || "");
+    const statusPill = e.status === "online" ? `<span class="pill on">Online</span>`
+      : e.status === "offline" ? `<span class="pill off">Offline</span>` : `<span class="pill">${esc(e.status)}</span>`;
     return `<tr><td>${esc(e.vendor || "")}</td><td>${esc(e.type || "")}</td><td>${esc(modelCell)}</td>
-      <td>${esc(e.serial || "")}</td><td>${esc(e.status)}</td><td>${esc(e.firmware || "")}</td><td>${pill}</td></tr>`;
+      <td>${esc(e.serial || "")}</td><td>${statusPill}</td><td>${esc(e.firmware || "")}</td><td>${pill}</td>${canEdit ? `<td><a href="/app/locations/${locationId}/equipment/${e.id}/edit">Edit</a></td>` : ""}</tr>`;
   }).join("");
   const addForm = canEdit ? `<div class="card"><h3>Add equipment</h3>
     <form method="post" action="/app/locations/${locationId}/equipment" class="row" style="align-items:end">
-      <span style="flex:1;min-width:130px"><label>Vendor</label><input name="vendor" placeholder="Sophos, UniFi, SonicWall"></span>
-      <span style="flex:1;min-width:110px"><label>Type</label><input name="type" placeholder="Firewall"></span>
+      <span style="flex:1;min-width:130px"><label>Vendor</label><input name="vendor" list="eq-vendors" placeholder="Sophos, UniFi, SonicWall">${datalist("eq-vendors", EQ_VENDORS)}</span>
+      <span style="flex:1;min-width:110px"><label>Type</label><input name="type" list="eq-types" placeholder="Firewall">${datalist("eq-types", EQ_TYPES)}</span>
       <span style="flex:1;min-width:130px"><label>Model</label><input name="model"></span>
       <span style="flex:1;min-width:130px"><label>Serial</label><input name="serial"></span>
       <span style="flex:1;min-width:110px"><label>Status</label><select name="status"><option>online</option><option>offline</option><option>unknown</option></select></span>
@@ -257,15 +300,15 @@ export async function equipmentPage(env, request, user, locationId) {
       <span style="flex:1;min-width:140px"><select name="vendor"><option value="">All vendors</option>
         ${vendors.map((v) => `<option ${v === vendor ? "selected" : ""}>${esc(v)}</option>`).join("")}</select></span>
       <button class="btn small secondary" type="submit">Filter</button></form>
-    <div class="card" style="padding:8px 14px"><div class="tscroll"><table class="stack"><thead><tr><th>Vendor</th><th>Type</th><th>Model</th><th>Serial</th><th>Status</th><th>Firmware</th><th>Next expiry</th></tr></thead>
-    <tbody>${rows || `<tr><td colspan="7" class="muted">No equipment recorded yet.</td></tr>`}</tbody></table></div></div>${addForm}`;
+    <div class="card" style="padding:8px 14px"><div class="tscroll"><table class="stack"><thead><tr><th>Vendor</th><th>Type</th><th>Model</th><th>Serial</th><th>Status</th><th>Firmware</th><th>Next expiry</th>${canEdit ? "<th></th>" : ""}</tr></thead>
+    <tbody>${rows || `<tr><td colspan="${canEdit ? 8 : 7}" class="muted">No equipment recorded yet.</td></tr>`}</tbody></table></div></div>${addForm}`;
   return page({ title: "Equipment", user, body });
 }
 
 export async function equipmentPost(env, request, user, locationId) {
   const { loc, error } = await guard(env, user, locationId);
   if (error) return denied(user, error);
-  if (!(await laneOn(env.DB, loc.customer_id, locationId))) return lockedTile(user, loc, "Equipment");
+  if (!(await laneOn(env.DB, loc.customer_id, locationId))) return lockedTile(user, loc, "Equipment", "managed_it");
   const scope = await locationScope(env.DB, user, locationId);
   if (!(user.kind === "flossbyte" || scope === "admin")) return denied(user, 403);
   const f = await request.formData();
@@ -279,13 +322,93 @@ export async function equipmentPost(env, request, user, locationId) {
   return redirect(`/app/locations/${locationId}/equipment`);
 }
 
+const EQ_VENDORS = ["UniFi", "Sophos", "SonicWall", "Dell", "HP", "Lenovo", "Apple", "Cisco", "NETGEAR", "Microsoft", "Other"];
+const EQ_TYPES = ["Firewall", "Switch", "Access point", "Gateway", "Controller", "Computer", "Server", "Printer", "Camera", "Phone system", "NAS", "Recorder", "Other"];
+function datalist(id, values) {
+  return `<datalist id="${id}">${values.map((v) => `<option value="${esc(v)}"></option>`).join("")}</datalist>`;
+}
+
+async function loadEquipment(env, user, locationId, equipmentId) {
+  const { loc, error } = await guard(env, user, locationId);
+  if (error) return { error: denied(user, error) };
+  if (!(await laneOn(env.DB, loc.customer_id, locationId))) return { error: lockedTile(user, loc, "Equipment", "managed_it") };
+  const scope = await locationScope(env.DB, user, locationId);
+  if (!(user.kind === "flossbyte" || scope === "admin")) return { error: denied(user, 403) };
+  const row = await env.DB.prepare("SELECT * FROM equipment WHERE id = ? AND location_id = ?").bind(equipmentId, locationId).first();
+  if (!row) return { error: denied(user, 404) };
+  return { loc, row };
+}
+
+export async function equipmentEditPage(env, request, user, locationId, equipmentId) {
+  const { loc, row, error } = await loadEquipment(env, user, locationId, equipmentId);
+  if (error) return error;
+  const synced = row.source && row.source !== "manual";
+  const fields = synced
+    ? `<p class="muted">This device syncs from ${row.source === "unifi" ? "UniFi" : row.source === "sophos" ? "Sophos" : "its vendor"} automatically, so its name, model, serial, and status update from the source. You can still set expiry dates and notes here.</p>
+       <label>Vendor</label><input value="${esc(row.vendor || "")}" disabled>
+       <label>Type</label><input value="${esc(row.type || "")}" disabled>
+       <label>Model</label><input value="${esc(row.name ? (row.model ? row.name + " (" + row.model + ")" : row.name) : (row.model || ""))}" disabled>
+       <label>Serial</label><input value="${esc(row.serial || "")}" disabled>`
+    : `<label>Vendor</label><input name="vendor" list="eq-vendors" value="${esc(row.vendor || "")}">${datalist("eq-vendors", EQ_VENDORS)}
+       <label>Type</label><input name="type" list="eq-types" value="${esc(row.type || "")}">${datalist("eq-types", EQ_TYPES)}
+       <label>Name</label><input name="name" value="${esc(row.name || "")}">
+       <label>Model</label><input name="model" value="${esc(row.model || "")}">
+       <label>Serial</label><input name="serial" value="${esc(row.serial || "")}">
+       <label>Status</label><select name="status">${["online", "offline", "unknown"].map((s) => `<option ${row.status === s ? "selected" : ""}>${s}</option>`).join("")}</select>
+       <label>Firmware</label><input name="firmware" value="${esc(row.firmware || "")}">`;
+  const body = `${locNav(loc, "equipment")}<p><a href="/app/locations/${locationId}/equipment">&larr; Equipment</a></p>
+    <div class="card"><h2>Edit equipment</h2>
+    <form method="post" action="/app/locations/${locationId}/equipment/${row.id}/edit">
+      ${fields}
+      <label>License expires</label><input name="license_expires" type="date" value="${esc(row.license_expires || "")}">
+      <label>Warranty expires</label><input name="warranty_expires" type="date" value="${esc(row.warranty_expires || "")}">
+      <label>Notes</label><textarea name="notes">${esc(row.notes || "")}</textarea>
+      <p style="margin-top:16px"><button class="btn" type="submit">Save changes</button></p></form></div>
+    ${synced ? "" : `<div class="card"><h3>Remove this equipment</h3>
+      <p class="muted">For gear that was replaced or taken out of service. This deletes the record.</p>
+      <form method="post" action="/app/locations/${locationId}/equipment/${row.id}/delete">
+        <label style="font-weight:400"><input type="checkbox" name="confirm" value="yes" style="width:auto;margin-right:8px">Yes, delete this equipment record</label>
+        <p style="margin-top:12px"><button class="btn danger" type="submit">Delete equipment</button></p></form></div>`}`;
+  return page({ title: "Edit equipment", user, body });
+}
+
+export async function equipmentEditPost(env, request, user, locationId, equipmentId) {
+  const { row, error } = await loadEquipment(env, user, locationId, equipmentId);
+  if (error) return error;
+  const f = await request.formData();
+  const synced = row.source && row.source !== "manual";
+  if (synced) {
+    await env.DB.prepare("UPDATE equipment SET license_expires = ?, warranty_expires = ?, notes = ? WHERE id = ?")
+      .bind(f.get("license_expires") || null, f.get("warranty_expires") || null, f.get("notes") || null, equipmentId).run();
+  } else {
+    await env.DB.prepare(`UPDATE equipment SET vendor = ?, type = ?, name = ?, model = ?, serial = ?, status = ?, firmware = ?,
+      license_expires = ?, warranty_expires = ?, notes = ? WHERE id = ?`)
+      .bind(f.get("vendor") || null, f.get("type") || null, f.get("name") || null, f.get("model") || null,
+        f.get("serial") || null, String(f.get("status") || "online"), f.get("firmware") || null,
+        f.get("license_expires") || null, f.get("warranty_expires") || null, f.get("notes") || null, equipmentId).run();
+  }
+  await audit(env.DB, user.id, "equipment_edit", "equipment", Number(equipmentId), row.model || row.name || "");
+  return redirect(`/app/locations/${locationId}/equipment`);
+}
+
+export async function equipmentDeletePost(env, request, user, locationId, equipmentId) {
+  const { row, error } = await loadEquipment(env, user, locationId, equipmentId);
+  if (error) return error;
+  if (row.source && row.source !== "manual") return redirect(`/app/locations/${locationId}/equipment`);
+  const f = await request.formData();
+  if (String(f.get("confirm") || "") !== "yes") return redirect(`/app/locations/${locationId}/equipment/${equipmentId}/edit`);
+  await env.DB.prepare("DELETE FROM equipment WHERE id = ?").bind(equipmentId).run();
+  await audit(env.DB, user.id, "equipment_delete", "equipment", Number(equipmentId), row.model || row.name || "");
+  return redirect(`/app/locations/${locationId}/equipment`);
+}
+
 // ---------- Tickets ----------
 const STATUS_LABEL = { open: "Open", in_progress: "In progress", waiting: "Waiting", closed: "Closed" };
 
 export async function ticketsPage(env, request, user, locationId) {
   const { loc, error } = await guard(env, user, locationId);
   if (error) return denied(user, error);
-  if (!(await laneOn(env.DB, loc.customer_id, locationId))) return lockedTile(user, loc, "Tickets");
+  if (!(await laneOn(env.DB, loc.customer_id, locationId))) return lockedTile(user, loc, "Tickets", "managed_it");
   const { results } = await env.DB.prepare(
     "SELECT * FROM tickets WHERE location_id = ? ORDER BY (status = 'closed'), updated_at DESC").bind(locationId).all();
   const rows = (results || []).map((t) => `<tr><td><a href="/app/locations/${locationId}/tickets/${t.id}">${esc(t.title)}</a></td>
@@ -305,7 +428,7 @@ export async function ticketsPage(env, request, user, locationId) {
 export async function ticketCreatePost(env, request, user, locationId) {
   const { loc, error } = await guard(env, user, locationId);
   if (error) return denied(user, error);
-  if (!(await laneOn(env.DB, loc.customer_id, locationId))) return lockedTile(user, loc, "Tickets");
+  if (!(await laneOn(env.DB, loc.customer_id, locationId))) return lockedTile(user, loc, "Tickets", "managed_it");
   const f = await request.formData();
   const res = await env.DB.prepare(
     "INSERT INTO tickets (location_id, title, priority, created_by) VALUES (?, ?, ?, ?)")
@@ -314,20 +437,28 @@ export async function ticketCreatePost(env, request, user, locationId) {
   const detail = String(f.get("body") || "").trim();
   if (detail) await env.DB.prepare("INSERT INTO ticket_updates (ticket_id, author_id, body) VALUES (?, ?, ?)").bind(tid, user.id, detail).run();
   await audit(env.DB, user.id, "ticket_create", "ticket", tid, null);
+  if (user.kind === "customer") {
+    const mail = ticketCreatedNoticeEmail(env, {
+      customerName: loc.customer_name, locationName: loc.name,
+      title: String(f.get("title") || "Support request"), priority: String(f.get("priority") || "normal"),
+      authorName: user.name, link: `${orgOrigin(env)}/app/locations/${locationId}/tickets/${tid}`,
+    });
+    await alertFlossByte(env, "ticket_created", mail);
+  }
   return redirect(`/app/locations/${locationId}/tickets/${tid}`);
 }
 
 export async function ticketDetailPage(env, request, user, locationId, ticketId) {
   const { loc, error } = await guard(env, user, locationId);
   if (error) return denied(user, error);
-  if (!(await laneOn(env.DB, loc.customer_id, locationId))) return lockedTile(user, loc, "Tickets");
+  if (!(await laneOn(env.DB, loc.customer_id, locationId))) return lockedTile(user, loc, "Tickets", "managed_it");
   const t = await env.DB.prepare("SELECT * FROM tickets WHERE id = ? AND location_id = ?").bind(ticketId, locationId).first();
   if (!t) return denied(user, 404);
   const { results } = await env.DB.prepare(
     `SELECT tu.*, u.name AS author_name FROM ticket_updates tu LEFT JOIN users u ON u.id = tu.author_id
      WHERE tu.ticket_id = ? ORDER BY tu.created_at`).bind(ticketId).all();
   const thread = (results || []).map((u) => `<div style="border-bottom:1px solid var(--line);padding:10px 0">
-    <div class="muted">${esc(u.author_name || "User")} , ${esc(fmtDateUS(u.created_at))} ${esc(u.created_at.slice(11, 16))}</div><p style="margin:4px 0">${esc(u.body)}</p></div>`).join("");
+    <div class="muted">${esc(u.author_name || "User")} · ${esc(fmtDateUS(u.created_at))} ${esc(u.created_at.slice(11, 16))}</div><p style="margin:4px 0">${esc(u.body)}</p></div>`).join("");
   const scope = await locationScope(env.DB, user, locationId);
   const canManage = user.kind === "flossbyte" || scope === "admin";
   const manage = canManage ? `<form method="post" action="/app/locations/${locationId}/tickets/${ticketId}/status" class="row" style="margin-top:14px">
@@ -335,7 +466,7 @@ export async function ticketDetailPage(env, request, user, locationId, ticketId)
       <span style="min-width:140px"><select name="priority">${["low", "normal", "high", "urgent"].map((p) => `<option ${t.priority === p ? "selected" : ""}>${p}</option>`).join("")}</select></span>
       <button class="btn small secondary" type="submit">Update status</button></form>` : "";
   const body = `${locNav(loc, "tickets")}<h1>${esc(t.title)}</h1>
-    <p><span class="pill">${esc(STATUS_LABEL[t.status] || t.status)}</span> <span class="muted">Priority: ${esc(t.priority)} , opened ${esc(fmtDateUS(t.created_at))}</span></p>
+    <p><span class="pill">${esc(STATUS_LABEL[t.status] || t.status)}</span> <span class="muted">Priority: ${esc(t.priority)} · opened ${esc(fmtDateUS(t.created_at))}</span></p>
     <div class="card">${thread || `<p class="muted">No updates yet.</p>`}
       <form method="post" action="/app/locations/${locationId}/tickets/${ticketId}/update">
         <label>Add an update <span class="req">*</span></label><textarea name="body" required></textarea>
@@ -347,13 +478,30 @@ export async function ticketDetailPage(env, request, user, locationId, ticketId)
 export async function ticketUpdatePost(env, request, user, locationId, ticketId) {
   const { loc, error } = await guard(env, user, locationId);
   if (error) return denied(user, error);
-  const t = await env.DB.prepare("SELECT id FROM tickets WHERE id = ? AND location_id = ?").bind(ticketId, locationId).first();
+  const t = await env.DB.prepare("SELECT * FROM tickets WHERE id = ? AND location_id = ?").bind(ticketId, locationId).first();
   if (!t) return denied(user, 404);
   const f = await request.formData();
   const bodyText = String(f.get("body") || "").trim();
   if (bodyText) {
     await env.DB.prepare("INSERT INTO ticket_updates (ticket_id, author_id, body) VALUES (?, ?, ?)").bind(ticketId, user.id, bodyText).run();
     await env.DB.prepare("UPDATE tickets SET updated_at = datetime('now') WHERE id = ?").bind(ticketId).run();
+    const link = `${orgOrigin(env)}/app/locations/${locationId}/tickets/${ticketId}`;
+    if (user.kind === "customer") {
+      const mail = ticketReplyNoticeEmail(env, {
+        heading: "A customer replied to a ticket", customerName: loc.customer_name, locationName: loc.name,
+        title: t.title, authorName: user.name, link, toCustomer: false,
+      });
+      await alertFlossByte(env, "ticket_reply", mail);
+    } else if (user.kind === "flossbyte" && t.created_by && t.created_by !== user.id) {
+      const creator = await env.DB.prepare("SELECT email, kind FROM users WHERE id = ?").bind(t.created_by).first();
+      if (creator && creator.kind === "customer") {
+        const mail = ticketReplyNoticeEmail(env, {
+          heading: "FlossByte replied to your ticket", customerName: loc.customer_name, locationName: loc.name,
+          title: t.title, authorName: user.name, link, toCustomer: true,
+        });
+        try { await sendEmail(env, { to: creator.email, template: "ticket_reply_customer", ...mail }); } catch (e) { /* never block */ }
+      }
+    }
   }
   return redirect(`/app/locations/${locationId}/tickets/${ticketId}`);
 }
@@ -416,11 +564,11 @@ export async function documentUploadPost(env, request, user, locationId) {
 
 export async function documentView(env, request, user, documentId) {
   const doc = await env.DB.prepare("SELECT * FROM documents WHERE id = ?").bind(documentId).first();
-  if (!doc) return new Response("Not found", { status: 404 });
-  if (!(await canAccessLocation(env.DB, user, doc.location_id))) return new Response("Forbidden", { status: 403 });
-  if (!doc.r2_key || !env.DOCS) return new Response("File not stored", { status: 404 });
+  if (!doc) return denied(user, 404);
+  if (!(await canAccessLocation(env.DB, user, doc.location_id))) return denied(user, 403);
+  if (!doc.r2_key || !env.DOCS) return denied(user, 404);
   const obj = await env.DOCS.get(doc.r2_key);
-  if (!obj) return new Response("Not found", { status: 404 });
+  if (!obj) return denied(user, 404);
   return new Response(obj.body, {
     headers: {
       "Content-Type": doc.mime || "application/octet-stream",
@@ -569,7 +717,7 @@ export async function quoteViewPage(env, request, user, quoteId) {
       <form method="post" action="/app/quotes/${quote.id}/decline" style="margin-top:10px">
         <button class="btn small secondary" type="submit">Decline</button></form></div>`;
   } else {
-    statusBlock = `<div class="card"><p class="muted">This quote is waiting for your organization's admin to review and accept it.</p></div>`;
+    statusBlock = `<div class="card"><p class="muted">This quote is waiting for your practice's admin to review and accept it.</p></div>`;
   }
   const body = `${orgRail(user, "billing", "My Portal")}<p><a href="/app/billing">&larr; Billing</a></p><h1>${esc(quote.title)}</h1>
     <p class="muted">${quote.kind === "plan" ? "Service plan" : "Project"} quote from FlossByte. Total <strong>${fmtMoney(total)}</strong>${deposit > 0 ? `, with a ${quote.deposit_percent}% deposit of <strong>${fmtMoney(deposit)}</strong> due on acceptance and ${fmtMoney(total - deposit)} after that.` : "."}</p>
@@ -633,10 +781,11 @@ async function invoicesSection(env, org) {
     "SELECT * FROM invoices WHERE customer_id = ? AND status != 'void' ORDER BY created_at DESC").bind(org).all();
   const rows = (results || []).map((inv) => {
     const pay = inv.status === "unpaid" && inv.pay_url
-      ? `<a class="btn small" href="${esc(inv.pay_url)}" target="_blank" rel="noopener">Pay</a>` : "";
+      ? `<a class="btn small" href="${esc(inv.pay_url)}" target="_blank" rel="noopener">Pay</a>`
+      : inv.status === "unpaid" ? `<span class="muted">FlossByte will email a payment link.</span>` : "";
     const note = inv.kind === "deposit"
       ? (inv.status === "unpaid" ? `<div class="muted">Work is scheduled once this deposit is paid.</div>` : `<div class="muted">Deposit received.</div>`) : "";
-    return `<tr><td>INV-${1000 + inv.id}</td><td>${esc(inv.title)}${note}</td>
+    return `<tr><td><a href="/app/invoices/${inv.id}">INV-${1000 + inv.id}</a></td><td>${esc(inv.title)}${note}</td>
       <td>${esc(INVOICE_KIND[inv.kind] || "Invoice")}</td><td class="num">${fmtMoney(inv.amount_cents)}</td>
       <td><span class="pill ${inv.status === "paid" ? "on" : ""}">${inv.status === "paid" ? "Paid" : "Unpaid"}</span>${inv.status === "paid" && inv.paid_at ? `<div class="muted">${esc(fmtDateUS(inv.paid_at))}</div>` : ""}</td>
       <td>${esc(fmtDateUS(inv.due_date))}</td><td>${pay}</td></tr>`;
@@ -644,6 +793,30 @@ async function invoicesSection(env, org) {
   return `
     <div class="card" style="padding:8px 14px"><div class="tscroll"><table class="stack"><thead><tr><th>Number</th><th>Invoice</th><th>Type</th><th class="num">Amount</th><th>Status</th><th>Due</th><th></th></tr></thead>
     <tbody>${rows || `<tr><td colspan="7" class="muted">No invoices yet.</td></tr>`}</tbody></table></div></div>`;
+}
+
+export async function invoiceViewPage(env, request, user, invoiceId) {
+  const org = await clientOrgId(env, user);
+  if (org === null) return denied(user, 403);
+  const inv = await env.DB.prepare("SELECT * FROM invoices WHERE id = ? AND customer_id = ?").bind(invoiceId, org).first();
+  if (!inv) return denied(user, 404);
+  const cust = await env.DB.prepare("SELECT name FROM customers WHERE id = ?").bind(org).first();
+  const pay = inv.status === "unpaid" && inv.pay_url
+    ? `<p style="margin-top:16px"><a class="btn" href="${esc(inv.pay_url)}" target="_blank" rel="noopener">Pay ${fmtMoney(inv.amount_cents)}</a></p>`
+    : inv.status === "unpaid" ? `<p class="muted" style="margin-top:16px">FlossByte will email a payment link for this invoice. Questions: call (669) 237-2264.</p>` : "";
+  const body = `${orgRail(user, "billing", cust ? cust.name : "My Portal")}<p><a href="/app/billing">&larr; Billing</a></p>
+    <h1>INV-${1000 + inv.id}</h1>
+    <p class="muted">${esc(inv.title)}</p>
+    <p><button class="btn small secondary" type="button" onclick="window.print()">Print / save as PDF</button></p>
+    <div class="card"><div class="tscroll"><table>
+      <tbody>
+      <tr><td class="muted">Billed to</td><td>${esc(cust ? cust.name : "")}</td></tr>
+      <tr><td class="muted">Type</td><td>${esc(INVOICE_KIND[inv.kind] || "Invoice")}</td></tr>
+      <tr><td class="muted">Amount</td><td><strong>${fmtMoney(inv.amount_cents)}</strong></td></tr>
+      <tr><td class="muted">Status</td><td><span class="pill ${inv.status === "paid" ? "on" : ""}">${inv.status === "paid" ? "Paid" : inv.status === "void" ? "Void" : "Unpaid"}</span>${inv.status === "paid" && inv.paid_at ? ` ${esc(fmtDateUS(inv.paid_at))}${inv.paid_method ? " by " + esc(inv.paid_method) : ""}` : ""}</td></tr>
+      ${inv.due_date ? `<tr><td class="muted">Due</td><td>${esc(fmtDateUS(inv.due_date))}</td></tr>` : ""}
+      </tbody></table></div>${pay}</div>`;
+  return page({ title: `INV-${1000 + inv.id}`, user, body });
 }
 
 export async function billingPage(env, request, user) {

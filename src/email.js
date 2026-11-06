@@ -165,6 +165,39 @@ export function quoteSentEmail(env, { name, quoteTitle, link }) {
   };
 }
 
+export function ticketCreatedNoticeEmail(env, { customerName, locationName, title, priority, authorName, link }) {
+  return {
+    subject: `New ticket: ${title} (${customerName})`,
+    html: wrap("A customer opened a support ticket", `
+      <p><strong>${customerName}</strong> / ${locationName}</p>
+      <p><strong>${title}</strong></p>
+      <p ${MUTED_P}>Priority: ${priority}, opened by ${authorName}.</p>`, { label: "Open the ticket", url: link }),
+    text: `${customerName} / ${locationName}: new ticket "${title}" (priority ${priority}, opened by ${authorName}). ${link}`,
+  };
+}
+
+export function ticketReplyNoticeEmail(env, { heading, customerName, locationName, title, authorName, link, toCustomer }) {
+  return {
+    subject: `${toCustomer ? "FlossByte replied to your ticket" : "New reply on a ticket"}: ${title}`,
+    html: wrap(heading, `
+      <p><strong>${customerName}</strong> / ${locationName}</p>
+      <p><strong>${title}</strong></p>
+      <p ${MUTED_P}>Latest reply by ${authorName}.</p>`, { label: "View the ticket", url: link }),
+    text: `${customerName} / ${locationName}: new reply on "${title}" by ${authorName}. ${link}`,
+  };
+}
+
+export function productRequestEmail(env, { customerName, locationName, productName, requestedBy, link }) {
+  return {
+    subject: `Service request: ${productName} (${customerName})`,
+    html: wrap("A customer asked about a service they do not have", `
+      <p><strong>${customerName}</strong> / ${locationName}</p>
+      <p>They requested <strong>${productName}</strong>.</p>
+      <p ${MUTED_P}>Requested by ${requestedBy} from their portal.</p>`, { label: "Open the client", url: link }),
+    text: `${customerName} / ${locationName} requested ${productName} (asked by ${requestedBy}). ${link}`,
+  };
+}
+
 export function quoteAcceptedNoticeEmail(env, { customerName, quoteTitle, acceptedBy, total }) {
   return {
     subject: `Quote accepted: ${customerName}`,

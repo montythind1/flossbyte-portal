@@ -85,7 +85,7 @@ export function loginPage(request) {
       <label>Password <span class="req">*</span></label><input name="password" type="password" required autocomplete="current-password">
       <p style="margin-top:18px"><button class="btn" type="submit" style="width:100%">Sign in</button></p>
     </form>
-    <p class="muted" style="margin-top:16px">New customer? <a href="/signup">Create account</a></p>
+    <p class="muted" style="margin-top:16px">New to FlossByte? <a href="/signup">Create account</a></p>
     <p class="muted">Forgot your password? <a href="/reset">Reset it</a></p></div>`;
   return page({ auth: true, title: "Sign in", body, flash: q.get("msg") || undefined, error: q.get("err") || undefined });
 }
