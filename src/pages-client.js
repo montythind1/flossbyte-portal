@@ -128,14 +128,23 @@ function locNav(loc, active) {
     `<a class="rail-item${active === key ? " active" : ""}" href="${href}">${icon(ic)}${label}</a>`;
   return `<div class="shell"><aside class="rail">
     <div class="rail-context"><div class="rc-t">${esc(loc.name)}</div><div class="rc-s">${esc(loc.customer_name)}</div></div>
-    ${item("overview", base, "Overview", "grid")}${item("equipment", base + "/equipment", "Equipment", "monitor")}
-    ${item("topology", base + "/topology", "Network map", "topology")}
-    ${item("network", base + "/network", "WiFi & Internet", "activity")}
+    ${item("overview", base, "Overview", "grid")}
+    <a class="rail-item${["network", "equipment", "topology"].includes(active) ? " active" : ""}" href="${base}/network">${icon("topology")}Network</a>
     ${item("tickets", base + "/tickets", "Tickets", "ticket")}${item("documents", base + "/documents", "Documents", "folder")}
     ${item("ask", base + "/ask", "Ask", "chat")}
     <div class="rail-sep"></div>
     ${item("billing", "/app/billing", "Billing", "receipt")}
     <a class="rail-item" href="${REMOTE_URL}" target="_blank" rel="noopener">${icon("headset")}Remote Support</a></aside><div class="shell-main">`;
+}
+
+// Top tabs inside the Network section: the sidebar picks the place,
+// the tabs pick the view of it (WiFi & Internet / Equipment / Network
+// map). Page URLs are unchanged, so existing links keep working.
+function locTabs(loc, current) {
+  const base = `/app/locations/${loc.id}`;
+  const tab = (key, href, label) =>
+    `<a href="${href}" style="padding:9px 14px;font-weight:${current === key ? "700" : "500"};color:${current === key ? "#0A1628" : "#5A6B82"};border-bottom:3px solid ${current === key ? "#00BFA5" : "transparent"};margin-bottom:-2px;text-decoration:none;white-space:nowrap">${label}</a>`;
+  return `<div style="display:flex;gap:2px;border-bottom:2px solid #E6EBF2;margin:4px 0 18px;overflow-x:auto">${tab("network", base + "/network", "WiFi &amp; Internet")}${tab("equipment", base + "/equipment", "Equipment")}${tab("topology", base + "/topology", "Network map")}</div>`;
 }
 
 function orgRail(user, active, orgName) {
@@ -474,7 +483,7 @@ export async function equipmentPage(env, request, user, locationId) {
       <span style="flex:1;min-width:150px"><label>License expires</label><input name="license_expires" type="date"></span>
       <span style="flex:1;min-width:150px"><label>Warranty expires</label><input name="warranty_expires" type="date"></span>
       <button class="btn small" type="submit">Add</button></form></div>` : "";
-  const body = `${locNav(loc, "equipment")}<h1>Equipment</h1>${attention}
+  const body = `${locNav(loc, "equipment")}<h1>Equipment</h1>${locTabs(loc, "equipment")}${attention}
     <form method="get" class="row" style="margin-bottom:14px">
       <span style="flex:2;min-width:180px"><input name="q" placeholder="Search name, model, serial, IP address" value="${esc(search)}"></span>
       <span style="flex:1;min-width:140px"><select name="vendor"><option value="">All vendors</option>
@@ -501,14 +510,14 @@ export async function topologyPage(env, request, user, locationId) {
     hasParent = (cols.results || []).some((c) => c.name === "parent_mac");
   } catch { hasParent = false; }
   if (!hasParent) {
-    const body = `${locNav(loc, "topology")}<h1>Network map</h1>
+    const body = `${locNav(loc, "topology")}<h1>Network map</h1>${locTabs(loc, "topology")}
       <div class="card"><p style="margin:0">The network map needs the latest portal database update before it can draw. Once that update is in, this page builds itself from the hourly sync, with no setup here.</p></div>`;
     return page({ title: "Network map", user, body });
   }
   const { results } = await env.DB.prepare("SELECT * FROM equipment WHERE location_id = ?").bind(locationId).all();
   const all = results || [];
   if (!all.length) {
-    const body = `${locNav(loc, "topology")}<h1>Network map</h1>
+    const body = `${locNav(loc, "topology")}<h1>Network map</h1>${locTabs(loc, "topology")}
       <div class="card"><p class="muted" style="margin:0">No equipment recorded yet, so there is nothing to draw. Synced network gear appears here once it is on the <a href="/app/locations/${locationId}/equipment">Equipment</a> list.</p></div>`;
     return page({ title: "Network map", user, body });
   }
@@ -548,7 +557,7 @@ export async function topologyPage(env, request, user, locationId) {
   const verdict = offNames.length
     ? `<div class="card" style="border-left:4px solid #b45309"><p style="margin:0"><b>Needs attention:</b> ${offNames.length === 1 ? "1 device is" : offNames.length + " devices are"} offline: ${offNames.slice(0, 4).join(", ")}${offNames.length > 4 ? ", and more" : ""}. Everything else is working.</p></div>`
     : `<div class="card" style="border-left:4px solid #0e9f6e"><p style="margin:0"><b>Everything is online.</b> All ${all.length} devices are up and connected.</p></div>`;
-  const body = `${locNav(loc, "topology")}<h1>Network map</h1>
+  const body = `${locNav(loc, "topology")}<h1>Network map</h1>${locTabs(loc, "topology")}
     <p class="muted" style="margin-top:0">${all.length} devices, ${online} online${lastSeen ? ` · last checked ${esc(relTime(lastSeen))}` : ""}. Devices are grouped under whatever they plug into, starting from the main internet box at the top. A green dot means the device is on; red means it is off or unreachable.</p>
     ${verdict}
     <div class="card"><div class="topo"><ul>${tree}</ul></div></div>`;
@@ -569,7 +578,7 @@ export async function networkPage(env, request, user, locationId) {
     hasTable = !!(await env.DB.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'network_snapshots'").first());
   } catch { hasTable = false; }
   if (!hasTable) {
-    const body = `${locNav(loc, "network")}<h1>WiFi &amp; Internet</h1>
+    const body = `${locNav(loc, "network")}<h1>WiFi &amp; Internet</h1>${locTabs(loc, "network")}
       <div class="card"><p style="margin:0">This page needs the latest portal database update before it can fill in. Once that update is in, this page builds itself from the hourly sync, with no setup here.</p></div>`;
     return page({ title: "WiFi & Internet", user, body });
   }
@@ -714,12 +723,12 @@ function wpCopy(b){var c=b.parentElement.querySelector('.wp');if(!c||!navigator.
 
   const sections = [wifiCard, internetCard, camerasCard, changesCard, techCard].filter(Boolean);
   if (!Object.keys(snaps).length && !isFb) {
-    const body = `${locNav(loc, "network")}<h1>WiFi &amp; Internet</h1>
+    const body = `${locNav(loc, "network")}<h1>WiFi &amp; Internet</h1>${locTabs(loc, "network")}
       <div class="card"><p class="muted" style="margin:0">Nothing here yet. Once FlossByte connects this office, this page shows its WiFi names and passwords, internet health, and cameras, all kept up to date automatically.</p></div>`;
     return page({ title: "WiFi & Internet", user, body });
   }
   const capLine = captured ? `<p class="muted" style="margin-top:0">Last checked ${esc(relTime(captured))} (${esc(fmtDateUS(captured.slice(0, 10)))}). This page only reads the office's setup; nothing here can change it.</p>` : "";
-  const body = `${locNav(loc, "network")}<h1>WiFi &amp; Internet</h1>${capLine}${sections.join("")}${anyPass ? wifiScript : ""}`;
+  const body = `${locNav(loc, "network")}<h1>WiFi &amp; Internet</h1>${locTabs(loc, "network")}${capLine}${sections.join("")}${anyPass ? wifiScript : ""}`;
   return page({ title: "WiFi & Internet", user, body });
 }
 
