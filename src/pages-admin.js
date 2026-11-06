@@ -390,14 +390,24 @@ export async function createCustomerPost(env, request, user) {
       await env.DB.prepare("UPDATE users SET status = 'active' WHERE id = ?").bind(target.id).run();
       await audit(env.DB, user.id, "user_connect", "user", target.id, email);
       connected.push(email);
-    } else if (target.status === "invited") {
+    } else if (target.status === "active") {
+      // Already has a working login and password, so there is nothing to
+      // invite: the access is live immediately and the summary reports
+      // them as connected, not invited.
+      connected.push(email);
+    } else {
+      // New, invited, or disabled: a disabled login is re-invited, the
+      // same handling the step-1 admin gets. Setting a password on the
+      // invite reactivates the account; without this, a returning login
+      // was counted as invited but no email ever went out.
+      if (target.status === "disabled") {
+        await env.DB.prepare("UPDATE users SET status = 'invited' WHERE id = ?").bind(target.id).run();
+      }
       const raw = await createAuthToken(env.DB, target.id, "invite", 7 * 24 * 60);
       const mail = inviteEmail(env, { name: target.name, link: `${origin(env)}/invite/${raw}` });
       await sendEmail(env, { to: email, template: "invite", ...mail });
       invitesCreated = true;
       await audit(env.DB, user.id, "user_invite", "user", target.id, email);
-      invited.push(email);
-    } else {
       invited.push(email);
     }
     } catch {
@@ -697,6 +707,11 @@ export async function inviteCustomerUserPost(env, request, user, customerId) {
     // not resurrected; the grant below is the only access they get.
     await env.DB.prepare("UPDATE users SET role = ? WHERE id = ?")
       .bind(scope === "admin" ? "customer_admin" : "customer_user", target.id).run();
+    // A disabled login goes back to invited, so the row shows as a
+    // pending invite (and can be resent) until they set a password.
+    if (target.status === "disabled") {
+      await env.DB.prepare("UPDATE users SET status = 'invited' WHERE id = ?").bind(target.id).run();
+    }
   }
   const grant = await grantUserAccess(env.DB, target.id, customerId, locationId, scope);
   if (!grant.ok) {
