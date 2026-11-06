@@ -7,7 +7,7 @@ import {
 } from "./auth.js";
 import { verifyTotp, generateSecret, otpauthUrl } from "./totp.js";
 import { audit, isValidEmail } from "./access.js";
-import { sendEmail, inviteEmail, welcomeEmail, resetEmail, pendingSignupAlertEmail } from "./email.js";
+import { sendEmail, inviteEmail, welcomeEmail, resetEmail } from "./email.js";
 
 function params(request) { return new URL(request.url).searchParams; }
 function origin(env) { return env.APP_ORIGIN || "https://portal.flossbyte.com"; }
@@ -85,7 +85,7 @@ export function loginPage(request) {
       <label>Password <span class="req">*</span></label><input name="password" type="password" required autocomplete="current-password">
       <p style="margin-top:18px"><button class="btn" type="submit" style="width:100%">Sign in</button></p>
     </form>
-    <p class="muted" style="margin-top:16px">New to FlossByte? <a href="/signup">Create account</a></p>
+    <p class="muted" style="margin-top:16px">New to FlossByte? Portal accounts are set up by invitation. Call (669) 237-2264 or email hello@flossbyte.com and we will get yours started.</p>
     <p class="muted">Forgot your password? <a href="/reset">Reset it</a></p></div>`;
   return page({ auth: true, title: "Sign in", body, flash: q.get("msg") || undefined, error: q.get("err") || undefined });
 }
@@ -142,49 +142,6 @@ export async function logoutGet(env, request) {
   return redirect("/login?msg=" + encodeURIComponent("You are signed out."), { "Set-Cookie": clearCookie("fb_session") });
 }
 
-// ---------- Self-signup (pending, no access) ----------
-export function signupPage(request) {
-  const q = params(request);
-  const body = `<div class="card narrow"><h1>Create account</h1>
-    <p class="muted">Create your login here. FlossByte then connects your account to your practice, and only then can you see your equipment, tickets, and documents.</p>
-    <form method="post" action="/signup">
-      <label>Your name <span class="req">*</span></label><input name="name" required autocomplete="name">
-      <label>Organization / practice name <span class="req">*</span></label><input name="practice" required>
-      <label>Email <span class="req">*</span></label><input name="email" type="email" required autocomplete="email">
-      <label>Password <span class="req">*</span></label><input name="password" type="password" required minlength="10" autocomplete="new-password">
-      <p style="margin-top:18px"><button class="btn" type="submit" style="width:100%">Create account</button></p>
-    </form>
-    <p class="muted" style="margin-top:16px">Already have a login? <a href="/login">Back to login</a></p></div>`;
-  return page({ auth: true, title: "Create account", body, error: q.get("err") || undefined });
-}
-
-export async function signupPost(env, request) {
-  if (!(await setupLocked(env.DB))) return redirect("/setup");
-  const form = await request.formData();
-  const name = String(form.get("name") || "").trim();
-  const practice = String(form.get("practice") || "").trim();
-  const email = String(form.get("email") || "").trim().toLowerCase();
-  const pw = String(form.get("password") || "");
-  if (!name || !isValidEmail(email) || pw.length < 10) {
-    return redirect("/signup?err=" + encodeURIComponent("Name, a valid email, and a password of at least 10 characters are required."));
-  }
-  const existing = await env.DB.prepare("SELECT id FROM users WHERE email = ?").bind(email).first();
-  if (existing) return redirect("/signup?err=" + encodeURIComponent("That email already has a login. Sign in instead."));
-  const res = await env.DB.prepare(
-    `INSERT INTO users (email, name, password_hash, kind, role, status) VALUES (?, ?, ?, 'customer', 'customer_user', 'pending')`)
-    .bind(email, name, await hashPassword(pw)).run();
-  const userId = res.meta.last_row_id;
-  await audit(env.DB, userId, "self_signup", "user", userId, `practice stated: ${practice}`);
-  const mail = welcomeEmail(env, { name });
-  await sendEmail(env, { to: email, template: "welcome", ...mail });
-  if (env.ADMIN_ALERT_EMAIL) {
-    const alert = pendingSignupAlertEmail(env, { userName: name, userEmail: email });
-    await sendEmail(env, { to: env.ADMIN_ALERT_EMAIL, template: "admin_pending_signup", ...alert });
-  }
-  const raw = await createSession(env.DB, userId);
-  return redirect("/app", { "Set-Cookie": sessionCookie(raw) });
-}
-
 // ---------- Invite (finish sign-in) ----------
 // Issues a fresh invite for an invited user: any unused invite links are
 // invalidated first, so only the newest link works. Shared by the public
@@ -208,7 +165,8 @@ export async function invitePage(env, request, tokenRaw) {
     <p class="muted" style="margin-top:16px">Already finished setting up? <a href="/login">Sign in</a></p></div>` });
   const user = await env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(token.user_id).first();
   const body = `<div class="card narrow"><h1>Finish your sign-in</h1>
-    <p class="muted">Hi ${esc(user.name)}, set the password for ${esc(user.email)} to finish.</p>
+    <p class="muted">Hi ${esc(user.name.split(" ")[0])}, set your password to finish signing in.</p>
+    <p class="muted">Your login email is ${esc(user.email)}.</p>
     <form method="post" action="/invite/${esc(tokenRaw)}">
       <label>Password <span class="req">*</span></label><input name="password" type="password" required minlength="10" autocomplete="new-password">
       <label>Password again <span class="req">*</span></label><input name="password2" type="password" required autocomplete="new-password">

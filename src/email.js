@@ -121,16 +121,6 @@ export function resetEmail(env, { link }) {
   };
 }
 
-export function pendingSignupAlertEmail(env, { userName, userEmail }) {
-  return {
-    subject: "New portal signup waiting to be connected",
-    html: wrap("New signup waiting", `
-      <p>${userName} (${userEmail}) created a portal account on their own.</p>
-      <p>The account has no access to anything until you connect it to a customer in the admin console, under Pending accounts.</p>`),
-    text: `${userName} (${userEmail}) created a portal account. It has no access until you connect it in the admin console under Pending accounts.`,
-  };
-}
-
 export function ownershipTransferEmail(env, { fromName, fromEmail, toName, toEmail }) {
   return {
     subject: "FlossByte portal ownership transferred",

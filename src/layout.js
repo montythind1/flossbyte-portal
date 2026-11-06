@@ -37,6 +37,7 @@ const ICON_PATHS = {
   home: '<path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/>',
   headset: '<path d="M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M21 14h-3a2 2 0 0 0-2 2v3a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2z"/><path d="M3 14v-2a9 9 0 0 1 18 0v2"/>',
   activity: '<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>',
+  check: '<polyline points="20 6 9 17 4 12"/>',
 };
 export function icon(name) {
   return `<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON_PATHS[name] || ""}</svg>`;
@@ -180,6 +181,9 @@ footer.slim a{color:var(--muted)}
 .auth-brand{background:var(--navy);color:#dbe4ee;padding:38px 42px;display:flex;flex-direction:column;gap:26px}
 .auth-brand h2{color:#fff;font-size:26px;margin:0 0 10px}
 .auth-brand p{color:#aebdd0;font-size:15px;line-height:1.6;margin:0;max-width:320px}
+.auth-points{display:flex;flex-direction:column;gap:13px;max-width:340px}
+.auth-points div{display:flex;gap:10px;align-items:flex-start;font-size:14px;color:#c6d3e2;line-height:1.5}
+.auth-points svg{flex:none;margin-top:2px;color:var(--teal)}
 .auth-brand-foot{margin-top:auto;color:#8fa1b8;font-size:13px;line-height:1.8}
 .auth-brand-foot a{color:#dbe4ee;text-decoration:none}
 .auth-main{display:flex;align-items:center;justify-content:center;padding:34px 20px;background:#fff}
@@ -190,6 +194,7 @@ footer.slim a{color:var(--muted)}
 .auth-wrap{grid-template-columns:1fr;min-height:0}
 .auth-brand{padding:20px;gap:8px}
 .auth-brand p{display:none}
+.auth-points{display:none}
 .auth-brand-foot{margin-top:0}
 .auth-main{padding:26px 18px 44px;align-items:flex-start}
 }
@@ -247,8 +252,13 @@ ${flash ? `<div class="notice">${esc(flash)}</div>` : ""}`;
       <img src="/assets/logo-icon.png" alt="FlossByte" width="27" height="40">
       <span><span class="brand-name">FlossByte</span><br><span class="brand-sub">Client Portal</span></span>
     </a>
-    <div><h2>Your practice, in one place.</h2>
-    <p>Equipment, support tickets, documents, and billing for your office, kept current by FlossByte.</p></div>
+    <div><h2>Your office IT, all in one place.</h2>
+    <p>The equipment, support, documents, and billing FlossByte manages for your practice, kept current.</p></div>
+    <div class="auth-points">
+      <div>${icon("check")}<span>Every device your office runs on, with its license and warranty dates</span></div>
+      <div>${icon("check")}<span>Support tickets with the whole conversation in one thread</span></div>
+      <div>${icon("check")}<span>Quotes, invoices, and documents, filed and ready to print</span></div>
+    </div>
     <div class="auth-brand-foot">Questions? Call <a href="tel:+16692372264">(669) 237-2264</a><br>
     or email <a href="mailto:hello@flossbyte.com">hello@flossbyte.com</a></div>
   </aside>
@@ -269,7 +279,7 @@ ${body}
     ? `<div class="acct" id="acct"><button class="acct-btn" id="acctBtn" type="button" aria-haspopup="true" aria-expanded="false"><span class="avatar">${esc(initials)}</span><span class="acct-name">${esc(user.name.split(" ")[0])}</span></button>
        <div class="acct-menu" id="acctMenu"><div class="acct-head"><strong>${esc(user.name)}</strong><span>${esc(user.email)}</span></div>
        <a href="/mfa">Account &amp; security</a><a href="/logout">Sign out</a></div></div>`
-    : `<a href="/login">Sign in</a><a href="/signup">Create account</a>
+    : `<a href="/login">Sign in</a>
        <a href="https://flossbyte.com/remote" target="_blank" rel="noopener">Remote Support</a>`;
   const acctScript = user ? `<script>
 (function(){var w=document.getElementById("acct");if(!w)return;var b=document.getElementById("acctBtn");

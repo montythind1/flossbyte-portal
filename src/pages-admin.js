@@ -31,7 +31,7 @@ function adminNav(active) {
   return `<div class="shell"><aside class="rail">
     <div class="rail-context"><div class="rc-t">FlossByte</div><div class="rc-s">Admin console</div></div>
     ${item("clients", "/admin", "Clients", "users")}${item("tickets", "/admin/tickets", "Tickets", "ticket")}
-    ${item("pending", "/admin/pending", "Pending accounts", "clock")}${item("admins", "/admin/admins", "Admins", "shield")}
+    ${item("admins", "/admin/admins", "Admins", "shield")}
     ${item("sync", "/admin/sync", "Device sync", "refresh")}${item("activity", "/admin/activity", "Activity", "activity")}</aside><div class="shell-main">`;
 }
 
@@ -64,17 +64,15 @@ export async function clientsPage(env, request, user) {
   const unpaidRows = (await db.prepare(
     `SELECT i.id, i.title, i.amount_cents, c.id AS cust_id, c.name AS cust_name FROM invoices i
      JOIN customers c ON c.id = i.customer_id WHERE i.status = 'unpaid' ORDER BY i.created_at DESC LIMIT 5`).all().catch(() => ({ results: [] }))).results || [];
-  const pending = await db.prepare("SELECT COUNT(*) AS n FROM users WHERE status = 'pending'").first();
   const attention = `<div class="card"><h2 style="margin-top:0">Needs attention</h2><div class="grid">
     <div>${expiredItems.length ? `<h3 style="margin-top:0">Expired (${expiredItems.length})</h3>${expList(expiredItems)}` : ""}
       <h3 style="margin-top:${expiredItems.length ? "16px" : "0"}">Expiring in 90 days (${expiringItems.length})</h3>
       ${expiringItems.length ? expList(expiringItems) : `<p class="muted">Nothing expiring.</p>`}</div>
     <div><h3 style="margin-top:0">Open tickets (${openTicketCount ? openTicketCount.n : 0})</h3>
       ${openTickets.length ? `<ul style="margin:0;padding-left:18px">${openTickets.map((t) => `<li><a href="/app/locations/${t.loc_id}/tickets/${t.id}">${esc(t.title)}</a> <span class="muted">${esc(t.cust_name)} · ${esc(t.priority)}</span></li>`).join("")}</ul><p style="margin:8px 0 0"><a href="/admin/tickets">All tickets</a></p>` : `<p class="muted">No open tickets.</p>`}</div>
-    <div><h3 style="margin-top:0">Money and accounts</h3>
+    <div><h3 style="margin-top:0">Unpaid invoices</h3>
       <p style="margin:4px 0">${plural(unpaid.n || 0, "unpaid invoice")} · ${fmtMoney(unpaid.total || 0)} outstanding</p>
-      ${unpaidRows.length ? `<ul style="margin:0;padding-left:18px">${unpaidRows.map((i) => `<li><a href="/admin/customers/${i.cust_id}?tab=billing">INV-${1000 + i.id} · ${fmtMoney(i.amount_cents)}</a> <span class="muted">${esc(i.cust_name)}</span></li>`).join("")}</ul>` : ""}
-      <p style="margin:8px 0 0">${pending && pending.n ? `<a href="/admin/pending">${plural(pending.n, "account")} waiting to be connected</a>` : "No pending accounts"}</p></div>
+      ${unpaidRows.length ? `<ul style="margin:0;padding-left:18px">${unpaidRows.map((i) => `<li><a href="/admin/customers/${i.cust_id}?tab=billing">INV-${1000 + i.id} · ${fmtMoney(i.amount_cents)}</a> <span class="muted">${esc(i.cust_name)}</span></li>`).join("")}</ul>` : ""}</div>
     </div></div>`;
   // Client cards, optionally filtered by the search box.
   let sql = `SELECT c.*,
@@ -1159,51 +1157,6 @@ export async function deleteCustomerPost(env, request, user, customerId) {
   }
   await audit(db, user.id, "customer_delete", "customer", Number(customerId), c.name);
   return redirect("/admin?msg=" + encodeURIComponent(`Organization "${c.name}" was deleted.`));
-}
-
-// ---------- Pending accounts ----------
-export async function pendingPage(env, request, user) {
-  const { results: pending } = await env.DB.prepare(
-    "SELECT * FROM users WHERE status = 'pending' ORDER BY created_at").all();
-  const { results: customers } = await env.DB.prepare("SELECT id, name FROM customers ORDER BY name").all();
-  const rows = [];
-  for (const p of pending || []) {
-    const { results: locs } = await env.DB.prepare("SELECT id, name, customer_id FROM locations ORDER BY name").all();
-    rows.push(`<div class="card"><div class="row between"><div><strong>${esc(p.name)}</strong>
-      <div class="muted">${esc(p.email)} · signed up ${esc(fmtDateUS(p.created_at))}</div></div></div>
-      <form method="post" action="/admin/pending/${p.id}/connect" class="row" style="margin-top:10px;align-items:end">
-        <span style="flex:1;min-width:200px"><label>Connect to location (or customer-wide by picking any of its locations, then scope) <span class="req">*</span></label>
-        <select name="location_id" required>${(locs || []).map((l) => {
-          const cust = (customers || []).find((c) => c.id === l.customer_id);
-          return `<option value="${l.id}">${esc(cust ? cust.name + " — " : "")}${esc(l.name)}</option>`;
-        }).join("")}</select></span>
-        <span style="min-width:150px"><label>Scope</label><select name="scope"><option value="user">User</option><option value="admin">Location admin</option></select></span>
-        <span style="min-width:170px"><label>Reach</label><select name="reach"><option value="location">This location only</option><option value="customer">All locations of that customer</option></select></span>
-        <button class="btn small" type="submit">Connect</button></form></div>`);
-  }
-  const body = `${adminNav("pending")}<h1>Pending accounts</h1>
-    <p class="muted">These people created their own login. They see nothing until you connect them here.</p>
-    ${rows.join("") || `<div class="card"><p class="muted">No pending accounts.</p></div>`}`;
-  return page({ title: "Pending accounts", user, body, flash: q(request).get("msg") || undefined, error: q(request).get("err") || undefined });
-}
-
-export async function pendingConnectPost(env, request, user, pendingUserId) {
-  const target = await env.DB.prepare("SELECT * FROM users WHERE id = ? AND status = 'pending'").bind(pendingUserId).first();
-  if (!target) return redirect("/admin/pending");
-  const f = await request.formData();
-  const locationId = Number(f.get("location_id"));
-  const loc = await env.DB.prepare("SELECT * FROM locations WHERE id = ?").bind(locationId).first();
-  if (!loc) return redirect("/admin/pending");
-  const scope = String(f.get("scope") || "user") === "admin" ? "admin" : "user";
-  const reachAll = String(f.get("reach") || "location") === "customer";
-  const grant = await grantUserAccess(env.DB, target.id, loc.customer_id, reachAll ? null : locationId, scope);
-  if (!grant.ok) {
-    const detail = grant.otherCustomer ? ` It belongs to ${grant.otherCustomer.name}.` : "";
-    return redirect("/admin/pending?err=" + encodeURIComponent(grant.error + detail));
-  }
-  await env.DB.prepare("UPDATE users SET status = 'active' WHERE id = ?").bind(target.id).run();
-  await audit(env.DB, user.id, "pending_connected", "user", target.id, `customer ${loc.customer_id}`);
-  return redirect("/admin/pending");
 }
 
 // ---------- Admin accounts (Super Admin only) ----------

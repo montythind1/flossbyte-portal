@@ -52,8 +52,7 @@ async function route(request, env) {
   if (path === "/login/mfa" && method === "GET") return pub.loginMfaPage(request);
   if (path === "/login/mfa" && method === "POST") return pub.loginMfaPost(env, request);
   if (path === "/logout") return pub.logoutGet(env, request);
-  if (path === "/signup" && method === "GET") return pub.signupPage(request);
-  if (path === "/signup" && method === "POST") return pub.signupPost(env, request);
+  if (path === "/signup") return redirect("/login");
   if (path === "/reset" && method === "GET") return pub.resetRequestPage(request);
   if (path === "/reset" && method === "POST") return pub.resetRequestPost(env, request);
   if (path === "/invite/resend" && method === "POST") return pub.inviteResendPost(env, request);
@@ -86,7 +85,6 @@ async function route(request, env) {
     if (path === "/admin/places/autocomplete" && method === "GET") return places.placesAutocomplete(env, request);
     if (path === "/admin/places/details" && method === "GET") return places.placesDetails(env, request);
     if (path === "/admin/customers" && method === "POST") return admin.createCustomerPost(env, request, user);
-    if (path === "/admin/pending" && method === "GET") return admin.pendingPage(env, request, user);
     if (path === "/admin/admins" && method === "GET") return admin.adminsPage(env, request, user);
     if (path === "/admin/admins" && method === "POST") return admin.createAdminPost(env, request, user);
     if (path === "/admin/tickets" && method === "GET") return admin.ticketsInboxPage(env, request, user);
@@ -117,8 +115,6 @@ async function route(request, env) {
     if (m && method === "POST") return admin.inviteCustomerUserPost(env, request, user, Number(m[1]));
     m = path.match(/^\/admin\/locations\/(\d+)\/edit$/);
     if (m && method === "POST") return admin.editLocationPost(env, request, user, Number(m[1]));
-    m = path.match(/^\/admin\/pending\/(\d+)\/connect$/);
-    if (m && method === "POST") return admin.pendingConnectPost(env, request, user, Number(m[1]));
     m = path.match(/^\/admin\/admins\/(\d+)\/(disable|enable|remove|resend)$/);
     if (m && method === "POST") return admin.adminActionPost(env, request, user, Number(m[1]), m[2]);
     m = path.match(/^\/admin\/customers\/(\d+)\/users\/(\d+)\/resend$/);
