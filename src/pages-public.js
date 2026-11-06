@@ -3,7 +3,7 @@ import { page, redirect, esc } from "./layout.js";
 import {
   hashPassword, verifyPassword, createSession, revokeSession, sessionCookie,
   clearCookie, readCookie, createAuthToken, consumeAuthToken, peekAuthToken,
-  revokeAllSessions,
+  revokeAllSessions, sha256Hex,
 } from "./auth.js";
 import { verifyTotp, generateSecret, otpauthUrl } from "./totp.js";
 import { audit, isValidEmail } from "./access.js";
@@ -315,22 +315,47 @@ export async function resetPost(env, request, tokenRaw) {
   return redirect("/login?msg=" + encodeURIComponent("Password updated. Sign in with the new one."));
 }
 
-// ---------- MFA enrollment (signed in) ----------
+// ---------- Account & security (signed in) ----------
+// Everything about the visitor's own login lives on this one page:
+// identity, password change, two-step verification, and sessions. (Team
+// and services administer the organization and live under Account on the
+// organization side; this page administers the person.)
 export async function mfaPage(env, request, user) {
   const q = params(request);
-  let body;
+  const db = env.DB;
+  const roleLine = {
+    super_admin: "FlossByte Super Admin", admin: "FlossByte admin",
+    customer_admin: "Practice admin", customer_user: "Practice team member",
+  }[user.role] || "";
+  const loginCard = `<div class="card narrow"><h2 style="margin-top:0">Your login</h2>
+    <p style="margin:4px 0"><strong>${esc(user.name)}</strong></p>
+    <p class="muted" style="margin:4px 0">${esc(user.email)}${roleLine ? " · " + roleLine : ""}</p></div>`;
+  const passwordCard = `<div class="card narrow"><h2 style="margin-top:0">Password</h2>
+    <form method="post" action="/mfa/password">
+      <label>Current password <span class="req">*</span></label><input name="current_password" type="password" required autocomplete="current-password">
+      <label>New password <span class="req">*</span></label><input name="password" type="password" required autocomplete="new-password">
+      <label>Type the new password again <span class="req">*</span></label><input name="password2" type="password" required autocomplete="new-password">
+      <p class="muted">At least 10 characters. Changing your password signs your other devices out.</p>
+      <p style="margin-top:14px"><button class="btn" type="submit">Change password</button></p>
+    </form></div>`;
+  let mfaCard;
   if (user.mfa_enabled) {
-    body = `<div class="card narrow"><h1>Two-step verification</h1>
+    mfaCard = `<div class="card narrow"><h2 style="margin-top:0">Two-step verification</h2>
       <p><span class="pill on">On</span></p>
-      <p class="muted">Your login asks for an authenticator code after your password. That stays on for FlossByte admin accounts.</p>
-      <p><a class="btn secondary" href="${user.kind === "flossbyte" ? "/admin" : "/app"}">Back to the portal</a></p></div>`;
+      <p class="muted">Your login asks for an authenticator code after your password.</p>
+      ${user.kind === "flossbyte"
+        ? `<p class="muted">Two-step verification is required for FlossByte accounts and cannot be turned off.</p>`
+        : `<form method="post" action="/mfa/disable">
+        <label>Your password, to turn it off <span class="req">*</span></label><input name="current_password" type="password" required autocomplete="current-password">
+        <p style="margin-top:14px"><button class="btn secondary" type="submit">Turn off</button></p>
+      </form>`}</div>`;
   } else {
     let secret = user.mfa_secret;
     if (!secret) {
       secret = generateSecret();
-      await env.DB.prepare("UPDATE users SET mfa_secret = ? WHERE id = ?").bind(secret, user.id).run();
+      await db.prepare("UPDATE users SET mfa_secret = ? WHERE id = ?").bind(secret, user.id).run();
     }
-    body = `<div class="card narrow"><h1>Set up two-step verification</h1>
+    mfaCard = `<div class="card narrow"><h2 style="margin-top:0">Two-step verification</h2>
       ${user.kind === "flossbyte" ? `<p class="muted">FlossByte admin logins need this. It takes a minute with any authenticator app.</p>` : `<p class="muted">Optional, and a good idea. Use any authenticator app.</p>`}
       <p class="muted">Scan this code with your authenticator app, then enter the 6-digit code it shows. The key itself is never printed, the QR code is the only copy outside your app.</p>
       <div id="mfaQr" data-url="${esc(otpauthUrl(secret, user.email))}" style="background:#fff;padding:12px;border-radius:10px;width:max-content;max-width:100%"></div>
@@ -342,10 +367,68 @@ export async function mfaPage(env, request, user) {
       </form>
       ${user.kind === "customer" ? `<form method="post" action="/mfa/skip" style="margin-top:10px">
         <button class="btn secondary" type="submit">Skip for now</button>
-        <span class="muted" style="margin-left:8px">You can turn this on later under Security.</span>
+        <span class="muted" style="margin-left:8px">You can turn this on later under Account &amp; security.</span>
       </form>` : ``}</div>`;
   }
-  return page({ title: "Security", user, body, error: q.get("err") || undefined, flash: q.get("msg") || undefined });
+  const sess = await db.prepare(
+    "SELECT COUNT(*) AS n FROM sessions WHERE user_id = ? AND revoked_at IS NULL AND expires_at > datetime('now')").bind(user.id).first();
+  const sessionCard = `<div class="card narrow"><h2 style="margin-top:0">Sessions</h2>
+    <p class="muted">You are signed in on ${sess && sess.n ? sess.n : 1} device${sess && sess.n === 1 ? "" : "s"}.</p>
+    <form method="post" action="/mfa/signout-others"><button class="btn secondary" type="submit">Sign out everywhere else</button></form></div>`;
+  const back = `<p><a href="${user.kind === "flossbyte" ? "/admin" : "/app"}">&larr; Back to the portal</a></p>`;
+  // When two-step setup is still outstanding it leads the page (this is
+  // also where the sign-in prompt lands people); otherwise identity and
+  // password come first, as on a normal settings page.
+  const body = `<h1>Account &amp; security</h1>${back}` + (user.mfa_enabled
+    ? `${loginCard}${passwordCard}${mfaCard}${sessionCard}`
+    : `${mfaCard}${loginCard}${passwordCard}${sessionCard}`);
+  return page({ title: "Account & security", user, body, error: q.get("err") || undefined, flash: q.get("msg") || undefined });
+}
+
+async function currentSessionHash(request) {
+  const raw = readCookie(request, "fb_session");
+  return raw ? sha256Hex(raw) : "";
+}
+
+export async function passwordChangePost(env, request, user) {
+  const form = await request.formData();
+  const current = String(form.get("current_password") || "");
+  const pw = String(form.get("password") || "");
+  if (!(await verifyPassword(current, user.password_hash))) {
+    return redirect("/mfa?err=" + encodeURIComponent("Your current password doesn't match."));
+  }
+  if (pw.length < 10) return redirect("/mfa?err=" + encodeURIComponent("The new password needs at least 10 characters."));
+  if (pw !== String(form.get("password2") || "")) return redirect("/mfa?err=" + encodeURIComponent("The new passwords don't match."));
+  if (pw === current) return redirect("/mfa?err=" + encodeURIComponent("The new password has to be different from the current one."));
+  await env.DB.prepare("UPDATE users SET password_hash = ?, updated_at = datetime('now') WHERE id = ?")
+    .bind(await hashPassword(pw), user.id).run();
+  const hash = await currentSessionHash(request);
+  await env.DB.prepare("UPDATE sessions SET revoked_at = datetime('now') WHERE user_id = ? AND token_hash != ?").bind(user.id, hash).run();
+  await audit(env.DB, user.id, "password_change", "user", user.id, null);
+  return redirect("/mfa?msg=" + encodeURIComponent("Password changed. Your other devices were signed out."));
+}
+
+// Customers may turn two-step verification back off, proving it is them
+// with their password; the setup offer does not nag them again after a
+// deliberate turn-off. FlossByte accounts cannot turn it off at all.
+export async function mfaDisablePost(env, request, user) {
+  if (user.kind === "flossbyte") {
+    return redirect("/mfa?err=" + encodeURIComponent("Two-step verification is required for FlossByte accounts and cannot be turned off."));
+  }
+  const form = await request.formData();
+  if (!(await verifyPassword(String(form.get("current_password") || ""), user.password_hash))) {
+    return redirect("/mfa?err=" + encodeURIComponent("Your password doesn't match, so two-step verification stays on."));
+  }
+  await env.DB.prepare("UPDATE users SET mfa_enabled = 0, mfa_secret = NULL, mfa_prompt_dismissed = 1 WHERE id = ?").bind(user.id).run();
+  await audit(env.DB, user.id, "mfa_disabled", "user", user.id, null);
+  return redirect("/mfa?msg=" + encodeURIComponent("Two-step verification is off. You can turn it back on here any time."));
+}
+
+export async function signoutOthersPost(env, request, user) {
+  const hash = await currentSessionHash(request);
+  await env.DB.prepare("UPDATE sessions SET revoked_at = datetime('now') WHERE user_id = ? AND token_hash != ?").bind(user.id, hash).run();
+  await audit(env.DB, user.id, "signout_others", "user", user.id, null);
+  return redirect("/mfa?msg=" + encodeURIComponent("Signed out everywhere else. This device stays signed in."));
 }
 
 // Customers may skip the MFA offer; the dismissal is remembered so they
@@ -355,7 +438,7 @@ export async function mfaSkipPost(env, request, user) {
   if (user.kind !== "customer") return redirect("/mfa");
   await env.DB.prepare("UPDATE users SET mfa_prompt_dismissed = 1 WHERE id = ?").bind(user.id).run();
   await audit(env.DB, user.id, "mfa_setup_skipped", "user", user.id, null);
-  return redirect("/app?msg=" + encodeURIComponent("Two-step verification skipped. You can turn it on any time under Security."));
+  return redirect("/app?msg=" + encodeURIComponent("Two-step verification skipped. You can turn it on any time under Account & security."));
 }
 
 export async function mfaVerifyPost(env, request, user) {

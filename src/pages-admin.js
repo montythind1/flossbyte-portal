@@ -159,6 +159,8 @@ const ACTION_LABEL = {
   equipment_edit: "Edited equipment", equipment_delete: "Deleted equipment", document_upload: "Uploaded a document",
   quote_accept: "Accepted a quote", product_request: "Requested a service", user_remove: "Removed a user",
   customer_delete: "Deleted a client", sync_map: "Mapped a sync site",
+  password_change: "Changed their password", mfa_disabled: "Turned off two-step verification",
+  signout_others: "Signed out other sessions", mfa_enabled: "Turned on two-step verification",
 };
 export async function activityPage(env, request, user) {
   const { results } = await env.DB.prepare(

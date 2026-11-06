@@ -69,6 +69,9 @@ async function route(request, env) {
   if (path === "/mfa" && method === "GET") return pub.mfaPage(env, request, user);
   if (path === "/mfa/verify" && method === "POST") return pub.mfaVerifyPost(env, request, user);
   if (path === "/mfa/skip" && method === "POST") return pub.mfaSkipPost(env, request, user);
+  if (path === "/mfa/password" && method === "POST") return pub.passwordChangePost(env, request, user);
+  if (path === "/mfa/disable" && method === "POST") return pub.mfaDisablePost(env, request, user);
+  if (path === "/mfa/signout-others" && method === "POST") return pub.signoutOthersPost(env, request, user);
 
   // FlossByte admins must finish MFA enrollment before the console.
   const needsMfa = user.kind === "flossbyte" && !user.mfa_enabled;

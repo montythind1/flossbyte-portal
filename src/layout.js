@@ -203,11 +203,12 @@ nav.top>a{display:none}
 }
 .pill.off{background:#fdecec;color:#9c2b2b}
 .acct{position:relative}
-.acct summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:8px}
-.acct summary::-webkit-details-marker{display:none}
+.acct-btn{display:flex;align-items:center;gap:8px;background:none;border:none;cursor:pointer;padding:2px 0;font:inherit}
+.acct-btn:focus-visible{outline:2px solid var(--teal);outline-offset:3px;border-radius:8px}
 .avatar{width:32px;height:32px;border-radius:50%;background:var(--teal);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;font-family:var(--font-head)}
 .acct-name{color:#fff;font-weight:600;font-size:14px}
-.acct-menu{position:absolute;right:0;top:calc(100% + 10px);background:#fff;border:1px solid var(--line);border-radius:12px;box-shadow:0 12px 32px rgba(10,22,40,.18);min-width:230px;padding:6px;z-index:60}
+.acct-menu{display:none;position:absolute;right:0;top:calc(100% + 10px);background:#fff;border:1px solid var(--line);border-radius:12px;box-shadow:0 12px 32px rgba(10,22,40,.18);min-width:230px;padding:6px;z-index:60}
+.acct.open .acct-menu{display:block}
 .acct-head{padding:8px 10px;border-bottom:1px solid var(--line);margin-bottom:4px}
 .acct-head strong{display:block;font-size:14px;color:var(--ink)}
 .acct-head span{font-size:12px;color:var(--muted);word-break:break-all}
@@ -260,14 +261,23 @@ ${body}
     return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
   }
   const initials = user ? user.name.split(/\s+/).filter(Boolean).map((w) => w[0]).slice(0, 2).join("").toUpperCase() : "";
+  // Signed-in header stays minimal: the brand links home, the rails do
+  // the navigating, and everything personal lives in the account menu
+  // (a real button menu that closes on outside click / Escape — the old
+  // <details> menu stayed open until tapped again and felt broken).
   const nav = user
-    ? `${user.kind === "flossbyte" ? `<a href="/admin">Clients</a>` : `<a href="/app">My Portal</a>`}
-       <a href="https://flossbyte.com/remote" target="_blank" rel="noopener">Remote Support</a>
-       <details class="acct"><summary><span class="avatar">${esc(initials)}</span><span class="acct-name">${esc(user.name.split(" ")[0])}</span></summary>
-       <div class="acct-menu"><div class="acct-head"><strong>${esc(user.name)}</strong><span>${esc(user.email)}</span></div>
-       <a href="/mfa">Security</a><a href="/logout">Sign out</a></div></details>`
+    ? `<div class="acct" id="acct"><button class="acct-btn" id="acctBtn" type="button" aria-haspopup="true" aria-expanded="false"><span class="avatar">${esc(initials)}</span><span class="acct-name">${esc(user.name.split(" ")[0])}</span></button>
+       <div class="acct-menu" id="acctMenu"><div class="acct-head"><strong>${esc(user.name)}</strong><span>${esc(user.email)}</span></div>
+       <a href="/mfa">Account &amp; security</a><a href="/logout">Sign out</a></div></div>`
     : `<a href="/login">Sign in</a><a href="/signup">Create account</a>
        <a href="https://flossbyte.com/remote" target="_blank" rel="noopener">Remote Support</a>`;
+  const acctScript = user ? `<script>
+(function(){var w=document.getElementById("acct");if(!w)return;var b=document.getElementById("acctBtn");
+function close(){w.classList.remove("open");b.setAttribute("aria-expanded","false");}
+b.addEventListener("click",function(e){e.stopPropagation();var open=w.classList.toggle("open");b.setAttribute("aria-expanded",open?"true":"false");});
+document.addEventListener("click",function(e){if(!w.contains(e.target))close();});
+document.addEventListener("keydown",function(e){if(e.key==="Escape")close();});})();
+</script>` : "";
   // Signed-in pages get a one-line footer; the full marketing footer only
   // remains on the rare signed-out, non-auth page.
   const footer = user
@@ -299,6 +309,7 @@ ${alerts}
 ${body}
 </main>
 ${footer}
+${acctScript}
 </body></html>`;
   return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
 }
