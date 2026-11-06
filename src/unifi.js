@@ -43,8 +43,17 @@ export function normMac(value) {
 function deviceType(d) {
   const t = String(d.type || "").toLowerCase();
   if (TYPE_LABELS[t]) return TYPE_LABELS[t];
+  // The Site Manager API has no type field; the model shortname carries it.
+  const sn = String(d.shortname || "").toLowerCase();
+  if (sn.startsWith("ucg") || sn.startsWith("udm") || sn.startsWith("udr") || sn.startsWith("uxg") || sn.startsWith("ugw")) return "Gateway";
+  if (sn.startsWith("uap")) return "Access point";
+  if (sn.startsWith("usw")) return "Switch";
+  if (sn.startsWith("unvr")) return "Recorder";
+  if (sn.startsWith("uck") || sn.startsWith("ucck")) return "Controller";
+  if (sn.startsWith("uvc")) return "Camera";
   if (t.startsWith("uap")) return "Access point";
   if (t.startsWith("usw")) return "Switch";
+  if (d.productLine === "protect") return "Camera";
   return d.type ? String(d.type) : "Network device";
 }
 
@@ -123,7 +132,25 @@ export async function runUnifiSync(env) {
     }
     summary.sites = sites.length;
 
-    let devices = pickArray(await fetchApi(env, "/v1/devices"), "devices");
+    // The devices endpoint answers with one entry per HOST, each carrying
+    // its own devices array (per Ubiquiti's OpenAPI spec); flatten those
+    // groups, keeping the group hostId on every device so the device can
+    // be attributed to a site. A flat device list is accepted too, and
+    // the response envelope's nextToken is followed for large accounts.
+    let devices = [];
+    let nextToken = null;
+    for (let page = 0; page < 5; page++) {
+      const resp = await fetchApi(env, "/v1/devices" + (nextToken ? `?nextToken=${encodeURIComponent(nextToken)}` : ""));
+      for (const g of pickArray(resp, "devices")) {
+        if (g && Array.isArray(g.devices)) {
+          for (const d of g.devices) devices.push({ ...d, hostId: d.hostId || g.hostId || g.id });
+        } else if (g && (g.mac || g.id)) {
+          devices.push(g);
+        }
+      }
+      nextToken = resp && typeof resp.nextToken === "string" && resp.nextToken ? resp.nextToken : null;
+      if (!nextToken) break;
+    }
     if (!devices.length) {
       // Some accounts expose devices grouped under their hosts instead.
       for (const h of hosts) {
