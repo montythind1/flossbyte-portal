@@ -34,6 +34,41 @@ function pickArray(resp, key) {
   return [];
 }
 
+// Connected devices (the PCs, phones and printers on a site's network)
+// are served by the per-console Network API, reached through the Site
+// Manager cloud connector with the same API key. Resolves the console's
+// local site, then pages through its client list. Returns the client
+// array, or null when the console cannot be reached either way the
+// connector path is spelled; an empty array is a successful read of a
+// site with nothing connected.
+async function fetchSiteClients(env, hostId) {
+  const bases = [
+    `/v1/connector/consoles/${hostId}/network/integration/v1`,
+    `/v1/connector/consoles/${hostId}/proxy/network/integration/v1`,
+  ];
+  for (const base of bases) {
+    try {
+      const localSites = pickArray(await fetchApi(env, `${base}/sites`), "sites");
+      if (!localSites.length) continue;
+      const local = localSites.find((s) => String(s.internalReference || "").toLowerCase() === "default") || localSites[0];
+      const uuid = String(local.id || "");
+      if (!uuid) continue;
+      const out = [];
+      let offset = 0;
+      for (let page = 0; page < 10; page++) {
+        const resp = await fetchApi(env, `${base}/sites/${uuid}/clients?limit=200&offset=${offset}`);
+        const batch = pickArray(resp, "clients");
+        out.push(...batch);
+        const total = Number(resp && resp.totalCount);
+        offset += batch.length;
+        if (!batch.length || (Number.isFinite(total) && offset >= total)) break;
+      }
+      return out;
+    } catch { /* try the other connector path spelling */ }
+  }
+  return null;
+}
+
 export function normMac(value) {
   const hex = String(value || "").toLowerCase().replace(/[^0-9a-f]/g, "");
   if (hex.length !== 12) return null;
@@ -96,6 +131,7 @@ export async function runUnifiSync(env) {
     at: new Date().toISOString(), ok: false, message: "",
     sites: 0, devices: 0, inserted: 0, updated: 0, claimed: 0,
     offlined: 0, unmappedDevices: 0,
+    clientsSeen: 0, clientsAdded: 0, clientsUpdated: 0, clientsOfflined: 0,
   };
   const finish = async () => { await setState(env.DB, "unifi_last_sync", JSON.stringify(summary)); return summary; };
   try {
@@ -122,9 +158,11 @@ export async function runUnifiSync(env) {
     // Discover the account's sites and remember them for the mapping page.
     const sites = pickArray(await fetchApi(env, "/v1/sites"), "sites");
     const hostToSites = {};
+    const hostIdBySite = {};
     for (const s of sites) {
       const siteId = String(s.id || s.siteId || "");
       if (!siteId) continue;
+      if (s.hostId) hostIdBySite[siteId] = String(s.hostId);
       const rawName = String(s.desc || s.name || "");
       const hostName = s.hostId ? hostNameById[String(s.hostId)] : "";
       const siteName = rawName && rawName !== siteId ? rawName : hostName || rawName || siteId;
@@ -233,6 +271,75 @@ export async function runUnifiSync(env) {
           summary.offlined++;
         }
       }
+    }
+
+    // Connected devices: the endpoints on each mapped site's network,
+    // pulled per console through the cloud connector. Only WIRED and
+    // WIRELESS clients are imported; VPN and Teleport entries are remote
+    // connections, not devices at the office. This phase never fails the
+    // device sync: a console that cannot be read is noted in the summary
+    // and its known endpoints are left untouched.
+    try {
+      const seenClientsByLocation = {};
+      const readLocations = new Set();
+      for (const [siteId, locationId] of Object.entries(locationBySite)) {
+        const hostId = hostIdBySite[siteId];
+        if (!hostId) continue;
+        const clients = await fetchSiteClients(env, hostId);
+        if (!clients) { summary.clientsError = "One or more consoles could not be read for connected devices."; continue; }
+        readLocations.add(locationId);
+        if (!seenClientsByLocation[locationId]) seenClientsByLocation[locationId] = new Set();
+        const seen = seenClientsByLocation[locationId];
+        for (const c of clients) {
+          const kind = String(c.type || "").toUpperCase();
+          if (kind !== "WIRED" && kind !== "WIRELESS") continue;
+          const mac = normMac(c.macAddress || c.mac);
+          if (!mac) continue;
+          summary.clientsSeen++;
+          const externalId = "client:" + mac.replace(/:/g, "");
+          const name = c.name ? String(c.name) : mac;
+          let row = await env.DB.prepare(
+            "SELECT * FROM equipment WHERE source = 'unifi-client' AND external_id = ?").bind(externalId).first();
+          if (!row) {
+            row = await env.DB.prepare(
+              "SELECT * FROM equipment WHERE location_id = ? AND mac = ?").bind(locationId, mac).first();
+          }
+          if (row) {
+            await env.DB.prepare(
+              `UPDATE equipment SET location_id = ?, vendor = 'UniFi', type = 'Connected device', name = ?,
+                 status = 'online', mac = ?, source = 'unifi-client', external_id = ?,
+                 last_seen_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`)
+              .bind(locationId, name, mac, externalId, row.id).run();
+            summary.clientsUpdated++;
+            seen.add(row.id);
+          } else {
+            const ins = await env.DB.prepare(
+              `INSERT INTO equipment (location_id, vendor, type, model, serial, status, firmware, name, mac, source, external_id, last_seen_at)
+               VALUES (?, 'UniFi', 'Connected device', NULL, NULL, 'online', NULL, ?, ?, 'unifi-client', ?, datetime('now'))`)
+              .bind(locationId, name, mac, externalId).run();
+            summary.clientsAdded++;
+            seen.add(ins.meta.last_row_id);
+          }
+        }
+      }
+      // A connected device that no longer appears has been disconnected
+      // or removed: flag it offline, never delete it. Only locations
+      // whose console answered this run take part.
+      for (const locId of readLocations) {
+        const seen = seenClientsByLocation[locId] || new Set();
+        const { results: rows } = await env.DB.prepare(
+          "SELECT id FROM equipment WHERE location_id = ? AND source = 'unifi-client' AND status != 'offline'")
+          .bind(locId).all();
+        for (const r of rows || []) {
+          if (!seen.has(r.id)) {
+            await env.DB.prepare(
+              "UPDATE equipment SET status = 'offline', updated_at = datetime('now') WHERE id = ?").bind(r.id).run();
+            summary.clientsOfflined++;
+          }
+        }
+      }
+    } catch (err) {
+      summary.clientsError = String(err && err.message || err);
     }
     summary.ok = true;
     summary.message = "Sync complete.";

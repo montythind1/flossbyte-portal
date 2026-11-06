@@ -1331,7 +1331,7 @@ async function siteMappingBlock(env, provider, heading, emptyNote) {
 
 function lastRunHtml(last, unitLabel) {
   if (!last) return `<p class="muted" style="margin-top:12px">No sync has run yet.</p>`;
-  return `<p class="muted" style="margin-top:12px">Last sync: ${esc(fmtDateUS(String(last.at).slice(0, 10)))} at ${esc(String(last.at).slice(11, 16))} UTC. ${esc(last.message)}${last.ok ? ` ${unitLabel}: ${last.sites != null ? last.sites : last.tenants}. Devices seen: ${last.devices}. Added: ${last.inserted}. Updated: ${last.updated}. Marked offline: ${last.offlined}. Not imported (not mapped): ${last.unmappedDevices}.` : ""}</p>`;
+  return `<p class="muted" style="margin-top:12px">Last sync: ${esc(fmtDateUS(String(last.at).slice(0, 10)))} at ${esc(String(last.at).slice(11, 16))} UTC. ${esc(last.message)}${last.ok ? ` ${unitLabel}: ${last.sites != null ? last.sites : last.tenants}. Devices seen: ${last.devices}. Added: ${last.inserted}. Updated: ${last.updated}. Marked offline: ${last.offlined}. Not imported (not mapped): ${last.unmappedDevices}.${last.clientsSeen != null ? ` Connected devices: ${last.clientsSeen} seen, ${last.clientsAdded || 0} added, ${last.clientsUpdated || 0} updated, ${last.clientsOfflined || 0} marked offline.` : ""}${last.clientsError ? ` Connected devices: ${esc(last.clientsError)}` : ""}` : ""}</p>`;
 }
 
 export async function syncPage(env, request, user) {
