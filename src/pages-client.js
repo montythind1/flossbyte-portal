@@ -131,8 +131,8 @@ export async function teamPage(env, request, user) {
   }).join("");
   const body = `<h1>Team</h1>
     <p class="muted">People with a login for ${esc(cust ? cust.name : "your organization")}. Removing someone signs them out right away and takes away everything they could see here. Tickets and documents they created stay on record.</p>
-    <div class="card" style="padding:8px 14px"><table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Sees</th><th>Status</th><th></th></tr></thead>
-    <tbody>${rows || `<tr><td colspan="6" class="muted">No logins yet.</td></tr>`}</tbody></table></div>`;
+    <div class="card" style="padding:8px 14px"><div class="tscroll"><table class="stack"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Sees</th><th>Status</th><th></th></tr></thead>
+    <tbody>${rows || `<tr><td colspan="6" class="muted">No logins yet.</td></tr>`}</tbody></table></div></div>`;
   const msg = new URL(request.url).searchParams.get("msg");
   return page({ title: "Team", user, body, flash: msg || undefined });
 }
@@ -220,8 +220,8 @@ export async function equipmentPage(env, request, user, locationId) {
       <span style="flex:1;min-width:140px"><select name="vendor"><option value="">All vendors</option>
         ${vendors.map((v) => `<option ${v === vendor ? "selected" : ""}>${esc(v)}</option>`).join("")}</select></span>
       <button class="btn small secondary" type="submit">Filter</button></form>
-    <div class="card" style="padding:8px 14px"><table><thead><tr><th>Vendor</th><th>Type</th><th>Model</th><th>Serial</th><th>Status</th><th>Firmware</th><th>Next expiry</th></tr></thead>
-    <tbody>${rows || `<tr><td colspan="7" class="muted">No equipment recorded yet.</td></tr>`}</tbody></table></div>${addForm}`;
+    <div class="card" style="padding:8px 14px"><div class="tscroll"><table class="stack"><thead><tr><th>Vendor</th><th>Type</th><th>Model</th><th>Serial</th><th>Status</th><th>Firmware</th><th>Next expiry</th></tr></thead>
+    <tbody>${rows || `<tr><td colspan="7" class="muted">No equipment recorded yet.</td></tr>`}</tbody></table></div></div>${addForm}`;
   return page({ title: "Equipment", user, body });
 }
 
@@ -254,8 +254,8 @@ export async function ticketsPage(env, request, user, locationId) {
   const rows = (results || []).map((t) => `<tr><td><a href="/app/locations/${locationId}/tickets/${t.id}">${esc(t.title)}</a></td>
     <td><span class="pill">${esc(STATUS_LABEL[t.status] || t.status)}</span></td><td>${esc(t.priority)}</td><td>${esc(t.created_at.slice(0, 10))}</td></tr>`).join("");
   const body = `${locNav(loc, "tickets")}<h1>Tickets</h1>
-    <div class="card" style="padding:8px 14px"><table><thead><tr><th>Title</th><th>Status</th><th>Priority</th><th>Opened</th></tr></thead>
-    <tbody>${rows || `<tr><td colspan="4" class="muted">No tickets yet.</td></tr>`}</tbody></table></div>
+    <div class="card" style="padding:8px 14px"><div class="tscroll"><table class="stack"><thead><tr><th>Title</th><th>Status</th><th>Priority</th><th>Opened</th></tr></thead>
+    <tbody>${rows || `<tr><td colspan="4" class="muted">No tickets yet.</td></tr>`}</tbody></table></div></div>
     <div class="card"><h3>Open a ticket</h3>
       <form method="post" action="/app/locations/${locationId}/tickets">
         <label>What is going on? <span class="req">*</span></label><input name="title" required>
@@ -348,8 +348,8 @@ export async function documentsPage(env, request, user, locationId) {
     <td>${esc(d.mime || "")}</td><td>${d.size ? Math.round(d.size / 1024) + " KB" : ""}</td>
     <td>${esc(d.uploader || "")}</td><td>${esc(d.created_at.slice(0, 10))}</td></tr>`).join("");
   const body = `${locNav(loc, "documents")}<h1>Documents</h1>
-    <div class="card" style="padding:8px 14px"><table><thead><tr><th>Name</th><th>Type</th><th>Size</th><th>Uploaded by</th><th>Date</th></tr></thead>
-    <tbody>${rows || `<tr><td colspan="5" class="muted">No documents yet.</td></tr>`}</tbody></table></div>
+    <div class="card" style="padding:8px 14px"><div class="tscroll"><table class="stack"><thead><tr><th>Name</th><th>Type</th><th>Size</th><th>Uploaded by</th><th>Date</th></tr></thead>
+    <tbody>${rows || `<tr><td colspan="5" class="muted">No documents yet.</td></tr>`}</tbody></table></div></div>
     <div class="card"><h3>Upload a document</h3>
       <form method="post" action="/app/locations/${locationId}/documents" enctype="multipart/form-data">
         <label>File <span class="req">*</span></label><input type="file" name="file" required>
