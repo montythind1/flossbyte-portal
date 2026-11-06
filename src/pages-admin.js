@@ -30,7 +30,7 @@ function adminNav(active) {
     `<a class="rail-item${active === key ? " active" : ""}" href="${href}">${icon(ic)}${label}</a>`;
   return `<div class="shell"><aside class="rail">
     <div class="rail-context"><div class="rc-t">FlossByte</div><div class="rc-s">Admin console</div></div>
-    ${item("clients", "/admin", "Clients", "users")}${item("tickets", "/admin/tickets", "Tickets", "ticket")}${item("new", "/admin/customers/new", "Add client", "userPlus")}
+    ${item("clients", "/admin", "Clients", "users")}${item("tickets", "/admin/tickets", "Tickets", "ticket")}
     ${item("pending", "/admin/pending", "Pending accounts", "clock")}${item("admins", "/admin/admins", "Admins", "shield")}
     ${item("sync", "/admin/sync", "Device sync", "refresh")}${item("activity", "/admin/activity", "Activity", "activity")}</aside><div class="shell-main">`;
 }
@@ -108,7 +108,7 @@ export async function clientsPage(env, request, user) {
       <p class="muted">${stats}</p>
       <p>${onPills || `<span class="muted">No services on yet</span>`}</p></div>`);
   }
-  const body = `${adminNav("clients")}<h1>Clients</h1>
+  const body = `${adminNav("clients")}<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap"><h1 style="margin:0">Clients</h1><a class="btn" href="/admin/customers/new">+ Add client</a></div>
     ${attention}
     <form method="get" class="row" style="margin:16px 0 4px">
       <span style="flex:1;min-width:200px"><input name="q" placeholder="Search clients by name or contact email" value="${esc(query)}"></span>
@@ -228,7 +228,7 @@ export async function newCustomerPage(env, request, user) {
         <input type="checkbox" name="product_${esc(p.key)}" value="1" style="width:auto;margin-top:3px">
         <span>${esc(p.name)}<div class="muted" style="font-weight:400">${esc(p.description || "")}</div></span></label>
     </div>`).join("");
-  const body = `${adminNav("new")}<div class="card narrow" style="margin:0;max-width:600px"><h1>Add organization</h1>
+  const body = `${adminNav("clients")}<div class="card narrow" style="margin:0;max-width:600px"><h1>Add organization</h1>
     <div class="wiz-progress">
       <div class="wiz-track"><div class="wiz-fill" id="wizFill"></div></div>
       <div class="wiz-nodes">
