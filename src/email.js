@@ -1,17 +1,59 @@
 // Transactional email. Provider-agnostic: when RESEND_API_KEY and EMAIL_FROM
 // are set it sends through the Resend API; otherwise the message is recorded
 // in email_log as 'queued' and nothing crashes. Every attempt is logged.
+//
+// Design: one shared shell for every template. Table layout with explicit
+// background colors on every section and a declared light color-scheme, so
+// mail clients (including dark mode) render it as designed instead of
+// improvising: navy header with the logo lockup, white card, thin teal
+// rule, navy call-to-action button, quiet gray footer.
+
+const FONT = "-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
+const MUTED_P = `style="font-size:13px;line-height:1.55;color:#5B6B82;margin-top:18px"`;
+
+function button(href, label) {
+  return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:22px 0 4px">
+    <tr><td bgcolor="#0A1628" style="border-radius:6px">
+      <a href="${href}" style="display:inline-block;padding:13px 26px;font-family:${FONT};font-size:15px;font-weight:600;letter-spacing:.2px;color:#ffffff;text-decoration:none">${label}</a>
+    </td></tr></table>`;
+}
+
+function linkFallback(href) {
+  return `<p style="margin:12px 0 0;font-size:13px;line-height:1.55;color:#5B6B82">Button not working? Paste this link into your browser:<br>
+    <a href="${href}" style="color:#0B7568;word-break:break-all">${href}</a></p>`;
+}
 
 function wrap(title, bodyHtml) {
-  return `<div style="font-family:Arial,sans-serif;color:#14213a;max-width:560px;margin:0 auto">
-    <div style="background:#0A1628;color:#ffffff;padding:18px 22px;border-radius:8px 8px 0 0">
-      <strong style="font-size:18px">FlossByte</strong>
-      <span style="color:#00D4B8;font-size:12px"> CLIENT PORTAL</span></div>
-    <div style="border:1px solid #dde3ea;border-top:none;padding:22px;border-radius:0 0 8px 8px">
-      <h2 style="margin:0 0 12px;font-size:18px">${title}</h2>${bodyHtml}
-      <p style="color:#5b6b82;font-size:13px;margin-top:24px">FlossByte, dental IT support.
-      Questions: call (669) 237-2264 or email hello@flossbyte.com.
-      Please do not reply to this email, this address does not receive mail.</p></div></div>`;
+  return `<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light"><meta name="supported-color-schemes" content="light">
+<title>FlossByte Portal</title>
+<style>:root{color-scheme:light;supported-color-schemes:light}
+p{margin:0 0 14px}
+@media (prefers-color-scheme:dark){.keep-navy{background-color:#0A1628!important}}</style></head>
+<body style="margin:0;padding:0;background-color:#EDF0F3">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#EDF0F3">
+<tr><td align="center" style="padding:32px 16px">
+<table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" style="width:600px;max-width:100%;background-color:#ffffff;border:1px solid #D9E0E8;border-radius:10px;overflow:hidden">
+  <tr><td bgcolor="#0A1628" class="keep-navy" style="padding:20px 32px">
+    <table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr>
+      <td style="padding-right:12px;vertical-align:middle"><img src="https://portal.flossbyte.com/assets/logo-icon.png" alt="FlossByte" height="34" style="display:block;height:34px;border:0"></td>
+      <td style="vertical-align:middle;font-family:${FONT};color:#ffffff;font-size:19px;font-weight:700;letter-spacing:.2px">FlossByte<span style="display:block;font-size:10.5px;font-weight:600;letter-spacing:2.2px;color:#7FD8C8;margin-top:2px">CLIENT PORTAL</span></td>
+    </tr></table></td></tr>
+  <tr><td bgcolor="#00BFA5" style="height:3px;line-height:3px;font-size:0">&nbsp;</td></tr>
+  <tr><td style="padding:30px 32px 16px;font-family:${FONT};color:#1F2D3D;font-size:15px;line-height:1.6">
+    <h1 style="margin:0 0 16px;font-size:20px;line-height:1.3;color:#0A1628;font-weight:700">${title}</h1>
+    ${bodyHtml}
+  </td></tr>
+  <tr><td bgcolor="#F5F7F9" style="padding:20px 32px;border-top:1px solid #E1E7ED;font-family:${FONT};font-size:12.5px;line-height:1.6;color:#5B6B82">
+    FlossByte, dental IT support. Questions: call <a href="tel:+16692372264" style="color:#0B7568;text-decoration:none">(669) 237-2264</a> or email <a href="mailto:hello@flossbyte.com" style="color:#0B7568;text-decoration:none">hello@flossbyte.com</a>.<br>
+    This is an automated message sent from a no-reply address, please don't reply to it.
+  </td></tr>
+</table>
+<div style="font-family:${FONT};font-size:11.5px;color:#8A97A5;margin-top:16px">FlossByte Client Portal &middot; portal.flossbyte.com</div>
+</td></tr></table>
+</body></html>`;
 }
 
 export async function sendEmail(env, { to, template, subject, html, text }) {
@@ -45,11 +87,12 @@ function origin(env) { return env.APP_ORIGIN || "https://portal.flossbyte.com"; 
 export function inviteEmail(env, { name, link }) {
   return {
     subject: "Finish setting up your FlossByte portal login",
-    html: wrap("Finish your portal sign-in", `
+    html: wrap("Finish setting up your portal login", `
       <p>Hi ${name},</p>
-      <p>Your FlossByte portal login is ready to finish. Set your password here:</p>
-      <p><a href="${link}" style="background:#00BFA5;color:#fff;padding:10px 18px;border-radius:6px;text-decoration:none">Set my password</a></p>
-      <p style="font-size:13px;color:#5b6b82">This link works once and expires in 7 days. In the portal you can see your practice equipment, tickets, and documents.</p>`),
+      <p>Your FlossByte client portal login has been created. Set your password to finish setting up your account:</p>
+      ${button(link, "Set my password")}
+      ${linkFallback(link)}
+      <p ${MUTED_P}>This link can be used once and expires in 7 days. In the portal you can view your practice's equipment, support tickets, and documents.</p>`),
     text: `Hi ${name}, finish setting up your FlossByte portal login here: ${link} (link expires in 7 days).`,
   };
 }
@@ -57,12 +100,11 @@ export function inviteEmail(env, { name, link }) {
 export function welcomeEmail(env, { name }) {
   return {
     subject: "Welcome to the FlossByte portal",
-    html: wrap("Welcome", `
+    html: wrap("Your portal account is ready", `
       <p>Hi ${name},</p>
-      <p>Your FlossByte portal account is set up. Sign in any time at
-      <a href="${origin(env)}">${origin(env).replace("https://", "")}</a> to check your equipment,
-      open tickets, and documents.</p>
-      <p>Need hands-on help? The Remote Support button in the portal starts a session with us.</p>`),
+      <p>Your FlossByte portal account is set up. Sign in to view your practice's equipment, open support tickets, and read your documents.</p>
+      ${button(origin(env), "Sign in to the portal")}
+      <p ${MUTED_P}>Need hands-on help? The Remote Support button inside the portal starts a session with our team.</p>`),
     text: `Hi ${name}, your FlossByte portal account is set up. Sign in at ${origin(env)}.`,
   };
 }
@@ -70,10 +112,11 @@ export function welcomeEmail(env, { name }) {
 export function resetEmail(env, { link }) {
   return {
     subject: "Reset your FlossByte portal password",
-    html: wrap("Password reset", `
-      <p>We got a request to reset your portal password.</p>
-      <p><a href="${link}" style="background:#00BFA5;color:#fff;padding:10px 18px;border-radius:6px;text-decoration:none">Reset my password</a></p>
-      <p style="font-size:13px;color:#5b6b82">This link expires in 1 hour. If you did not ask for this, ignore this email and your password stays the same.</p>`),
+    html: wrap("Reset your password", `
+      <p>We received a request to reset the password for your FlossByte portal account.</p>
+      ${button(link, "Reset my password")}
+      ${linkFallback(link)}
+      <p ${MUTED_P}>This link expires in 1 hour. If you didn't ask for a reset, ignore this email, your password stays the same.</p>`),
     text: `Reset your FlossByte portal password here: ${link} (link expires in 1 hour). If you did not ask for this, ignore this email.`,
   };
 }
