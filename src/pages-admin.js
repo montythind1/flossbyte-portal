@@ -108,7 +108,7 @@ export async function clientsPage(env, request, user) {
       <p class="muted">${stats}</p>
       <p>${onPills || `<span class="muted">No services on yet</span>`}</p></div>`);
   }
-  const body = `${adminNav("clients")}<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap"><h1 style="margin:0">Clients</h1><a class="btn" href="/admin/customers/new">+ Add client</a></div>
+  const body = `${adminNav("clients")}<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px"><h1 style="margin:0">Clients</h1><a class="btn small" href="/admin/customers/new">+ Add client</a></div>
     ${attention}
     <form method="get" class="row" style="margin:16px 0 4px">
       <span style="flex:1;min-width:200px"><input name="q" placeholder="Search clients by name or contact email" value="${esc(query)}"></span>
