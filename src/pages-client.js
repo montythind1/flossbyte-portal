@@ -527,6 +527,10 @@ export async function networkPage(env, request, user, locationId) {
   }
   const camRows = ((snaps.protect || {}).cameras || []).map((c) => `<tr><td>${esc(c.name || "Camera")}</td><td>${esc(c.model || "")}</td><td>${esc(c.state || c.status || "")}</td></tr>`);
   if (camRows.length) cards.push(`<div class="card"><h2 style="margin-top:0">Cameras</h2>${table(["Camera", "Model", "State"], camRows)}</div>`);
+  const changeEvents = ((snaps.changes || {}).events || []).slice(0, 15);
+  if (changeEvents.length) {
+    cards.push(`<div class="card"><h2 style="margin-top:0">Recent changes</h2>${changeEvents.map((e) => `<p style="margin:4px 0"><span class="muted">${esc(fmtDateUS(String(e.at || "").slice(0, 10)))}</span> · ${esc(e.text || "")}</p>`).join("")}</div>`);
+  }
   const capLine = captured ? `<p class="muted" style="margin-top:0">Captured ${esc(fmtDateUS(captured.slice(0, 10)))} at ${esc(captured.slice(11, 16))} UTC by the hourly sync. Read-only: nothing on this page can change the office's network.</p>` : "";
   const body = `${locNav(loc, "network")}<h1>Network</h1>${capLine}${cards.join("")}`;
   return page({ title: "Network", user, body });
@@ -822,6 +826,77 @@ export async function askAnswer(db, locationId, question) {
         `• ${e.vendor || ""} ${e.model || e.type || "equipment"} (license ${e.license_expires ? fmtDateUS(e.license_expires) : "n/a"}, warranty ${e.warranty_expires ? fmtDateUS(e.warranty_expires) : "n/a"})`).join("\n"));
     } else parts.push("Nothing on record expires in the next 90 days.");
   }
+  // Network snapshots (UniFi): internet health, settings, device
+  // health, cameras and the change history. Skipped silently when no
+  // snapshot has been captured for this location yet.
+  let snaps = null;
+  try {
+    const { results: srows } = await db.prepare("SELECT kind, payload FROM network_snapshots WHERE location_id = ?").bind(locationId).all();
+    if (srows && srows.length) {
+      snaps = {};
+      for (const r of srows) { try { snaps[r.kind] = JSON.parse(r.payload || "{}"); } catch { snaps[r.kind] = {}; } }
+    }
+  } catch { snaps = null; }
+  if (snaps) {
+    const inet = snaps.internet || {};
+    if (/internet|isp|latency|packet loss|downtime|broadband|provider/.test(q) && (inet.isp || (inet.wans || []).length)) {
+      const lines = [];
+      if (inet.isp) {
+        const i = inet.isp;
+        lines.push(`• Provider: ${i.ispName || "not recorded"}`);
+        if (i.uptimePct != null) lines.push(`• Uptime over the last ${i.hours || 24} hours: ${Number(i.uptimePct).toFixed(1)}% (downtime ${Math.round((i.downtimeSec || 0) / 60)} min)`);
+        if (i.avgLatencyMs != null) lines.push(`• Latency: ${Math.round(i.avgLatencyMs)} ms average, ${Math.round(i.maxLatencyMs || 0)} ms peak`);
+        if (i.downMbps != null) lines.push(`• Speed: ${Number(i.downMbps).toFixed(1)} Mbps down, ${Number(i.upMbps || 0).toFixed(1)} Mbps up on average`);
+      }
+      for (const w of inet.wans || []) lines.push(`• ${w.name || "WAN"}: ${w.ipAddress || w.ip || "no IP recorded"}${w.state || w.status ? ` (${w.state || w.status})` : ""}`);
+      if (lines.length) parts.push("Internet:\n" + lines.join("\n"));
+    }
+    const cfg = snaps.config || {};
+    if (/wi-?fi|ssid|wireless/.test(q) && (cfg.ssids || []).length) {
+      parts.push("WiFi networks:\n" + cfg.ssids.map((s) => `• ${s.name || s.ssid} (${s.security || "security not recorded"}, ${s.enabled === false ? "off" : "on"})`).join("\n"));
+    }
+    if (/vpn|tunnel/.test(q) && ((cfg.vpnTunnels || []).length || (cfg.vpnServers || []).length)) {
+      const lines = [
+        ...(cfg.vpnTunnels || []).map((t) => `• Tunnel ${t.name} (${t.type || ""}${t.state || t.status ? `, ${t.state || t.status}` : ""})`),
+        ...(cfg.vpnServers || []).map((v) => `• Server ${v.name} (${v.type || ""}, ${v.enabled === false ? "off" : "on"})`),
+      ];
+      parts.push("VPN:\n" + lines.join("\n"));
+    }
+    if (/firewall|vlan/.test(q) && ((cfg.networks || []).length || (cfg.firewallPolicies || []).length)) {
+      const lines = [
+        ...(cfg.networks || []).map((n) => `• Network ${n.name}${n.vlanId != null ? ` (VLAN ${n.vlanId})` : ""}, ${n.enabled === false ? "off" : "on"}`),
+        ...(cfg.firewallPolicies || []).map((p) => `• Policy ${p.name} (${p.action || ""}, ${p.enabled === false ? "off" : "on"})`),
+      ];
+      if (lines.length) parts.push("Networks and firewall:\n" + lines.join("\n"));
+    }
+    if (/camera|protect/.test(q) && ((snaps.protect || {}).cameras || []).length) {
+      parts.push("Cameras:\n" + snaps.protect.cameras.map((c) => `• ${c.name} (${c.model || ""}, ${c.state || c.status || ""})`).join("\n"));
+    }
+    if (/changed|changes|recently|last week/.test(q) && ((snaps.changes || {}).events || []).length) {
+      parts.push("Recent changes:\n" + snaps.changes.events.slice(0, 8).map((e) => `• ${String(e.at || "").slice(0, 10)}: ${e.text}`).join("\n"));
+    }
+    if (/device health|cpu|memory|health of/.test(q) && ((snaps.device_stats || {}).devices || []).length) {
+      parts.push("Device health:\n" + snaps.device_stats.devices.slice(0, 10).map((d) => `• ${d.name || d.mac}: CPU ${d.cpu != null ? Math.round(d.cpu) + "%" : "n/a"}, memory ${d.mem != null ? Math.round(d.mem) + "%" : "n/a"}`).join("\n"));
+    }
+  }
+  // "What is X connected to?" answered from the topology parents.
+  if (/connected to|plugged into|uplink/.test(q)) {
+    try {
+      const cols = await db.prepare("PRAGMA table_info(equipment)").all();
+      if ((cols.results || []).some((c) => c.name === "parent_mac")) {
+        const { results: alleq } = await db.prepare("SELECT name, type, mac, parent_mac FROM equipment WHERE location_id = ? AND mac IS NOT NULL").bind(locationId).all();
+        const byMac = new Map((alleq || []).map((e) => [e.mac, e]));
+        const qwords = tokenize(question);
+        const hits = (alleq || []).filter((e) => e.parent_mac && qwords.some((w) => String(e.name || "").toLowerCase().includes(w)));
+        if (hits.length) {
+          parts.push("Connections:\n" + hits.slice(0, 6).map((e) => {
+            const p = byMac.get(e.parent_mac);
+            return `• ${e.name} connects through ${p ? (p.name || p.type || "a network device") : "the gateway"}`;
+          }).join("\n"));
+        }
+      }
+    } catch { /* topology parents not available yet */ }
+  }
   const words = tokenize(question);
   if (words.length) {
     const like = words.map(() => "(vendor LIKE ? OR type LIKE ? OR model LIKE ? OR serial LIKE ? OR status LIKE ? OR notes LIKE ?)").join(" OR ");
@@ -846,7 +921,7 @@ export async function askAnswer(db, locationId, question) {
     }
   }
   if (!parts.length) {
-    return "That is not in your portal records yet, so I cannot answer it from your data. Ask about equipment, license or warranty expiry dates, tickets, or documents, or open a ticket and we will look into it.";
+    return "That is not in your portal records yet, so I cannot answer it from your data. Ask about equipment, license or warranty expiry dates, your internet, WiFi, VPN, cameras, recent network changes, tickets, or documents, or open a ticket and we will look into it.";
   }
   return parts.join("\n") + "\n(Answered from your own portal records only.)";
 }
@@ -859,7 +934,7 @@ export async function askPage(env, request, user, locationId) {
   const history = (results || []).reverse().map((m) => `<div class="msg q">${esc(m.question)}</div>
     <div class="msg a">${esc(m.answer)}</div>`).join("");
   const body = `${locNav(loc, "ask")}<h1>Ask</h1>
-    <div class="card"><p class="muted">Ask about your own equipment, expiry dates, tickets, and documents. Answers come only from what is recorded for this practice.</p>
+    <div class="card"><p class="muted">Ask about your own equipment, expiry dates, internet, WiFi, VPN, cameras, recent network changes, tickets, and documents. Answers come only from what is recorded for this practice.</p>
     <form method="post" action="/app/locations/${locationId}/ask">
       <input name="question" placeholder="What is expiring in the next 90 days?" required>
       <p style="margin-top:12px"><button class="btn" type="submit">Ask</button></p></form>

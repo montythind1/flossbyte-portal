@@ -545,6 +545,66 @@ export async function runUnifiSync(env) {
             if (s.deviceStats && s.deviceStats.length) writes.push(["device_stats", { devices: s.deviceStats }]);
             if (s.protect) writes.push(["protect", s.protect]);
           }
+          // Change history: diff the new reads against what is stored
+          // and keep a running event list inside a 'changes' snapshot
+          // (no extra table needed). The first capture is a baseline
+          // and logs nothing. Structural changes only (settings and
+          // membership), never metric noise.
+          if (writes.length) {
+            try {
+              const prev = {};
+              const { results: prevRows } = await env.DB.prepare(
+                "SELECT kind, payload FROM network_snapshots WHERE location_id = ?").bind(locationId).all();
+              for (const r of prevRows || []) { try { prev[r.kind] = JSON.parse(r.payload || "{}"); } catch { prev[r.kind] = {}; } }
+              const hadBaseline = Object.keys(prev).some((k) => k !== "changes");
+              const events = [];
+              const nameSet = (arr) => new Set((arr || []).map((x) => String(x.name || x.ssid || "")).filter(Boolean));
+              const diffList = (oldArr, newArr, label) => {
+                const o = nameSet(oldArr), n = nameSet(newArr);
+                for (const name of n) if (!o.has(name)) events.push(`${label} added: ${name}`);
+                for (const name of o) if (!n.has(name)) events.push(`${label} removed: ${name}`);
+              };
+              const newByKind = {};
+              for (const [kind, payload] of writes) newByKind[kind] = payload;
+              if (hadBaseline) {
+                if (newByKind.config) {
+                  const oc = prev.config || {}, nc = newByKind.config;
+                  diffList(oc.networks, nc.networks, "Network");
+                  diffList(oc.ssids, nc.ssids, "WiFi network");
+                  diffList(oc.firewallPolicies, nc.firewallPolicies, "Firewall policy");
+                  diffList(oc.vpnServers, nc.vpnServers, "VPN server");
+                  diffList(oc.vpnTunnels, nc.vpnTunnels, "VPN tunnel");
+                  diffList(oc.firewallZones, nc.firewallZones, "Firewall zone");
+                  const oldSsid = {};
+                  for (const s of oc.ssids || []) oldSsid[s.name || s.ssid] = s;
+                  for (const s of nc.ssids || []) {
+                    const o = oldSsid[s.name || s.ssid];
+                    if (o && (o.security || "") !== (s.security || "")) events.push(`WiFi security changed for ${s.name || s.ssid}: ${o.security || "none"} to ${s.security || "none"}`);
+                  }
+                  const oldTun = {};
+                  for (const t of oc.vpnTunnels || []) oldTun[t.name] = t;
+                  for (const t of nc.vpnTunnels || []) {
+                    const o = oldTun[t.name];
+                    const os = o && (o.state || o.status), ns = t.state || t.status;
+                    if (o && ns && os !== ns) events.push(`VPN tunnel ${t.name} is now ${ns}`);
+                  }
+                }
+                if (newByKind.internet) {
+                  const oi = prev.internet || {}, ni = newByKind.internet;
+                  if (oi.isp && ni.isp && oi.isp.ispName && ni.isp.ispName && oi.isp.ispName !== ni.isp.ispName) events.push(`Internet provider changed: ${oi.isp.ispName} to ${ni.isp.ispName}`);
+                  diffList(oi.wans, ni.wans, "WAN interface");
+                }
+                if (newByKind.protect) diffList((prev.protect || {}).cameras, newByKind.protect.cameras, "Camera");
+                if (newByKind.device_stats) diffList((prev.device_stats || {}).devices, newByKind.device_stats.devices, "Device tracked");
+              }
+              if (events.length) {
+                const nowIso = new Date().toISOString();
+                const oldEvents = prev.changes && Array.isArray(prev.changes.events) ? prev.changes.events : [];
+                writes.push(["changes", { events: [...events.map((text) => ({ at: nowIso, text })), ...oldEvents].slice(0, 60) }]);
+                summary.changesLogged = (summary.changesLogged || 0) + events.length;
+              }
+            } catch { /* change logging never breaks the sync */ }
+          }
           for (const [kind, payload] of writes) {
             await env.DB.prepare(
               `INSERT INTO network_snapshots (location_id, kind, payload, captured_at) VALUES (?, ?, ?, datetime('now'))
