@@ -3,21 +3,36 @@
 import { page, redirect, esc } from "./layout.js";
 import { createAuthToken, revokeAllSessions, verifyPassword } from "./auth.js";
 import { audit, isSuperAdmin, grantUserAccess, findCustomerByContactEmail, isValidEmail } from "./access.js";
-import { sendEmail, inviteEmail, newCustomerNoticeEmail, ownershipTransferEmail } from "./email.js";
+import { sendEmail, inviteEmail, newCustomerNoticeEmail, ownershipTransferEmail, quoteSentEmail } from "./email.js";
 import { resendInviteEmail } from "./pages-public.js";
 import { runUnifiSync, lastUnifiSync } from "./unifi.js";
 import { runSophosSync, lastSophosSync } from "./sophos.js";
 
 function origin(env) { return env.APP_ORIGIN || "https://portal.flossbyte.com"; }
 function q(request) { return new URL(request.url).searchParams; }
+function fmtMoney(cents) {
+  return "$" + (Number(cents || 0) / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+function parseDollarsToCents(v) {
+  const n = parseFloat(String(v || "").replace(/[^0-9.]/g, ""));
+  return Number.isFinite(n) ? Math.round(n * 100) : 0;
+}
+// Default quote terms, prefilled in the builder and editable per quote.
+// Draft wording: Montek reviews and adjusts before a quote is sent.
+const PROJECT_TERMS = "The deposit is due before work is scheduled, and scheduling happens once the deposit payment is received. The remaining balance is due when the work above is complete.";
+const PLAN_TERMS = "Service is billed monthly at the amount above, starting on the service start date agreed with FlossByte. The service agreement and business associate agreement signed with FlossByte govern the service.";
 
+// App shell opener: renders the left rail (desktop) / chip bar (phone)
+// and opens the content column. The shell divs are closed implicitly by
+// the end of <main> in layout.js, the same pattern the whole portal uses.
 function adminNav(active) {
-  const link = (key, href, label) =>
-    `<a href="${href}" ${active === key ? 'style="color:#0A1628;font-weight:700"' : ""}>${label}</a>`;
-  return `<nav class="row" style="gap:18px;margin-bottom:18px">
-    ${link("clients", "/admin", "Clients")}${link("new", "/admin/customers/new", "Add customer")}
-    ${link("pending", "/admin/pending", "Pending accounts")}${link("admins", "/admin/admins", "Admins")}
-    ${link("sync", "/admin/sync", "Device sync")}</nav>`;
+  const item = (key, href, label) =>
+    `<a class="rail-item${active === key ? " active" : ""}" href="${href}">${label}</a>`;
+  return `<div class="shell"><aside class="rail">
+    <div class="rail-context"><div class="rc-t">FlossByte</div><div class="rc-s">Admin console</div></div>
+    ${item("clients", "/admin", "Clients")}${item("new", "/admin/customers/new", "Add customer")}
+    ${item("pending", "/admin/pending", "Pending accounts")}${item("admins", "/admin/admins", "Admins")}
+    ${item("sync", "/admin/sync", "Device sync")}</aside><div class="shell-main">`;
 }
 
 // ---------- Clients list ----------
@@ -528,19 +543,62 @@ export async function customerPage(env, request, user, customerId) {
   const memberRows = (members || []).map((m) => `<tr><td>${esc(m.name)}${m.is_main_admin ? ` <span class="pill on">Main admin</span>` : ""}</td><td>${esc(m.email)}</td>
     <td>${esc(m.role)}</td><td><span class="pill">${esc(m.status)}</span></td>
     <td>${m.status === "invited" ? `<form method="post" action="/admin/customers/${customerId}/users/${m.id}/resend" style="display:inline"><button class="btn small secondary" type="submit">Resend invite</button></form>` : ""}</td></tr>`).join("");
+  // Quotes and invoices (migration 0008). Best-effort reads: if the tables
+  // are not there yet the org page must still render.
+  const { results: quoteList } = await db.prepare(
+    `SELECT q.*, COALESCE((SELECT SUM(ROUND(qi.qty * qi.unit_price_cents)) FROM quote_items qi WHERE qi.quote_id = q.id), 0) AS total_cents,
+            COALESCE((SELECT SUM(amount_cents) FROM invoices WHERE quote_id = q.id AND status != 'void'), 0) AS invoiced_cents
+     FROM quotes q WHERE q.customer_id = ? ORDER BY q.updated_at DESC`).bind(customerId).all().catch(() => ({ results: [] }));
+  const { results: invoiceList } = await db.prepare(
+    "SELECT * FROM invoices WHERE customer_id = ? ORDER BY created_at DESC").bind(customerId).all().catch(() => ({ results: [] }));
+  const quoteRows = (quoteList || []).map((qt) => {
+    const statusPill = qt.status === "accepted" ? `<span class="pill on">Accepted</span>`
+      : qt.status === "sent" ? `<span class="pill">Sent</span>`
+      : qt.status === "declined" ? `<span class="pill off">Declined</span>` : `<span class="pill">Draft</span>`;
+    let actions = "";
+    if (qt.status === "draft") {
+      actions = `<form method="post" action="/admin/customers/${customerId}/quotes/${qt.id}/send" style="display:inline"><button class="btn small" type="submit">Send to customer</button></form>
+        <form method="post" action="/admin/customers/${customerId}/quotes/${qt.id}/delete" style="display:inline"><button class="btn small danger" type="submit">Delete</button></form>`;
+    } else if (qt.status === "sent") {
+      actions = `<span class="muted">Waiting for the customer</span>`;
+    } else if (qt.status === "accepted") {
+      actions = `<span class="muted">Accepted ${(qt.accepted_at || "").slice(0, 10)}${qt.accepted_by ? " by " + esc(qt.accepted_by) : ""}. Invoiced ${fmtMoney(qt.invoiced_cents)} of ${fmtMoney(qt.total_cents)}.</span>`
+        + (qt.invoiced_cents < qt.total_cents ? ` <form method="post" action="/admin/customers/${customerId}/quotes/${qt.id}/final" style="display:inline"><button class="btn small" type="submit">Invoice the rest</button></form>` : "");
+    }
+    return `<tr><td>${esc(qt.title)}</td><td>${qt.kind === "plan" ? "Service plan" : "Project"}</td>
+      <td>${fmtMoney(qt.total_cents)}</td><td>${qt.deposit_percent ? qt.deposit_percent + "%" : "None"}</td>
+      <td>${statusPill}</td><td>${actions}</td></tr>`;
+  }).join("");
+  const invoiceRows = (invoiceList || []).map((inv) => {
+    const actions = inv.status === "unpaid"
+      ? `<form method="post" action="/admin/customers/${customerId}/invoices/${inv.id}/paid" class="row" style="gap:6px;display:inline-flex">
+           <input name="method" placeholder="Method (card, check)" style="max-width:150px">
+           <button class="btn small" type="submit">Mark paid</button></form>
+         <form method="post" action="/admin/customers/${customerId}/invoices/${inv.id}/void" style="display:inline"><button class="btn small danger" type="submit">Void</button></form>
+         ${inv.pay_url ? `<a class="btn small secondary" href="${esc(inv.pay_url)}" target="_blank" rel="noopener">Pay link</a>` : ""}`
+      : inv.status === "paid" ? `<span class="muted">Paid ${(inv.paid_at || "").slice(0, 10)}${inv.paid_method ? " (" + esc(inv.paid_method) + ")" : ""}</span>` : `<span class="muted">Void</span>`;
+    return `<tr><td>INV-${1000 + inv.id}</td><td>${esc(inv.title)}</td>
+      <td>${inv.kind === "deposit" ? "Deposit" : inv.kind === "final" ? "Final balance" : "Invoice"}</td>
+      <td>${fmtMoney(inv.amount_cents)}</td>
+      <td><span class="pill ${inv.status === "paid" ? "on" : inv.status === "void" ? "off" : ""}">${esc(inv.status)}</span></td>
+      <td>${esc(inv.due_date || "")}</td><td>${actions}</td></tr>`;
+  }).join("");
+  const itemRow = `<div class="row" style="gap:8px;margin-top:6px">
+      <span style="flex:3;min-width:160px"><input name="item_desc" placeholder="Description"></span>
+      <span style="flex:1;min-width:70px"><input name="item_qty" type="number" step="any" min="0" placeholder="Qty"></span>
+      <span style="flex:1;min-width:90px"><input name="item_price" type="number" step="0.01" min="0" placeholder="Price $"></span></div>`;
   const tabParam = q(request).get("tab");
-  const tab = ["organization", "locations", "products", "users", "manage"].includes(tabParam) ? tabParam : "organization";
+  const tab = ["organization", "locations", "products", "users", "quotes", "invoices", "manage"].includes(tabParam) ? tabParam : "organization";
   const locOptions = (locations || []).map((l) => `<option value="${l.id}">${esc(l.name)}</option>`).join("");
-  const body = `${adminNav("")}<h1>${esc(c.name)}</h1>
+  const railBtn = (key, label) => `<button type="button" class="tab-btn rail-item${tab === key ? " active" : ""}" data-tab="${key}">${label}</button>`;
+  const body = `<div class="shell"><aside class="rail">
+    <div class="rail-context"><div class="rc-t">${esc(c.name)}</div><div class="rc-s">Organization</div></div>
+    <a class="rail-item" href="/admin">&larr; All clients</a>
+    ${railBtn("organization", "Organization")}${railBtn("locations", "Locations")}${railBtn("products", "Products")}
+    ${railBtn("users", "Users")}${railBtn("quotes", "Quotes")}${railBtn("invoices", "Invoices")}${railBtn("manage", "Manage")}
+    </aside><div class="shell-main"><h1>${esc(c.name)}</h1>
     <p class="muted">${esc(c.contact_name || "")} ${esc(c.contact_email || "")} ${esc(c.phone || "")}</p>
-    <div class="tabbar">
-      <button type="button" class="tab-btn${tab === "organization" ? " active" : ""}" data-tab="organization">Organization</button>
-      <button type="button" class="tab-btn${tab === "locations" ? " active" : ""}" data-tab="locations">Locations</button>
-      <button type="button" class="tab-btn${tab === "products" ? " active" : ""}" data-tab="products">Products</button>
-      <button type="button" class="tab-btn${tab === "users" ? " active" : ""}" data-tab="users">Users</button>
-      <button type="button" class="tab-btn${tab === "manage" ? " active" : ""}" data-tab="manage">Manage</button>
-    </div>
-    <noscript><style>.tab-panel{display:block}.tabbar{display:none}</style></noscript>
+    <noscript><style>.tab-panel{display:block}.rail{display:none}</style></noscript>
     <div class="card tab-panel${tab === "organization" ? " active" : ""}" data-panel="organization">
       <form method="post" action="/admin/customers/${customerId}/edit">
         <label>Organization name <span class="req">*</span></label><input name="name" value="${esc(c.name)}" required>
@@ -562,12 +620,146 @@ export async function customerPage(env, request, user, customerId) {
       <div class="tscroll"><table class="stack"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th></th></tr></thead><tbody>${memberRows || `<tr><td colspan="5" class="muted">No logins yet.</td></tr>`}</tbody></table></div>
       <p style="margin-top:14px"><a class="btn small secondary" href="/admin/customers/${customerId}/users/new">+ Add user</a></p>
       <p class="muted">The invite email asks them to set a password and finish sign-in. Access starts only with this invite.</p></div>
+    <div class="card tab-panel${tab === "quotes" ? " active" : ""}" data-panel="quotes">
+      <div class="tscroll"><table class="stack"><thead><tr><th>Quote</th><th>Type</th><th>Total</th><th>Deposit</th><th>Status</th><th></th></tr></thead>
+      <tbody>${quoteRows || `<tr><td colspan="6" class="muted">No quotes yet. Build the first one below.</td></tr>`}</tbody></table></div>
+      <h3 style="margin-top:22px">New quote</h3>
+      <form method="post" action="/admin/customers/${customerId}/quotes">
+        <label>Quote title <span class="req">*</span></label><input name="title" required placeholder="For example: Network refresh, Phase 1">
+        <div class="row"><span style="flex:1;min-width:160px"><label>Type</label>
+          <select id="quoteKind" name="kind"><option value="project">One-time project</option><option value="plan">Service plan (MSP)</option></select></span>
+          <span style="flex:1;min-width:120px"><label>Deposit % due on acceptance</label><input name="deposit_percent" type="number" min="0" max="100" step="1" value="0"></span></div>
+        <label style="margin-top:10px">Line items</label>
+        ${itemRow.repeat(6)}
+        <label style="margin-top:12px">Terms shown on the quote</label>
+        <textarea id="quoteTerms" name="terms" rows="3">${esc(PROJECT_TERMS)}</textarea>
+        <p style="margin-top:12px"><button class="btn" type="submit">Save draft quote</button></p>
+      </form>
+      <p class="muted">Drafts are not visible to the customer. When you send, the customer gets an email and can review and accept in the portal. Accepting creates the deposit invoice automatically when a deposit is set.</p>
+      <script>(function(){var k=document.getElementById('quoteKind'),t=document.getElementById('quoteTerms');if(!k||!t)return;var T=${JSON.stringify({ project: PROJECT_TERMS, plan: PLAN_TERMS })};k.addEventListener('change',function(){if(t.value===T.project||t.value===T.plan){t.value=T[k.value]||t.value;}});})();</script>
+    </div>
+    <div class="card tab-panel${tab === "invoices" ? " active" : ""}" data-panel="invoices">
+      <div class="tscroll"><table class="stack"><thead><tr><th>Number</th><th>Invoice</th><th>Type</th><th>Amount</th><th>Status</th><th>Due</th><th></th></tr></thead>
+      <tbody>${invoiceRows || `<tr><td colspan="7" class="muted">No invoices yet.</td></tr>`}</tbody></table></div>
+      <h3 style="margin-top:22px">New invoice</h3>
+      <form method="post" action="/admin/customers/${customerId}/invoices">
+        <label>Title <span class="req">*</span></label><input name="title" required placeholder="For example: After-hours support, October">
+        <div class="row"><span style="flex:1;min-width:120px"><label>Amount $ <span class="req">*</span></label><input name="amount" type="number" step="0.01" min="0" required></span>
+        <span style="flex:1;min-width:140px"><label>Due date</label><input name="due_date" type="date"></span></div>
+        <label>Payment link (optional)</label><input name="pay_url" type="url" placeholder="Paste a Stripe payment link and the customer gets a Pay button">
+        <p style="margin-top:12px"><button class="btn" type="submit">Create invoice</button></p>
+      </form>
+      <p class="muted">Deposit invoices from accepted quotes appear here automatically. Work is scheduled once a deposit shows as paid.</p>
+    </div>
     <div class="card tab-panel${tab === "manage" ? " active" : ""}" data-panel="manage" style="border-color:#e5b4b0">
       <h3 style="color:var(--bad)">Delete organization</h3>
       <p class="muted">Deleting this organization permanently removes its locations, equipment, tickets, documents, and login access. This cannot be undone.</p>
       <p><a class="btn danger" href="/admin/customers/${customerId}/delete">Delete this organization</a></p></div>
     <script src="/assets/org-page.js"></script>`;
   return page({ title: c.name, user, body, flash: q(request).get("msg") || undefined });
+}
+
+// ---------- Quotes and invoices (admin side) ----------
+export async function quoteCreatePost(env, request, user, customerId) {
+  const f = await request.formData();
+  const title = String(f.get("title") || "").trim();
+  if (!title) return redirect(`/admin/customers/${customerId}?tab=quotes&msg=` + encodeURIComponent("A quote needs a title."));
+  const kind = String(f.get("kind") || "project") === "plan" ? "plan" : "project";
+  const deposit = Math.max(0, Math.min(100, Math.round(Number(f.get("deposit_percent") || 0) || 0)));
+  const terms = String(f.get("terms") || "").trim();
+  const res = await env.DB.prepare(
+    "INSERT INTO quotes (customer_id, title, kind, status, deposit_percent, terms, created_by) VALUES (?, ?, ?, 'draft', ?, ?, ?)")
+    .bind(customerId, title, kind, deposit, terms || null, user.id).run();
+  const quoteId = res.meta.last_row_id;
+  const descs = f.getAll("item_desc"), qtys = f.getAll("item_qty"), prices = f.getAll("item_price");
+  for (let i = 0; i < descs.length; i++) {
+    const desc = String(descs[i] || "").trim();
+    if (!desc) continue;
+    const qty = Number(qtys[i]) > 0 ? Number(qtys[i]) : 1;
+    await env.DB.prepare(
+      "INSERT INTO quote_items (quote_id, description, qty, unit_price_cents, sort) VALUES (?, ?, ?, ?, ?)")
+      .bind(quoteId, desc, qty, parseDollarsToCents(prices[i]), i).run();
+  }
+  await audit(env.DB, user.id, "quote_create", "quote", quoteId, title);
+  return redirect(`/admin/customers/${customerId}?tab=quotes&msg=` + encodeURIComponent("Draft quote saved. Send it when you are ready."));
+}
+
+export async function quoteActionPost(env, request, user, customerId, quoteId, action) {
+  const db = env.DB;
+  const quote = await db.prepare("SELECT * FROM quotes WHERE id = ? AND customer_id = ?").bind(quoteId, customerId).first();
+  if (!quote) return redirect(`/admin/customers/${customerId}?tab=quotes&msg=` + encodeURIComponent("Quote not found."));
+  if (action === "send") {
+    if (quote.status !== "draft") return redirect(`/admin/customers/${customerId}?tab=quotes&msg=` + encodeURIComponent("Only a draft can be sent."));
+    await db.prepare("UPDATE quotes SET status = 'sent', sent_at = datetime('now'), updated_at = datetime('now') WHERE id = ?").bind(quoteId).run();
+    await audit(db, user.id, "quote_send", "quote", quoteId, quote.title);
+    const cust = await db.prepare("SELECT contact_name, contact_email FROM customers WHERE id = ?").bind(customerId).first();
+    if (cust && cust.contact_email) {
+      const mail = quoteSentEmail(env, {
+        name: cust.contact_name || "there", quoteTitle: quote.title,
+        link: `${origin(env)}/app/quotes/${quoteId}`,
+      });
+      await sendEmail(env, { to: cust.contact_email, template: "quote_sent", ...mail });
+    }
+    return redirect(`/admin/customers/${customerId}?tab=quotes&msg=` + encodeURIComponent("Quote sent. The customer can review and accept it in the portal."));
+  }
+  if (action === "delete") {
+    if (quote.status !== "draft") return redirect(`/admin/customers/${customerId}?tab=quotes&msg=` + encodeURIComponent("Only a draft quote can be deleted."));
+    await db.prepare("DELETE FROM quote_items WHERE quote_id = ?").bind(quoteId).run();
+    await db.prepare("DELETE FROM quotes WHERE id = ?").bind(quoteId).run();
+    await audit(db, user.id, "quote_delete", "quote", quoteId, quote.title);
+    return redirect(`/admin/customers/${customerId}?tab=quotes&msg=` + encodeURIComponent("Draft quote deleted."));
+  }
+  if (action === "final") {
+    if (quote.status !== "accepted") return redirect(`/admin/customers/${customerId}?tab=quotes&msg=` + encodeURIComponent("The quote has to be accepted before the final invoice."));
+    const totals = await db.prepare(
+      `SELECT COALESCE((SELECT SUM(ROUND(qi.qty * qi.unit_price_cents)) FROM quote_items qi WHERE qi.quote_id = q.id), 0) AS total_cents,
+              COALESCE((SELECT SUM(amount_cents) FROM invoices WHERE quote_id = q.id AND status != 'void'), 0) AS invoiced_cents,
+              (SELECT COUNT(*) FROM invoices WHERE quote_id = q.id AND kind = 'deposit' AND status != 'void') AS deposits
+       FROM quotes q WHERE q.id = ?`).bind(quoteId).first();
+    const remaining = (totals ? totals.total_cents : 0) - (totals ? totals.invoiced_cents : 0);
+    if (remaining <= 0) return redirect(`/admin/customers/${customerId}?tab=quotes&msg=` + encodeURIComponent("This quote is already fully invoiced."));
+    const isFinal = totals && totals.deposits > 0;
+    await db.prepare(
+      "INSERT INTO invoices (customer_id, quote_id, title, kind, amount_cents, created_by) VALUES (?, ?, ?, ?, ?, ?)")
+      .bind(customerId, quoteId, isFinal ? `${quote.title}: final balance` : quote.title, isFinal ? "final" : "standard", remaining, user.id).run();
+    await audit(db, user.id, "invoice_create", "quote", quoteId, `${quote.title} balance ${remaining}`);
+    return redirect(`/admin/customers/${customerId}?tab=invoices&msg=` + encodeURIComponent("Invoice created for the remaining balance."));
+  }
+  return redirect(`/admin/customers/${customerId}?tab=quotes`);
+}
+
+export async function invoiceCreatePost(env, request, user, customerId) {
+  const f = await request.formData();
+  const title = String(f.get("title") || "").trim();
+  const amount = parseDollarsToCents(f.get("amount"));
+  if (!title || amount <= 0) return redirect(`/admin/customers/${customerId}?tab=invoices&msg=` + encodeURIComponent("An invoice needs a title and an amount."));
+  const due = String(f.get("due_date") || "").trim();
+  const payUrl = String(f.get("pay_url") || "").trim();
+  const res = await env.DB.prepare(
+    "INSERT INTO invoices (customer_id, title, kind, amount_cents, due_date, pay_url, created_by) VALUES (?, ?, 'standard', ?, ?, ?, ?)")
+    .bind(customerId, title, amount, due || null, /^https?:\/\//i.test(payUrl) ? payUrl : null, user.id).run();
+  await audit(env.DB, user.id, "invoice_create", "invoice", res.meta.last_row_id, title);
+  return redirect(`/admin/customers/${customerId}?tab=invoices&msg=` + encodeURIComponent("Invoice created."));
+}
+
+export async function invoiceActionPost(env, request, user, customerId, invoiceId, action) {
+  const db = env.DB;
+  const inv = await db.prepare("SELECT * FROM invoices WHERE id = ? AND customer_id = ?").bind(invoiceId, customerId).first();
+  if (!inv) return redirect(`/admin/customers/${customerId}?tab=invoices&msg=` + encodeURIComponent("Invoice not found."));
+  if (action === "paid" && inv.status === "unpaid") {
+    const f = await request.formData();
+    const method = String(f.get("method") || "").trim();
+    await db.prepare("UPDATE invoices SET status = 'paid', paid_at = datetime('now'), paid_method = ?, updated_at = datetime('now') WHERE id = ?")
+      .bind(method || null, invoiceId).run();
+    await audit(db, user.id, "invoice_paid", "invoice", invoiceId, method || "");
+    return redirect(`/admin/customers/${customerId}?tab=invoices&msg=` + encodeURIComponent("Invoice marked paid."));
+  }
+  if (action === "void" && inv.status === "unpaid") {
+    await db.prepare("UPDATE invoices SET status = 'void', updated_at = datetime('now') WHERE id = ?").bind(invoiceId).run();
+    await audit(db, user.id, "invoice_void", "invoice", invoiceId, inv.title);
+    return redirect(`/admin/customers/${customerId}?tab=invoices&msg=` + encodeURIComponent("Invoice voided."));
+  }
+  return redirect(`/admin/customers/${customerId}?tab=invoices`);
 }
 
 export async function addLocationPost(env, request, user, customerId) {

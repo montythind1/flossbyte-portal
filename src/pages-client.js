@@ -6,10 +6,24 @@ import {
   expiringItems, audit, accessibleLocationIds, customerAdminOrg, orgMembers,
   removeUserFromCustomer,
 } from "./access.js";
+import { sendEmail, quoteAcceptedNoticeEmail } from "./email.js";
+
+function orgOrigin(env) { return env.APP_ORIGIN || "https://portal.flossbyte.com"; }
 
 const REMOTE_URL = "https://flossbyte.com/remote";
 
 function fmtDate(d) { return d || ""; }
+function fmtMoney(cents) {
+  return "$" + (Number(cents || 0) / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+// Equipment and Tickets serve both paying lanes: a Managed IT plan, or a
+// one-time project (the portal is the project's record, and the ticket
+// door stays open for the next job).
+async function laneOn(db, customerId, locationId) {
+  return (await productEnabled(db, customerId, locationId, "managed_it")) ||
+         (await productEnabled(db, customerId, locationId, "one_time_project"));
+}
 function daysUntil(dateStr) {
   if (!dateStr) return null;
   const ms = new Date(dateStr + "T00:00:00Z").getTime() - Date.now();
@@ -29,16 +43,30 @@ function denied(user, code) {
   return page({ title: "Portal", user, body });
 }
 
+// App shell openers (see adminNav in pages-admin.js): left rail on
+// desktop, swipeable chip bar on phones; the layout CSS owns the switch.
 function locNav(loc, active) {
   const base = `/app/locations/${loc.id}`;
-  const link = (key, href, label) =>
-    `<a href="${href}" ${active === key ? 'style="color:#0A1628;font-weight:700"' : ""}>${label}</a>`;
-  return `<nav class="row" style="gap:18px;margin-bottom:18px">
-    ${link("overview", base, "Overview")}${link("equipment", base + "/equipment", "Equipment")}
-    ${link("tickets", base + "/tickets", "Tickets")}${link("documents", base + "/documents", "Documents")}
-    ${link("ask", base + "/ask", "Ask")}
-    <a href="${REMOTE_URL}" target="_blank" rel="noopener">Remote Support</a></nav>
-    <p class="muted" style="margin-top:-8px">${esc(loc.customer_name)}: ${esc(loc.name)}</p>`;
+  const item = (key, href, label) =>
+    `<a class="rail-item${active === key ? " active" : ""}" href="${href}">${label}</a>`;
+  return `<div class="shell"><aside class="rail">
+    <div class="rail-context"><div class="rc-t">${esc(loc.name)}</div><div class="rc-s">${esc(loc.customer_name)}</div></div>
+    ${item("overview", base, "Overview")}${item("equipment", base + "/equipment", "Equipment")}
+    ${item("tickets", base + "/tickets", "Tickets")}${item("documents", base + "/documents", "Documents")}
+    ${item("ask", base + "/ask", "Ask")}
+    <div class="rail-sep"></div>
+    ${item("quotes", "/app/quotes", "Quotes")}${item("invoices", "/app/invoices", "Invoices")}
+    <a class="rail-item" href="${REMOTE_URL}" target="_blank" rel="noopener">Remote Support</a></aside><div class="shell-main">`;
+}
+
+function orgRail(user, active, orgName) {
+  const item = (key, href, label) =>
+    `<a class="rail-item${active === key ? " active" : ""}" href="${href}">${label}</a>`;
+  return `<div class="shell"><aside class="rail">
+    <div class="rail-context"><div class="rc-t">${esc(orgName || "My Portal")}</div><div class="rc-s">Client portal</div></div>
+    ${item("practices", "/app", "Your practices")}${item("quotes", "/app/quotes", "Quotes")}
+    ${item("invoices", "/app/invoices", "Invoices")}
+    ${user.role === "customer_admin" ? item("team", "/app/team", "Team") : ""}</aside><div class="shell-main">`;
 }
 
 function lockedTile(user, loc, productName) {
@@ -69,7 +97,11 @@ export async function appHome(env, request, user) {
     cards.push(`<a class="tile" href="/app/team"><span class="t">Team</span>
       <span class="d">People with a login for your organization, and removing people who left.</span></a>`);
   }
-  const body = `<h1>Your practices</h1><div class="grid">${cards.join("")}</div>`;
+  cards.push(`<a class="tile" href="/app/quotes"><span class="t">Quotes</span>
+    <span class="d">Quotes from FlossByte waiting for your review and acceptance.</span></a>`);
+  cards.push(`<a class="tile" href="/app/invoices"><span class="t">Invoices</span>
+    <span class="d">Deposit, project, and service invoices, with payment status.</span></a>`);
+  const body = `${orgRail(user, "practices", "My Portal")}<h1>Your practices</h1><div class="grid">${cards.join("")}</div>`;
   return page({ title: "My Portal", user, body });
 }
 
@@ -83,8 +115,14 @@ export async function locationOverview(env, request, user, locationId) {
             (SELECT COUNT(*) FROM tickets WHERE location_id = ? AND status != 'closed') AS open_tickets,
             (SELECT COUNT(*) FROM documents WHERE location_id = ?) AS documents`)
     .bind(locationId, locationId, locationId).first();
-  const managedOn = await productEnabled(db, loc.customer_id, locationId, "managed_it");
+  const managedOn = await laneOn(db, loc.customer_id, locationId);
   const expiring = managedOn ? await expiringItems(db, locationId, 90) : [];
+  // Billing counts are best-effort: before migration 0008 the tables do
+  // not exist and the overview must still render.
+  const billing = await db.prepare(
+    `SELECT (SELECT COUNT(*) FROM quotes WHERE customer_id = ? AND status = 'sent') AS sent_quotes,
+            (SELECT COUNT(*) FROM invoices WHERE customer_id = ? AND status = 'unpaid') AS unpaid_invoices`)
+    .bind(loc.customer_id, loc.customer_id).first().catch(() => null);
   const states = await productStates(db, loc.customer_id, locationId);
   const expiringHtml = expiring.length
     ? `<div class="notice"><strong>Needs attention, next 90 days</strong><ul style="margin:8px 0 0;padding-left:18px">
@@ -98,7 +136,8 @@ export async function locationOverview(env, request, user, locationId) {
     ? `<a class="tile" href="/app/locations/${locationId}/products/${p.key}"><span class="t">${esc(p.name)}</span><span class="d"><span class="pill on">On</span> ${esc(p.description || "")}</span></a>`
     : `<a class="tile" href="/app/locations/${locationId}/products/${p.key}"><span class="t">${esc(p.name)}</span><span class="d"><span class="pill off">Not included</span> Ask FlossByte about adding it.</span></a>`).join("");
   const body = `${locNav(loc, "overview")}${user.role === "customer_admin"
-    ? `<p style="margin:-6px 0 14px"><a href="/app/team">Manage your team</a></p>` : ""}<h1>${esc(loc.name)}</h1>
+    ? `<p style="margin:-6px 0 14px"><a href="/app/team">Manage your team</a></p>` : ""}
+    <p style="margin:-6px 0 14px"><a href="/app/quotes">Quotes</a>${billing && billing.sent_quotes ? ` (${billing.sent_quotes} waiting for you)` : ""} · <a href="/app/invoices">Invoices</a>${billing && billing.unpaid_invoices ? ` (${billing.unpaid_invoices} unpaid)` : ""}</p><h1>${esc(loc.name)}</h1>
     ${expiringHtml}
     <div class="grid">
       <div class="tile"><span class="t">${counts.equipment}</span><span class="d">Pieces of equipment on record</span></div>
@@ -129,7 +168,7 @@ export async function teamPage(env, request, user) {
       <td><span class="pill ${m.status === "disabled" ? "off" : "on"}">${esc(m.status)}</span></td>
       <td>${action}</td></tr>`;
   }).join("");
-  const body = `<h1>Team</h1>
+  const body = `${orgRail(user, "team", cust ? cust.name : "My Portal")}<h1>Team</h1>
     <p class="muted">People with a login for ${esc(cust ? cust.name : "your organization")}. Removing someone signs them out right away and takes away everything they could see here. Tickets and documents they created stay on record.</p>
     <div class="card" style="padding:8px 14px"><div class="tscroll"><table class="stack"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Sees</th><th>Status</th><th></th></tr></thead>
     <tbody>${rows || `<tr><td colspan="6" class="muted">No logins yet.</td></tr>`}</tbody></table></div></div>`;
@@ -183,7 +222,7 @@ export async function productPage(env, request, user, locationId, productKey) {
 export async function equipmentPage(env, request, user, locationId) {
   const { loc, error } = await guard(env, user, locationId);
   if (error) return denied(user, error);
-  if (!(await productEnabled(env.DB, loc.customer_id, locationId, "managed_it"))) return lockedTile(user, loc, "Managed IT Support");
+  if (!(await laneOn(env.DB, loc.customer_id, locationId))) return lockedTile(user, loc, "Equipment");
   const q = new URL(request.url).searchParams;
   const search = (q.get("q") || "").trim();
   const vendor = (q.get("vendor") || "").trim();
@@ -229,7 +268,7 @@ export async function equipmentPage(env, request, user, locationId) {
 export async function equipmentPost(env, request, user, locationId) {
   const { loc, error } = await guard(env, user, locationId);
   if (error) return denied(user, error);
-  if (!(await productEnabled(env.DB, loc.customer_id, locationId, "managed_it"))) return lockedTile(user, loc, "Managed IT Support");
+  if (!(await laneOn(env.DB, loc.customer_id, locationId))) return lockedTile(user, loc, "Equipment");
   const scope = await locationScope(env.DB, user, locationId);
   if (!(user.kind === "flossbyte" || scope === "admin")) return denied(user, 403);
   const f = await request.formData();
@@ -249,7 +288,7 @@ const STATUS_LABEL = { open: "Open", in_progress: "In progress", waiting: "Waiti
 export async function ticketsPage(env, request, user, locationId) {
   const { loc, error } = await guard(env, user, locationId);
   if (error) return denied(user, error);
-  if (!(await productEnabled(env.DB, loc.customer_id, locationId, "managed_it"))) return lockedTile(user, loc, "Managed IT Support");
+  if (!(await laneOn(env.DB, loc.customer_id, locationId))) return lockedTile(user, loc, "Tickets");
   const { results } = await env.DB.prepare(
     "SELECT * FROM tickets WHERE location_id = ? ORDER BY (status = 'closed'), updated_at DESC").bind(locationId).all();
   const rows = (results || []).map((t) => `<tr><td><a href="/app/locations/${locationId}/tickets/${t.id}">${esc(t.title)}</a></td>
@@ -269,7 +308,7 @@ export async function ticketsPage(env, request, user, locationId) {
 export async function ticketCreatePost(env, request, user, locationId) {
   const { loc, error } = await guard(env, user, locationId);
   if (error) return denied(user, error);
-  if (!(await productEnabled(env.DB, loc.customer_id, locationId, "managed_it"))) return lockedTile(user, loc, "Managed IT Support");
+  if (!(await laneOn(env.DB, loc.customer_id, locationId))) return lockedTile(user, loc, "Tickets");
   const f = await request.formData();
   const res = await env.DB.prepare(
     "INSERT INTO tickets (location_id, title, priority, created_by) VALUES (?, ?, ?, ?)")
@@ -284,7 +323,7 @@ export async function ticketCreatePost(env, request, user, locationId) {
 export async function ticketDetailPage(env, request, user, locationId, ticketId) {
   const { loc, error } = await guard(env, user, locationId);
   if (error) return denied(user, error);
-  if (!(await productEnabled(env.DB, loc.customer_id, locationId, "managed_it"))) return lockedTile(user, loc, "Managed IT Support");
+  if (!(await laneOn(env.DB, loc.customer_id, locationId))) return lockedTile(user, loc, "Tickets");
   const t = await env.DB.prepare("SELECT * FROM tickets WHERE id = ? AND location_id = ?").bind(ticketId, locationId).first();
   if (!t) return denied(user, 404);
   const { results } = await env.DB.prepare(
@@ -467,4 +506,155 @@ export async function askPost(env, request, user, locationId) {
       .bind(locationId, user.id, question, answer).run();
   }
   return redirect(`/app/locations/${locationId}/ask`);
+}
+
+// ---------- Quotes and invoices (organization level) ----------
+// A login belongs to exactly one organization, so any accessible
+// location identifies the org. Quotes are visible once sent; only a
+// customer admin can accept or decline, and accepting creates the
+// deposit invoice on the spot when the quote asks for one.
+async function clientOrgId(env, user) {
+  const ids = await accessibleLocationIds(env.DB, user);
+  if (!ids || ids.size === 0) return null;
+  const loc = await getLocation(env.DB, [...ids][0]);
+  return loc ? loc.customer_id : null;
+}
+
+async function loadQuote(db, quoteId, customerId) {
+  const quote = await db.prepare("SELECT * FROM quotes WHERE id = ? AND customer_id = ?").bind(quoteId, customerId).first();
+  if (!quote) return null;
+  const { results: items } = await db.prepare(
+    "SELECT * FROM quote_items WHERE quote_id = ? ORDER BY sort, id").bind(quoteId).all();
+  const total = (items || []).reduce((s, i) => s + Math.round(i.qty * i.unit_price_cents), 0);
+  return { quote, items: items || [], total };
+}
+
+const QUOTE_STATUS = { sent: "Waiting for you", accepted: "Accepted", declined: "Declined" };
+const INVOICE_KIND = { deposit: "Deposit", final: "Final balance", standard: "Invoice" };
+
+export async function quotesPage(env, request, user) {
+  const org = await clientOrgId(env, user);
+  if (org === null) return denied(user, 403);
+  const { results } = await env.DB.prepare(
+    "SELECT * FROM quotes WHERE customer_id = ? AND status IN ('sent','accepted','declined') ORDER BY updated_at DESC").bind(org).all();
+  const rows = [];
+  for (const qt of results || []) {
+    const { total } = await loadQuote(env.DB, qt.id, org);
+    rows.push(`<tr><td><a href="/app/quotes/${qt.id}">${esc(qt.title)}</a></td>
+      <td>${qt.kind === "plan" ? "Service plan" : "Project"}</td><td>${fmtMoney(total)}</td>
+      <td><span class="pill ${qt.status === "accepted" ? "on" : qt.status === "declined" ? "off" : ""}">${esc(QUOTE_STATUS[qt.status] || qt.status)}</span></td>
+      <td>${esc((qt.sent_at || qt.created_at || "").slice(0, 10))}</td></tr>`);
+  }
+  const cust = await env.DB.prepare("SELECT name FROM customers WHERE id = ?").bind(org).first();
+  const body = `${orgRail(user, "quotes", cust ? cust.name : "My Portal")}<h1>Quotes</h1>
+    <div class="card" style="padding:8px 14px"><div class="tscroll"><table class="stack"><thead><tr><th>Quote</th><th>Type</th><th>Total</th><th>Status</th><th>Sent</th></tr></thead>
+    <tbody>${rows.join("") || `<tr><td colspan="5" class="muted">No quotes yet. When FlossByte sends you one, it shows up here for review and acceptance.</td></tr>`}</tbody></table></div></div>`;
+  const msg = new URL(request.url).searchParams.get("msg");
+  return page({ title: "Quotes", user, body, flash: msg || undefined });
+}
+
+export async function quoteViewPage(env, request, user, quoteId) {
+  const org = await clientOrgId(env, user);
+  if (org === null) return denied(user, 403);
+  const loaded = await loadQuote(env.DB, quoteId, org);
+  if (!loaded || loaded.quote.status === "draft") return denied(user, 404);
+  const { quote, items, total } = loaded;
+  const deposit = Math.round(total * (quote.deposit_percent || 0) / 100);
+  const itemRows = items.map((i) => `<tr><td>${esc(i.description)}</td><td>${esc(String(i.qty))}</td>
+    <td>${fmtMoney(i.unit_price_cents)}</td><td>${fmtMoney(Math.round(i.qty * i.unit_price_cents))}</td></tr>`).join("");
+  let statusBlock = "";
+  if (quote.status === "accepted") {
+    statusBlock = `<div class="notice"><strong>Accepted</strong> by ${esc(quote.accepted_by || "")} on ${esc((quote.accepted_at || "").slice(0, 10))}.
+      ${deposit > 0 ? `The deposit invoice is on your <a href="/app/invoices">Invoices</a> page.` : ""}</div>`;
+  } else if (quote.status === "declined") {
+    statusBlock = `<div class="notice">This quote was declined. If that was a mistake, call FlossByte at (669) 237-2264.</div>`;
+  } else if (user.role === "customer_admin") {
+    statusBlock = `<div class="card"><h3>Accept this quote</h3>
+      <form method="post" action="/app/quotes/${quote.id}/accept">
+        <label>Your full name <span class="req">*</span></label><input name="signer_name" required>
+        <p><label style="display:flex;gap:8px;align-items:flex-start"><input type="checkbox" name="agree" value="yes" required style="width:auto;margin-top:4px">
+        <span>I agree to the terms below and accept this quote for our organization.</span></label></p>
+        <button class="btn" type="submit">Accept quote</button></form>
+      <form method="post" action="/app/quotes/${quote.id}/decline" style="margin-top:10px">
+        <button class="btn small secondary" type="submit">Decline</button></form></div>`;
+  } else {
+    statusBlock = `<div class="card"><p class="muted">This quote is waiting for your organization's admin to review and accept it.</p></div>`;
+  }
+  const body = `${orgRail(user, "quotes", "My Portal")}<p><a href="/app/quotes">&larr; Quotes</a></p><h1>${esc(quote.title)}</h1>
+    <p class="muted">${quote.kind === "plan" ? "Service plan" : "Project"} quote from FlossByte. Total <strong>${fmtMoney(total)}</strong>${deposit > 0 ? `, with a ${quote.deposit_percent}% deposit of <strong>${fmtMoney(deposit)}</strong> due on acceptance and ${fmtMoney(total - deposit)} after that.` : "."}</p>
+    ${statusBlock}
+    <div class="card" style="padding:8px 14px"><div class="tscroll"><table class="stack"><thead><tr><th>Description</th><th>Qty</th><th>Price</th><th>Amount</th></tr></thead>
+    <tbody>${itemRows}</tbody></table></div></div>
+    ${quote.terms ? `<div class="card"><h3>Terms</h3><div style="white-space:pre-wrap">${esc(quote.terms)}</div></div>` : ""}`;
+  const msg = new URL(request.url).searchParams.get("msg");
+  return page({ title: quote.title, user, body, flash: msg || undefined });
+}
+
+export async function quoteAcceptPost(env, request, user, quoteId) {
+  const org = await clientOrgId(env, user);
+  if (org === null) return denied(user, 403);
+  if (user.role !== "customer_admin") return denied(user, 403);
+  const loaded = await loadQuote(env.DB, quoteId, org);
+  if (!loaded || loaded.quote.status !== "sent") return redirect("/app/quotes");
+  const f = await request.formData();
+  const signer = String(f.get("signer_name") || "").trim();
+  if (String(f.get("agree") || "") !== "yes" || !signer) {
+    return redirect(`/app/quotes/${quoteId}?msg=` + encodeURIComponent("Type your full name and check the agreement box to accept."));
+  }
+  const { quote, total } = loaded;
+  await env.DB.prepare(
+    "UPDATE quotes SET status = 'accepted', accepted_at = datetime('now'), accepted_by = ?, updated_at = datetime('now') WHERE id = ?")
+    .bind(signer, quoteId).run();
+  const deposit = Math.round(total * (quote.deposit_percent || 0) / 100);
+  let invoiceNote = "";
+  if (deposit > 0) {
+    await env.DB.prepare(
+      "INSERT INTO invoices (customer_id, quote_id, title, kind, amount_cents, created_by) VALUES (?, ?, ?, 'deposit', ?, ?)")
+      .bind(org, quoteId, `${quote.title}: deposit (${quote.deposit_percent}%)`, deposit, user.id).run();
+    invoiceNote = " The deposit invoice is on your Invoices page; work is scheduled once it is paid.";
+  }
+  await audit(env.DB, user.id, "quote_accept", "quote", quoteId, `signed by ${signer}`);
+  if (env.ADMIN_ALERT_EMAIL) {
+    const cust = await env.DB.prepare("SELECT name FROM customers WHERE id = ?").bind(org).first();
+    const mail = quoteAcceptedNoticeEmail(env, {
+      customerName: cust ? cust.name : "A customer", quoteTitle: quote.title, acceptedBy: signer, total: fmtMoney(total),
+    });
+    await sendEmail(env, { to: env.ADMIN_ALERT_EMAIL, template: "quote_accepted", ...mail });
+  }
+  return redirect(`/app/quotes/${quoteId}?msg=` + encodeURIComponent("Quote accepted. Thank you." + invoiceNote));
+}
+
+export async function quoteDeclinePost(env, request, user, quoteId) {
+  const org = await clientOrgId(env, user);
+  if (org === null) return denied(user, 403);
+  if (user.role !== "customer_admin") return denied(user, 403);
+  const loaded = await loadQuote(env.DB, quoteId, org);
+  if (!loaded || loaded.quote.status !== "sent") return redirect("/app/quotes");
+  await env.DB.prepare(
+    "UPDATE quotes SET status = 'declined', updated_at = datetime('now') WHERE id = ?").bind(quoteId).run();
+  await audit(env.DB, user.id, "quote_decline", "quote", quoteId, null);
+  return redirect("/app/quotes?msg=" + encodeURIComponent("Quote declined."));
+}
+
+export async function invoicesPage(env, request, user) {
+  const org = await clientOrgId(env, user);
+  if (org === null) return denied(user, 403);
+  const { results } = await env.DB.prepare(
+    "SELECT * FROM invoices WHERE customer_id = ? AND status != 'void' ORDER BY created_at DESC").bind(org).all();
+  const rows = (results || []).map((inv) => {
+    const pay = inv.status === "unpaid" && inv.pay_url
+      ? `<a class="btn small" href="${esc(inv.pay_url)}" target="_blank" rel="noopener">Pay</a>` : "";
+    const note = inv.kind === "deposit"
+      ? (inv.status === "unpaid" ? `<div class="muted">Work is scheduled once this deposit is paid.</div>` : `<div class="muted">Deposit received.</div>`) : "";
+    return `<tr><td>INV-${1000 + inv.id}</td><td>${esc(inv.title)}${note}</td>
+      <td>${esc(INVOICE_KIND[inv.kind] || "Invoice")}</td><td>${fmtMoney(inv.amount_cents)}</td>
+      <td><span class="pill ${inv.status === "paid" ? "on" : ""}">${inv.status === "paid" ? "Paid" : "Unpaid"}</span>${inv.status === "paid" && inv.paid_at ? `<div class="muted">${esc(inv.paid_at.slice(0, 10))}</div>` : ""}</td>
+      <td>${esc(inv.due_date || "")}</td><td>${pay}</td></tr>`;
+  }).join("");
+  const cust = await env.DB.prepare("SELECT name FROM customers WHERE id = ?").bind(org).first();
+  const body = `${orgRail(user, "invoices", cust ? cust.name : "My Portal")}<h1>Invoices</h1>
+    <div class="card" style="padding:8px 14px"><div class="tscroll"><table class="stack"><thead><tr><th>Number</th><th>Invoice</th><th>Type</th><th>Amount</th><th>Status</th><th>Due</th><th></th></tr></thead>
+    <tbody>${rows || `<tr><td colspan="7" class="muted">No invoices yet.</td></tr>`}</tbody></table></div></div>`;
+  const msg = new URL(request.url).searchParams.get("msg");
+  return page({ title: "Invoices", user, body, flash: msg || undefined });
 }

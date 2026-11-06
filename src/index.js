@@ -115,6 +115,14 @@ async function route(request, env) {
     if (m && method === "POST") return admin.adminActionPost(env, request, user, Number(m[1]), m[2]);
     m = path.match(/^\/admin\/customers\/(\d+)\/users\/(\d+)\/resend$/);
     if (m && method === "POST") return admin.customerUserResendPost(env, request, user, Number(m[1]), Number(m[2]));
+    m = path.match(/^\/admin\/customers\/(\d+)\/quotes$/);
+    if (m && method === "POST") return admin.quoteCreatePost(env, request, user, Number(m[1]));
+    m = path.match(/^\/admin\/customers\/(\d+)\/quotes\/(\d+)\/(send|delete|final)$/);
+    if (m && method === "POST") return admin.quoteActionPost(env, request, user, Number(m[1]), Number(m[2]), m[3]);
+    m = path.match(/^\/admin\/customers\/(\d+)\/invoices$/);
+    if (m && method === "POST") return admin.invoiceCreatePost(env, request, user, Number(m[1]));
+    m = path.match(/^\/admin\/customers\/(\d+)\/invoices\/(\d+)\/(paid|void)$/);
+    if (m && method === "POST") return admin.invoiceActionPost(env, request, user, Number(m[1]), Number(m[2]), m[3]);
     return notFound();
   }
 
@@ -126,6 +134,14 @@ async function route(request, env) {
   }
   if (path === "/app" && method === "GET") return client.appHome(env, request, user);
   if (path === "/app/team" && method === "GET") return client.teamPage(env, request, user);
+  if (path === "/app/quotes" && method === "GET") return client.quotesPage(env, request, user);
+  if (path === "/app/invoices" && method === "GET") return client.invoicesPage(env, request, user);
+  m = path.match(/^\/app\/quotes\/(\d+)$/);
+  if (m && method === "GET") return client.quoteViewPage(env, request, user, Number(m[1]));
+  m = path.match(/^\/app\/quotes\/(\d+)\/accept$/);
+  if (m && method === "POST") return client.quoteAcceptPost(env, request, user, Number(m[1]));
+  m = path.match(/^\/app\/quotes\/(\d+)\/decline$/);
+  if (m && method === "POST") return client.quoteDeclinePost(env, request, user, Number(m[1]));
   m = path.match(/^\/app\/team\/(\d+)\/remove$/);
   if (m && method === "GET") return client.teamRemoveConfirmPage(env, request, user, Number(m[1]));
   if (m && method === "POST") return client.teamRemovePost(env, request, user, Number(m[1]));

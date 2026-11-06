@@ -151,3 +151,27 @@ export function newCustomerNoticeEmail(env, { customerName, createdBy }) {
     text: `${customerName} was added to the FlossByte portal by ${createdBy}. Next: add locations, invite logins, check product switches.`,
   };
 }
+
+export function quoteSentEmail(env, { name, quoteTitle, link }) {
+  return {
+    subject: `Your FlossByte quote: ${quoteTitle}`,
+    html: wrap("Your FlossByte quote is ready", `
+      <p>Hi ${name},</p>
+      <p>Your quote <strong>${quoteTitle}</strong> is ready in your FlossByte portal. You can review the line items and terms there, and accept it right in the portal when you are ready:</p>
+      ${button(link, "Review the quote")}
+      ${linkFallback(link)}
+      <p ${MUTED_P}>Questions about anything in it: call us at (669) 237-2264 or reply to hello@flossbyte.com.</p>`),
+    text: `Hi ${name}, your FlossByte quote "${quoteTitle}" is ready in your portal: ${link}`,
+  };
+}
+
+export function quoteAcceptedNoticeEmail(env, { customerName, quoteTitle, acceptedBy, total }) {
+  return {
+    subject: `Quote accepted: ${customerName}`,
+    html: wrap("A quote was accepted in the portal", `
+      <p><strong>${customerName}</strong> accepted the quote <strong>${quoteTitle}</strong> (${total}).</p>
+      <p>Signed by: ${acceptedBy}.</p>
+      <p ${MUTED_P}>Any deposit invoice was created automatically and is on the customer's Invoices tab in the admin console.</p>`),
+    text: `${customerName} accepted the quote "${quoteTitle}" (${total}). Signed by: ${acceptedBy}.`,
+  };
+}

@@ -102,6 +102,34 @@ footer.site a{color:#fff}
 footer.site .brand img{width:27px;height:40px;max-height:40px}
 .switch{display:inline-flex;align-items:center;gap:8px}
 @media (max-width:640px){.brand-sub{display:none}.header-in{flex-wrap:wrap;row-gap:8px;padding-top:10px;padding-bottom:10px}nav.top{width:100%;gap:12px;row-gap:6px}nav.top a{font-size:13px}}
+h1{font-size:27px;line-height:1.25;margin:0 0 14px}
+h2{font-size:20px;line-height:1.3}
+h3{font-size:16px}
+.btn{transition:background .15s ease}
+.shell{display:grid;grid-template-columns:234px minmax(0,1fr);gap:26px;align-items:start}
+main:has(.shell){max-width:1300px}
+.rail{background:#fff;border:1px solid var(--line);border-radius:12px;padding:14px 10px;position:sticky;top:20px}
+.rail-context{padding:2px 10px 11px;border-bottom:1px solid var(--line);margin-bottom:10px}
+.rail-context .rc-t{font-family:'Plus Jakarta Sans',Inter,sans-serif;font-weight:700;font-size:15px}
+.rail-context .rc-s{color:var(--muted);font-size:12px;margin-top:1px}
+.rail-item{display:flex;align-items:center;gap:8px;width:100%;padding:9px 10px;border-radius:8px;color:var(--ink);text-decoration:none;font-size:14px;font-weight:600;background:none;border:none;border-left:3px solid transparent;cursor:pointer;font-family:inherit;text-align:left}
+a.rail-item:hover,button.rail-item:hover{background:#f0f4f8;color:var(--ink)}
+.rail-item.active{background:#e6f7f3;color:#00796b;border-left-color:var(--teal)}
+.rail .tab-btn{border-bottom:none;margin-bottom:0}
+.rail .tab-btn.active{color:#00796b;border-bottom-color:transparent}
+.rail-sep{border-top:1px solid var(--line);margin:10px 4px}
+@media (max-width:900px){
+.shell{grid-template-columns:minmax(0,1fr);gap:14px}
+.rail{top:8px;z-index:20;display:flex;align-items:center;gap:6px;overflow-x:auto;padding:8px;scrollbar-width:none}
+.rail::-webkit-scrollbar{display:none}
+.rail-context{border-bottom:none;margin:0;padding:0 6px 0 2px;flex:0 0 auto;max-width:38%}
+.rail-context .rc-t{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:13px}
+.rail-context .rc-s{display:none}
+.rail-sep{display:none}
+.rail-item{width:auto;flex:0 0 auto;white-space:nowrap;border:1px solid var(--line);border-radius:999px;padding:7px 13px}
+.rail-item.active{border-color:var(--teal)}
+.card{padding:18px}
+}
 `;
 
 export function page({ title, user, body, flash, error }) {
