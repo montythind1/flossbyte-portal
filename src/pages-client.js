@@ -55,7 +55,7 @@ function locNav(loc, active) {
     ${item("tickets", base + "/tickets", "Tickets")}${item("documents", base + "/documents", "Documents")}
     ${item("ask", base + "/ask", "Ask")}
     <div class="rail-sep"></div>
-    ${item("quotes", "/app/quotes", "Quotes")}${item("invoices", "/app/invoices", "Invoices")}
+    ${item("billing", "/app/billing", "Billing")}
     <a class="rail-item" href="${REMOTE_URL}" target="_blank" rel="noopener">Remote Support</a></aside><div class="shell-main">`;
 }
 
@@ -64,8 +64,7 @@ function orgRail(user, active, orgName) {
     `<a class="rail-item${active === key ? " active" : ""}" href="${href}">${label}</a>`;
   return `<div class="shell"><aside class="rail">
     <div class="rail-context"><div class="rc-t">${esc(orgName || "My Portal")}</div><div class="rc-s">Client portal</div></div>
-    ${item("practices", "/app", "Your practices")}${item("quotes", "/app/quotes", "Quotes")}
-    ${item("invoices", "/app/invoices", "Invoices")}
+    ${item("practices", "/app", "Your practices")}${item("billing", "/app/billing", "Billing")}
     ${user.role === "customer_admin" ? item("team", "/app/team", "Team") : ""}</aside><div class="shell-main">`;
 }
 
@@ -97,10 +96,8 @@ export async function appHome(env, request, user) {
     cards.push(`<a class="tile" href="/app/team"><span class="t">Team</span>
       <span class="d">People with a login for your organization, and removing people who left.</span></a>`);
   }
-  cards.push(`<a class="tile" href="/app/quotes"><span class="t">Quotes</span>
-    <span class="d">Quotes from FlossByte waiting for your review and acceptance.</span></a>`);
-  cards.push(`<a class="tile" href="/app/invoices"><span class="t">Invoices</span>
-    <span class="d">Deposit, project, and service invoices, with payment status.</span></a>`);
+  cards.push(`<a class="tile" href="/app/billing"><span class="t">Billing</span>
+    <span class="d">Quotes waiting for your review, and invoices with payment status.</span></a>`);
   const body = `${orgRail(user, "practices", "My Portal")}<h1>Your practices</h1><div class="grid">${cards.join("")}</div>`;
   return page({ title: "My Portal", user, body });
 }
@@ -137,7 +134,7 @@ export async function locationOverview(env, request, user, locationId) {
     : `<a class="tile" href="/app/locations/${locationId}/products/${p.key}"><span class="t">${esc(p.name)}</span><span class="d"><span class="pill off">Not included</span> Ask FlossByte about adding it.</span></a>`).join("");
   const body = `${locNav(loc, "overview")}${user.role === "customer_admin"
     ? `<p style="margin:-6px 0 14px"><a href="/app/team">Manage your team</a></p>` : ""}
-    <p style="margin:-6px 0 14px"><a href="/app/quotes">Quotes</a>${billing && billing.sent_quotes ? ` (${billing.sent_quotes} waiting for you)` : ""} · <a href="/app/invoices">Invoices</a>${billing && billing.unpaid_invoices ? ` (${billing.unpaid_invoices} unpaid)` : ""}</p><h1>${esc(loc.name)}</h1>
+    <p style="margin:-6px 0 14px"><a href="/app/billing">Billing</a>${billing && billing.sent_quotes ? ` (${billing.sent_quotes} quote${billing.sent_quotes > 1 ? "s" : ""} waiting for you)` : ""}${billing && billing.unpaid_invoices ? ` (${billing.unpaid_invoices} unpaid invoice${billing.unpaid_invoices > 1 ? "s" : ""})` : ""}</p><h1>${esc(loc.name)}</h1>
     ${expiringHtml}
     <div class="grid">
       <div class="tile"><span class="t">${counts.equipment}</span><span class="d">Pieces of equipment on record</span></div>
@@ -532,9 +529,7 @@ async function loadQuote(db, quoteId, customerId) {
 const QUOTE_STATUS = { sent: "Waiting for you", accepted: "Accepted", declined: "Declined" };
 const INVOICE_KIND = { deposit: "Deposit", final: "Final balance", standard: "Invoice" };
 
-export async function quotesPage(env, request, user) {
-  const org = await clientOrgId(env, user);
-  if (org === null) return denied(user, 403);
+async function quotesSection(env, org) {
   const { results } = await env.DB.prepare(
     "SELECT * FROM quotes WHERE customer_id = ? AND status IN ('sent','accepted','declined') ORDER BY updated_at DESC").bind(org).all();
   const rows = [];
@@ -545,12 +540,9 @@ export async function quotesPage(env, request, user) {
       <td><span class="pill ${qt.status === "accepted" ? "on" : qt.status === "declined" ? "off" : ""}">${esc(QUOTE_STATUS[qt.status] || qt.status)}</span></td>
       <td>${esc((qt.sent_at || qt.created_at || "").slice(0, 10))}</td></tr>`);
   }
-  const cust = await env.DB.prepare("SELECT name FROM customers WHERE id = ?").bind(org).first();
-  const body = `${orgRail(user, "quotes", cust ? cust.name : "My Portal")}<h1>Quotes</h1>
+  return `
     <div class="card" style="padding:8px 14px"><div class="tscroll"><table class="stack"><thead><tr><th>Quote</th><th>Type</th><th>Total</th><th>Status</th><th>Sent</th></tr></thead>
     <tbody>${rows.join("") || `<tr><td colspan="5" class="muted">No quotes yet. When FlossByte sends you one, it shows up here for review and acceptance.</td></tr>`}</tbody></table></div></div>`;
-  const msg = new URL(request.url).searchParams.get("msg");
-  return page({ title: "Quotes", user, body, flash: msg || undefined });
 }
 
 export async function quoteViewPage(env, request, user, quoteId) {
@@ -565,7 +557,7 @@ export async function quoteViewPage(env, request, user, quoteId) {
   let statusBlock = "";
   if (quote.status === "accepted") {
     statusBlock = `<div class="notice"><strong>Accepted</strong> by ${esc(quote.accepted_by || "")} on ${esc((quote.accepted_at || "").slice(0, 10))}.
-      ${deposit > 0 ? `The deposit invoice is on your <a href="/app/invoices">Invoices</a> page.` : ""}</div>`;
+      ${deposit > 0 ? `The deposit invoice is on your <a href="/app/billing">Billing</a> page.` : ""}</div>`;
   } else if (quote.status === "declined") {
     statusBlock = `<div class="notice">This quote was declined. If that was a mistake, call FlossByte at (669) 237-2264.</div>`;
   } else if (user.role === "customer_admin") {
@@ -580,7 +572,7 @@ export async function quoteViewPage(env, request, user, quoteId) {
   } else {
     statusBlock = `<div class="card"><p class="muted">This quote is waiting for your organization's admin to review and accept it.</p></div>`;
   }
-  const body = `${orgRail(user, "quotes", "My Portal")}<p><a href="/app/quotes">&larr; Quotes</a></p><h1>${esc(quote.title)}</h1>
+  const body = `${orgRail(user, "billing", "My Portal")}<p><a href="/app/billing">&larr; Billing</a></p><h1>${esc(quote.title)}</h1>
     <p class="muted">${quote.kind === "plan" ? "Service plan" : "Project"} quote from FlossByte. Total <strong>${fmtMoney(total)}</strong>${deposit > 0 ? `, with a ${quote.deposit_percent}% deposit of <strong>${fmtMoney(deposit)}</strong> due on acceptance and ${fmtMoney(total - deposit)} after that.` : "."}</p>
     ${statusBlock}
     <div class="card" style="padding:8px 14px"><div class="tscroll"><table class="stack"><thead><tr><th>Description</th><th>Qty</th><th>Price</th><th>Amount</th></tr></thead>
@@ -595,7 +587,7 @@ export async function quoteAcceptPost(env, request, user, quoteId) {
   if (org === null) return denied(user, 403);
   if (user.role !== "customer_admin") return denied(user, 403);
   const loaded = await loadQuote(env.DB, quoteId, org);
-  if (!loaded || loaded.quote.status !== "sent") return redirect("/app/quotes");
+  if (!loaded || loaded.quote.status !== "sent") return redirect("/app/billing");
   const f = await request.formData();
   const signer = String(f.get("signer_name") || "").trim();
   if (String(f.get("agree") || "") !== "yes" || !signer) {
@@ -611,7 +603,7 @@ export async function quoteAcceptPost(env, request, user, quoteId) {
     await env.DB.prepare(
       "INSERT INTO invoices (customer_id, quote_id, title, kind, amount_cents, created_by) VALUES (?, ?, ?, 'deposit', ?, ?)")
       .bind(org, quoteId, `${quote.title}: deposit (${quote.deposit_percent}%)`, deposit, user.id).run();
-    invoiceNote = " The deposit invoice is on your Invoices page; work is scheduled once it is paid.";
+    invoiceNote = " The deposit invoice is on your Billing page; work is scheduled once it is paid.";
   }
   await audit(env.DB, user.id, "quote_accept", "quote", quoteId, `signed by ${signer}`);
   if (env.ADMIN_ALERT_EMAIL) {
@@ -629,16 +621,14 @@ export async function quoteDeclinePost(env, request, user, quoteId) {
   if (org === null) return denied(user, 403);
   if (user.role !== "customer_admin") return denied(user, 403);
   const loaded = await loadQuote(env.DB, quoteId, org);
-  if (!loaded || loaded.quote.status !== "sent") return redirect("/app/quotes");
+  if (!loaded || loaded.quote.status !== "sent") return redirect("/app/billing");
   await env.DB.prepare(
     "UPDATE quotes SET status = 'declined', updated_at = datetime('now') WHERE id = ?").bind(quoteId).run();
   await audit(env.DB, user.id, "quote_decline", "quote", quoteId, null);
-  return redirect("/app/quotes?msg=" + encodeURIComponent("Quote declined."));
+  return redirect("/app/billing?msg=" + encodeURIComponent("Quote declined."));
 }
 
-export async function invoicesPage(env, request, user) {
-  const org = await clientOrgId(env, user);
-  if (org === null) return denied(user, 403);
+async function invoicesSection(env, org) {
   const { results } = await env.DB.prepare(
     "SELECT * FROM invoices WHERE customer_id = ? AND status != 'void' ORDER BY created_at DESC").bind(org).all();
   const rows = (results || []).map((inv) => {
@@ -651,10 +641,20 @@ export async function invoicesPage(env, request, user) {
       <td><span class="pill ${inv.status === "paid" ? "on" : ""}">${inv.status === "paid" ? "Paid" : "Unpaid"}</span>${inv.status === "paid" && inv.paid_at ? `<div class="muted">${esc(inv.paid_at.slice(0, 10))}</div>` : ""}</td>
       <td>${esc(inv.due_date || "")}</td><td>${pay}</td></tr>`;
   }).join("");
-  const cust = await env.DB.prepare("SELECT name FROM customers WHERE id = ?").bind(org).first();
-  const body = `${orgRail(user, "invoices", cust ? cust.name : "My Portal")}<h1>Invoices</h1>
+  return `
     <div class="card" style="padding:8px 14px"><div class="tscroll"><table class="stack"><thead><tr><th>Number</th><th>Invoice</th><th>Type</th><th>Amount</th><th>Status</th><th>Due</th><th></th></tr></thead>
     <tbody>${rows || `<tr><td colspan="7" class="muted">No invoices yet.</td></tr>`}</tbody></table></div></div>`;
+}
+
+export async function billingPage(env, request, user) {
+  const org = await clientOrgId(env, user);
+  if (org === null) return denied(user, 403);
+  const cust = await env.DB.prepare("SELECT name FROM customers WHERE id = ?").bind(org).first();
+  const quotesHtml = await quotesSection(env, org);
+  const invoicesHtml = await invoicesSection(env, org);
+  const body = `${orgRail(user, "billing", cust ? cust.name : "My Portal")}<h1>Billing</h1>
+    <h2>Quotes</h2>${quotesHtml}
+    <h2 style="margin-top:26px">Invoices</h2>${invoicesHtml}`;
   const msg = new URL(request.url).searchParams.get("msg");
-  return page({ title: "Invoices", user, body, flash: msg || undefined });
+  return page({ title: "Billing", user, body, flash: msg || undefined });
 }

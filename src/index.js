@@ -134,8 +134,9 @@ async function route(request, env) {
   }
   if (path === "/app" && method === "GET") return client.appHome(env, request, user);
   if (path === "/app/team" && method === "GET") return client.teamPage(env, request, user);
-  if (path === "/app/quotes" && method === "GET") return client.quotesPage(env, request, user);
-  if (path === "/app/invoices" && method === "GET") return client.invoicesPage(env, request, user);
+  if (path === "/app/billing" && method === "GET") return client.billingPage(env, request, user);
+  if (path === "/app/quotes" && method === "GET") return redirect("/app/billing");
+  if (path === "/app/invoices" && method === "GET") return redirect("/app/billing");
   m = path.match(/^\/app\/quotes\/(\d+)$/);
   if (m && method === "GET") return client.quoteViewPage(env, request, user, Number(m[1]));
   m = path.match(/^\/app\/quotes\/(\d+)\/accept$/);

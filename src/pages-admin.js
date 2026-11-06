@@ -588,14 +588,14 @@ export async function customerPage(env, request, user, customerId) {
       <span style="flex:1;min-width:70px"><input name="item_qty" type="number" step="any" min="0" placeholder="Qty"></span>
       <span style="flex:1;min-width:90px"><input name="item_price" type="number" step="0.01" min="0" placeholder="Price $"></span></div>`;
   const tabParam = q(request).get("tab");
-  const tab = ["organization", "locations", "products", "users", "quotes", "invoices", "manage"].includes(tabParam) ? tabParam : "organization";
+  const tab = ["organization", "locations", "products", "users", "billing", "manage"].includes(tabParam) ? tabParam : "organization";
   const locOptions = (locations || []).map((l) => `<option value="${l.id}">${esc(l.name)}</option>`).join("");
   const railBtn = (key, label) => `<button type="button" class="tab-btn rail-item${tab === key ? " active" : ""}" data-tab="${key}">${label}</button>`;
   const body = `<div class="shell"><aside class="rail">
     <div class="rail-context"><div class="rc-t">${esc(c.name)}</div><div class="rc-s">Organization</div></div>
     <a class="rail-item" href="/admin">&larr; All clients</a>
     ${railBtn("organization", "Organization")}${railBtn("locations", "Locations")}${railBtn("products", "Products")}
-    ${railBtn("users", "Users")}${railBtn("quotes", "Quotes")}${railBtn("invoices", "Invoices")}${railBtn("manage", "Manage")}
+    ${railBtn("users", "Users")}${railBtn("billing", "Billing")}${railBtn("manage", "Manage")}
     </aside><div class="shell-main"><h1>${esc(c.name)}</h1>
     <p class="muted">${esc(c.contact_name || "")} ${esc(c.contact_email || "")} ${esc(c.phone || "")}</p>
     <noscript><style>.tab-panel{display:block}.rail{display:none}</style></noscript>
@@ -620,7 +620,8 @@ export async function customerPage(env, request, user, customerId) {
       <div class="tscroll"><table class="stack"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th></th></tr></thead><tbody>${memberRows || `<tr><td colspan="5" class="muted">No logins yet.</td></tr>`}</tbody></table></div>
       <p style="margin-top:14px"><a class="btn small secondary" href="/admin/customers/${customerId}/users/new">+ Add user</a></p>
       <p class="muted">The invite email asks them to set a password and finish sign-in. Access starts only with this invite.</p></div>
-    <div class="card tab-panel${tab === "quotes" ? " active" : ""}" data-panel="quotes">
+    <div class="card tab-panel${tab === "billing" ? " active" : ""}" data-panel="billing">
+      <h3 style="margin-top:0">Quotes</h3>
       <div class="tscroll"><table class="stack"><thead><tr><th>Quote</th><th>Type</th><th>Total</th><th>Deposit</th><th>Status</th><th></th></tr></thead>
       <tbody>${quoteRows || `<tr><td colspan="6" class="muted">No quotes yet. Build the first one below.</td></tr>`}</tbody></table></div>
       <h3 style="margin-top:22px">New quote</h3>
@@ -638,7 +639,7 @@ export async function customerPage(env, request, user, customerId) {
       <p class="muted">Drafts are not visible to the customer. When you send, the customer gets an email and can review and accept in the portal. Accepting creates the deposit invoice automatically when a deposit is set.</p>
       <script>(function(){var k=document.getElementById('quoteKind'),t=document.getElementById('quoteTerms');if(!k||!t)return;var T=${JSON.stringify({ project: PROJECT_TERMS, plan: PLAN_TERMS })};k.addEventListener('change',function(){if(t.value===T.project||t.value===T.plan){t.value=T[k.value]||t.value;}});})();</script>
     </div>
-    <div class="card tab-panel${tab === "invoices" ? " active" : ""}" data-panel="invoices">
+    <h3 style="margin-top:28px">Invoices</h3>
       <div class="tscroll"><table class="stack"><thead><tr><th>Number</th><th>Invoice</th><th>Type</th><th>Amount</th><th>Status</th><th>Due</th><th></th></tr></thead>
       <tbody>${invoiceRows || `<tr><td colspan="7" class="muted">No invoices yet.</td></tr>`}</tbody></table></div>
       <h3 style="margin-top:22px">New invoice</h3>
@@ -663,7 +664,7 @@ export async function customerPage(env, request, user, customerId) {
 export async function quoteCreatePost(env, request, user, customerId) {
   const f = await request.formData();
   const title = String(f.get("title") || "").trim();
-  if (!title) return redirect(`/admin/customers/${customerId}?tab=quotes&msg=` + encodeURIComponent("A quote needs a title."));
+  if (!title) return redirect(`/admin/customers/${customerId}?tab=billing&msg=` + encodeURIComponent("A quote needs a title."));
   const kind = String(f.get("kind") || "project") === "plan" ? "plan" : "project";
   const deposit = Math.max(0, Math.min(100, Math.round(Number(f.get("deposit_percent") || 0) || 0)));
   const terms = String(f.get("terms") || "").trim();
@@ -681,15 +682,15 @@ export async function quoteCreatePost(env, request, user, customerId) {
       .bind(quoteId, desc, qty, parseDollarsToCents(prices[i]), i).run();
   }
   await audit(env.DB, user.id, "quote_create", "quote", quoteId, title);
-  return redirect(`/admin/customers/${customerId}?tab=quotes&msg=` + encodeURIComponent("Draft quote saved. Send it when you are ready."));
+  return redirect(`/admin/customers/${customerId}?tab=billing&msg=` + encodeURIComponent("Draft quote saved. Send it when you are ready."));
 }
 
 export async function quoteActionPost(env, request, user, customerId, quoteId, action) {
   const db = env.DB;
   const quote = await db.prepare("SELECT * FROM quotes WHERE id = ? AND customer_id = ?").bind(quoteId, customerId).first();
-  if (!quote) return redirect(`/admin/customers/${customerId}?tab=quotes&msg=` + encodeURIComponent("Quote not found."));
+  if (!quote) return redirect(`/admin/customers/${customerId}?tab=billing&msg=` + encodeURIComponent("Quote not found."));
   if (action === "send") {
-    if (quote.status !== "draft") return redirect(`/admin/customers/${customerId}?tab=quotes&msg=` + encodeURIComponent("Only a draft can be sent."));
+    if (quote.status !== "draft") return redirect(`/admin/customers/${customerId}?tab=billing&msg=` + encodeURIComponent("Only a draft can be sent."));
     await db.prepare("UPDATE quotes SET status = 'sent', sent_at = datetime('now'), updated_at = datetime('now') WHERE id = ?").bind(quoteId).run();
     await audit(db, user.id, "quote_send", "quote", quoteId, quote.title);
     const cust = await db.prepare("SELECT contact_name, contact_email FROM customers WHERE id = ?").bind(customerId).first();
@@ -700,66 +701,66 @@ export async function quoteActionPost(env, request, user, customerId, quoteId, a
       });
       await sendEmail(env, { to: cust.contact_email, template: "quote_sent", ...mail });
     }
-    return redirect(`/admin/customers/${customerId}?tab=quotes&msg=` + encodeURIComponent("Quote sent. The customer can review and accept it in the portal."));
+    return redirect(`/admin/customers/${customerId}?tab=billing&msg=` + encodeURIComponent("Quote sent. The customer can review and accept it in the portal."));
   }
   if (action === "delete") {
-    if (quote.status !== "draft") return redirect(`/admin/customers/${customerId}?tab=quotes&msg=` + encodeURIComponent("Only a draft quote can be deleted."));
+    if (quote.status !== "draft") return redirect(`/admin/customers/${customerId}?tab=billing&msg=` + encodeURIComponent("Only a draft quote can be deleted."));
     await db.prepare("DELETE FROM quote_items WHERE quote_id = ?").bind(quoteId).run();
     await db.prepare("DELETE FROM quotes WHERE id = ?").bind(quoteId).run();
     await audit(db, user.id, "quote_delete", "quote", quoteId, quote.title);
-    return redirect(`/admin/customers/${customerId}?tab=quotes&msg=` + encodeURIComponent("Draft quote deleted."));
+    return redirect(`/admin/customers/${customerId}?tab=billing&msg=` + encodeURIComponent("Draft quote deleted."));
   }
   if (action === "final") {
-    if (quote.status !== "accepted") return redirect(`/admin/customers/${customerId}?tab=quotes&msg=` + encodeURIComponent("The quote has to be accepted before the final invoice."));
+    if (quote.status !== "accepted") return redirect(`/admin/customers/${customerId}?tab=billing&msg=` + encodeURIComponent("The quote has to be accepted before the final invoice."));
     const totals = await db.prepare(
       `SELECT COALESCE((SELECT SUM(ROUND(qi.qty * qi.unit_price_cents)) FROM quote_items qi WHERE qi.quote_id = q.id), 0) AS total_cents,
               COALESCE((SELECT SUM(amount_cents) FROM invoices WHERE quote_id = q.id AND status != 'void'), 0) AS invoiced_cents,
               (SELECT COUNT(*) FROM invoices WHERE quote_id = q.id AND kind = 'deposit' AND status != 'void') AS deposits
        FROM quotes q WHERE q.id = ?`).bind(quoteId).first();
     const remaining = (totals ? totals.total_cents : 0) - (totals ? totals.invoiced_cents : 0);
-    if (remaining <= 0) return redirect(`/admin/customers/${customerId}?tab=quotes&msg=` + encodeURIComponent("This quote is already fully invoiced."));
+    if (remaining <= 0) return redirect(`/admin/customers/${customerId}?tab=billing&msg=` + encodeURIComponent("This quote is already fully invoiced."));
     const isFinal = totals && totals.deposits > 0;
     await db.prepare(
       "INSERT INTO invoices (customer_id, quote_id, title, kind, amount_cents, created_by) VALUES (?, ?, ?, ?, ?, ?)")
       .bind(customerId, quoteId, isFinal ? `${quote.title}: final balance` : quote.title, isFinal ? "final" : "standard", remaining, user.id).run();
     await audit(db, user.id, "invoice_create", "quote", quoteId, `${quote.title} balance ${remaining}`);
-    return redirect(`/admin/customers/${customerId}?tab=invoices&msg=` + encodeURIComponent("Invoice created for the remaining balance."));
+    return redirect(`/admin/customers/${customerId}?tab=billing&msg=` + encodeURIComponent("Invoice created for the remaining balance."));
   }
-  return redirect(`/admin/customers/${customerId}?tab=quotes`);
+  return redirect(`/admin/customers/${customerId}?tab=billing`);
 }
 
 export async function invoiceCreatePost(env, request, user, customerId) {
   const f = await request.formData();
   const title = String(f.get("title") || "").trim();
   const amount = parseDollarsToCents(f.get("amount"));
-  if (!title || amount <= 0) return redirect(`/admin/customers/${customerId}?tab=invoices&msg=` + encodeURIComponent("An invoice needs a title and an amount."));
+  if (!title || amount <= 0) return redirect(`/admin/customers/${customerId}?tab=billing&msg=` + encodeURIComponent("An invoice needs a title and an amount."));
   const due = String(f.get("due_date") || "").trim();
   const payUrl = String(f.get("pay_url") || "").trim();
   const res = await env.DB.prepare(
     "INSERT INTO invoices (customer_id, title, kind, amount_cents, due_date, pay_url, created_by) VALUES (?, ?, 'standard', ?, ?, ?, ?)")
     .bind(customerId, title, amount, due || null, /^https?:\/\//i.test(payUrl) ? payUrl : null, user.id).run();
   await audit(env.DB, user.id, "invoice_create", "invoice", res.meta.last_row_id, title);
-  return redirect(`/admin/customers/${customerId}?tab=invoices&msg=` + encodeURIComponent("Invoice created."));
+  return redirect(`/admin/customers/${customerId}?tab=billing&msg=` + encodeURIComponent("Invoice created."));
 }
 
 export async function invoiceActionPost(env, request, user, customerId, invoiceId, action) {
   const db = env.DB;
   const inv = await db.prepare("SELECT * FROM invoices WHERE id = ? AND customer_id = ?").bind(invoiceId, customerId).first();
-  if (!inv) return redirect(`/admin/customers/${customerId}?tab=invoices&msg=` + encodeURIComponent("Invoice not found."));
+  if (!inv) return redirect(`/admin/customers/${customerId}?tab=billing&msg=` + encodeURIComponent("Invoice not found."));
   if (action === "paid" && inv.status === "unpaid") {
     const f = await request.formData();
     const method = String(f.get("method") || "").trim();
     await db.prepare("UPDATE invoices SET status = 'paid', paid_at = datetime('now'), paid_method = ?, updated_at = datetime('now') WHERE id = ?")
       .bind(method || null, invoiceId).run();
     await audit(db, user.id, "invoice_paid", "invoice", invoiceId, method || "");
-    return redirect(`/admin/customers/${customerId}?tab=invoices&msg=` + encodeURIComponent("Invoice marked paid."));
+    return redirect(`/admin/customers/${customerId}?tab=billing&msg=` + encodeURIComponent("Invoice marked paid."));
   }
   if (action === "void" && inv.status === "unpaid") {
     await db.prepare("UPDATE invoices SET status = 'void', updated_at = datetime('now') WHERE id = ?").bind(invoiceId).run();
     await audit(db, user.id, "invoice_void", "invoice", invoiceId, inv.title);
-    return redirect(`/admin/customers/${customerId}?tab=invoices&msg=` + encodeURIComponent("Invoice voided."));
+    return redirect(`/admin/customers/${customerId}?tab=billing&msg=` + encodeURIComponent("Invoice voided."));
   }
-  return redirect(`/admin/customers/${customerId}?tab=invoices`);
+  return redirect(`/admin/customers/${customerId}?tab=billing`);
 }
 
 export async function addLocationPost(env, request, user, customerId) {
