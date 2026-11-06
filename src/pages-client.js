@@ -1,6 +1,6 @@
 // Client-facing portal pages. Every handler re-checks access to the location
 // on the server; nothing here trusts ids from the browser.
-import { page, redirect, esc } from "./layout.js";
+import { page, redirect, esc, icon, fmtDateUS } from "./layout.js";
 import {
   canAccessLocation, locationScope, getLocation, productEnabled, productStates,
   expiringItems, audit, accessibleLocationIds, customerAdminOrg, orgMembers,
@@ -47,25 +47,25 @@ function denied(user, code) {
 // desktop, swipeable chip bar on phones; the layout CSS owns the switch.
 function locNav(loc, active) {
   const base = `/app/locations/${loc.id}`;
-  const item = (key, href, label) =>
-    `<a class="rail-item${active === key ? " active" : ""}" href="${href}">${label}</a>`;
+  const item = (key, href, label, ic) =>
+    `<a class="rail-item${active === key ? " active" : ""}" href="${href}">${icon(ic)}${label}</a>`;
   return `<div class="shell"><aside class="rail">
     <div class="rail-context"><div class="rc-t">${esc(loc.name)}</div><div class="rc-s">${esc(loc.customer_name)}</div></div>
-    ${item("overview", base, "Overview")}${item("equipment", base + "/equipment", "Equipment")}
-    ${item("tickets", base + "/tickets", "Tickets")}${item("documents", base + "/documents", "Documents")}
-    ${item("ask", base + "/ask", "Ask")}
+    ${item("overview", base, "Overview", "grid")}${item("equipment", base + "/equipment", "Equipment", "monitor")}
+    ${item("tickets", base + "/tickets", "Tickets", "ticket")}${item("documents", base + "/documents", "Documents", "folder")}
+    ${item("ask", base + "/ask", "Ask", "chat")}
     <div class="rail-sep"></div>
-    ${item("billing", "/app/billing", "Billing")}
-    <a class="rail-item" href="${REMOTE_URL}" target="_blank" rel="noopener">Remote Support</a></aside><div class="shell-main">`;
+    ${item("billing", "/app/billing", "Billing", "receipt")}
+    <a class="rail-item" href="${REMOTE_URL}" target="_blank" rel="noopener">${icon("headset")}Remote Support</a></aside><div class="shell-main">`;
 }
 
 function orgRail(user, active, orgName) {
-  const item = (key, href, label) =>
-    `<a class="rail-item${active === key ? " active" : ""}" href="${href}">${label}</a>`;
+  const item = (key, href, label, ic) =>
+    `<a class="rail-item${active === key ? " active" : ""}" href="${href}">${icon(ic)}${label}</a>`;
   return `<div class="shell"><aside class="rail">
     <div class="rail-context"><div class="rc-t">${esc(orgName || "My Portal")}</div><div class="rc-s">Client portal</div></div>
-    ${item("practices", "/app", "Your practices")}${item("billing", "/app/billing", "Billing")}
-    ${user.role === "customer_admin" ? item("team", "/app/team", "Team") : ""}</aside><div class="shell-main">`;
+    ${item("practices", "/app", "Your practices", "home")}${item("billing", "/app/billing", "Billing", "receipt")}
+    ${user.role === "customer_admin" ? item("team", "/app/team", "Team", "users") : ""}</aside><div class="shell-main">`;
 }
 
 function lockedTile(user, loc, productName) {
@@ -127,7 +127,7 @@ export async function locationOverview(env, request, user, locationId) {
           const kind = e.license_expires && (!e.warranty_expires || e.license_expires <= e.warranty_expires) ? "License" : "Warranty";
           const date = kind === "License" ? e.license_expires : e.warranty_expires;
           const days = daysUntil(date);
-          return `<li>${esc(e.vendor || "")} ${esc(e.model || e.type || "Equipment")}: ${kind.toLowerCase()} expires ${esc(date)} (${days < 0 ? "expired" : days + " days"})</li>`;
+          return `<li>${esc(e.vendor || "")} ${esc(e.model || e.type || "Equipment")}: ${kind.toLowerCase()} expires ${esc(fmtDateUS(date))} (${days < 0 ? "expired" : days + " days"})</li>`;
         }).join("")}</ul></div>` : "";
   const tiles = states.map((p) => p.enabled
     ? `<a class="tile" href="/app/locations/${locationId}/products/${p.key}"><span class="t">${esc(p.name)}</span><span class="d"><span class="pill on">On</span> ${esc(p.description || "")}</span></a>`
@@ -235,7 +235,7 @@ export async function equipmentPage(env, request, user, locationId) {
   const rows = (results || []).map((e) => {
     const exp = [e.license_expires, e.warranty_expires].filter(Boolean).sort()[0];
     const days = daysUntil(exp);
-    const pill = exp && days <= 90 ? `<span class="pill warn">${esc(exp)}</span>` : esc(exp || "");
+    const pill = exp && days <= 90 ? `<span class="pill warn">${esc(fmtDateUS(exp))}</span>` : esc(fmtDateUS(exp));
     const modelCell = e.name ? (e.model ? `${e.name} (${e.model})` : e.name) : (e.model || "");
     return `<tr><td>${esc(e.vendor || "")}</td><td>${esc(e.type || "")}</td><td>${esc(modelCell)}</td>
       <td>${esc(e.serial || "")}</td><td>${esc(e.status)}</td><td>${esc(e.firmware || "")}</td><td>${pill}</td></tr>`;
@@ -289,7 +289,7 @@ export async function ticketsPage(env, request, user, locationId) {
   const { results } = await env.DB.prepare(
     "SELECT * FROM tickets WHERE location_id = ? ORDER BY (status = 'closed'), updated_at DESC").bind(locationId).all();
   const rows = (results || []).map((t) => `<tr><td><a href="/app/locations/${locationId}/tickets/${t.id}">${esc(t.title)}</a></td>
-    <td><span class="pill">${esc(STATUS_LABEL[t.status] || t.status)}</span></td><td>${esc(t.priority)}</td><td>${esc(t.created_at.slice(0, 10))}</td></tr>`).join("");
+    <td><span class="pill">${esc(STATUS_LABEL[t.status] || t.status)}</span></td><td>${esc(t.priority)}</td><td>${esc(fmtDateUS(t.created_at))}</td></tr>`).join("");
   const body = `${locNav(loc, "tickets")}<h1>Tickets</h1>
     <div class="card" style="padding:8px 14px"><div class="tscroll"><table class="stack"><thead><tr><th>Title</th><th>Status</th><th>Priority</th><th>Opened</th></tr></thead>
     <tbody>${rows || `<tr><td colspan="4" class="muted">No tickets yet.</td></tr>`}</tbody></table></div></div>
@@ -327,7 +327,7 @@ export async function ticketDetailPage(env, request, user, locationId, ticketId)
     `SELECT tu.*, u.name AS author_name FROM ticket_updates tu LEFT JOIN users u ON u.id = tu.author_id
      WHERE tu.ticket_id = ? ORDER BY tu.created_at`).bind(ticketId).all();
   const thread = (results || []).map((u) => `<div style="border-bottom:1px solid var(--line);padding:10px 0">
-    <div class="muted">${esc(u.author_name || "User")} , ${esc(u.created_at.slice(0, 16))}</div><p style="margin:4px 0">${esc(u.body)}</p></div>`).join("");
+    <div class="muted">${esc(u.author_name || "User")} , ${esc(fmtDateUS(u.created_at))} ${esc(u.created_at.slice(11, 16))}</div><p style="margin:4px 0">${esc(u.body)}</p></div>`).join("");
   const scope = await locationScope(env.DB, user, locationId);
   const canManage = user.kind === "flossbyte" || scope === "admin";
   const manage = canManage ? `<form method="post" action="/app/locations/${locationId}/tickets/${ticketId}/status" class="row" style="margin-top:14px">
@@ -335,7 +335,7 @@ export async function ticketDetailPage(env, request, user, locationId, ticketId)
       <span style="min-width:140px"><select name="priority">${["low", "normal", "high", "urgent"].map((p) => `<option ${t.priority === p ? "selected" : ""}>${p}</option>`).join("")}</select></span>
       <button class="btn small secondary" type="submit">Update status</button></form>` : "";
   const body = `${locNav(loc, "tickets")}<h1>${esc(t.title)}</h1>
-    <p><span class="pill">${esc(STATUS_LABEL[t.status] || t.status)}</span> <span class="muted">Priority: ${esc(t.priority)} , opened ${esc(t.created_at.slice(0, 10))}</span></p>
+    <p><span class="pill">${esc(STATUS_LABEL[t.status] || t.status)}</span> <span class="muted">Priority: ${esc(t.priority)} , opened ${esc(fmtDateUS(t.created_at))}</span></p>
     <div class="card">${thread || `<p class="muted">No updates yet.</p>`}
       <form method="post" action="/app/locations/${locationId}/tickets/${ticketId}/update">
         <label>Add an update <span class="req">*</span></label><textarea name="body" required></textarea>
@@ -383,7 +383,7 @@ export async function documentsPage(env, request, user, locationId) {
      WHERE d.location_id = ? ORDER BY d.created_at DESC`).bind(locationId).all();
   const rows = (results || []).map((d) => `<tr><td>${d.r2_key ? `<a href="/app/documents/${d.id}/view" target="_blank" rel="noopener">${esc(d.name)}</a>` : esc(d.name)}</td>
     <td>${esc(d.mime || "")}</td><td>${d.size ? Math.round(d.size / 1024) + " KB" : ""}</td>
-    <td>${esc(d.uploader || "")}</td><td>${esc(d.created_at.slice(0, 10))}</td></tr>`).join("");
+    <td>${esc(d.uploader || "")}</td><td>${esc(fmtDateUS(d.created_at))}</td></tr>`).join("");
   const body = `${locNav(loc, "documents")}<h1>Documents</h1>
     <div class="card" style="padding:8px 14px"><div class="tscroll"><table class="stack"><thead><tr><th>Name</th><th>Type</th><th>Size</th><th>Uploaded by</th><th>Date</th></tr></thead>
     <tbody>${rows || `<tr><td colspan="5" class="muted">No documents yet.</td></tr>`}</tbody></table></div></div>
@@ -480,15 +480,14 @@ export async function askPage(env, request, user, locationId) {
   if (error) return denied(user, error);
   const { results } = await env.DB.prepare(
     "SELECT * FROM ask_messages WHERE location_id = ? ORDER BY created_at DESC LIMIT 10").bind(locationId).all();
-  const history = (results || []).reverse().map((m) => `<div style="border-bottom:1px solid var(--line);padding:10px 0">
-    <p style="margin:2px 0"><strong>You:</strong> ${esc(m.question)}</p>
-    <p style="margin:2px 0" class="muted"><strong>Ask:</strong> ${esc(m.answer)}</p></div>`).join("");
+  const history = (results || []).reverse().map((m) => `<div class="msg q">${esc(m.question)}</div>
+    <div class="msg a">${esc(m.answer)}</div>`).join("");
   const body = `${locNav(loc, "ask")}<h1>Ask</h1>
     <div class="card"><p class="muted">Ask about your own equipment, expiry dates, tickets, and documents. Answers come only from what is recorded for this practice.</p>
     <form method="post" action="/app/locations/${locationId}/ask">
       <input name="question" placeholder="What is expiring in the next 90 days?" required>
       <p style="margin-top:12px"><button class="btn" type="submit">Ask</button></p></form>
-    ${history}</div>`;
+    ${history ? `<div class="chat">${history}</div>` : ""}</div>`;
   return page({ title: "Ask", user, body });
 }
 
@@ -536,12 +535,12 @@ async function quotesSection(env, org) {
   for (const qt of results || []) {
     const { total } = await loadQuote(env.DB, qt.id, org);
     rows.push(`<tr><td><a href="/app/quotes/${qt.id}">${esc(qt.title)}</a></td>
-      <td>${qt.kind === "plan" ? "Service plan" : "Project"}</td><td>${fmtMoney(total)}</td>
+      <td>${qt.kind === "plan" ? "Service plan" : "Project"}</td><td class="num">${fmtMoney(total)}</td>
       <td><span class="pill ${qt.status === "accepted" ? "on" : qt.status === "declined" ? "off" : ""}">${esc(QUOTE_STATUS[qt.status] || qt.status)}</span></td>
-      <td>${esc((qt.sent_at || qt.created_at || "").slice(0, 10))}</td></tr>`);
+      <td>${esc(fmtDateUS((qt.sent_at || qt.created_at || "")))}</td></tr>`);
   }
   return `
-    <div class="card" style="padding:8px 14px"><div class="tscroll"><table class="stack"><thead><tr><th>Quote</th><th>Type</th><th>Total</th><th>Status</th><th>Sent</th></tr></thead>
+    <div class="card" style="padding:8px 14px"><div class="tscroll"><table class="stack"><thead><tr><th>Quote</th><th>Type</th><th class="num">Total</th><th>Status</th><th>Sent</th></tr></thead>
     <tbody>${rows.join("") || `<tr><td colspan="5" class="muted">No quotes yet. When FlossByte sends you one, it shows up here for review and acceptance.</td></tr>`}</tbody></table></div></div>`;
 }
 
@@ -552,11 +551,11 @@ export async function quoteViewPage(env, request, user, quoteId) {
   if (!loaded || loaded.quote.status === "draft") return denied(user, 404);
   const { quote, items, total } = loaded;
   const deposit = Math.round(total * (quote.deposit_percent || 0) / 100);
-  const itemRows = items.map((i) => `<tr><td>${esc(i.description)}</td><td>${esc(String(i.qty))}</td>
-    <td>${fmtMoney(i.unit_price_cents)}</td><td>${fmtMoney(Math.round(i.qty * i.unit_price_cents))}</td></tr>`).join("");
+  const itemRows = items.map((i) => `<tr><td>${esc(i.description)}</td><td class="num">${esc(String(i.qty))}</td>
+    <td class="num">${fmtMoney(i.unit_price_cents)}</td><td class="num">${fmtMoney(Math.round(i.qty * i.unit_price_cents))}</td></tr>`).join("");
   let statusBlock = "";
   if (quote.status === "accepted") {
-    statusBlock = `<div class="notice"><strong>Accepted</strong> by ${esc(quote.accepted_by || "")} on ${esc((quote.accepted_at || "").slice(0, 10))}.
+    statusBlock = `<div class="notice"><strong>Accepted</strong> by ${esc(quote.accepted_by || "")} on ${esc(fmtDateUS((quote.accepted_at || "")))}.
       ${deposit > 0 ? `The deposit invoice is on your <a href="/app/billing">Billing</a> page.` : ""}</div>`;
   } else if (quote.status === "declined") {
     statusBlock = `<div class="notice">This quote was declined. If that was a mistake, call FlossByte at (669) 237-2264.</div>`;
@@ -574,8 +573,9 @@ export async function quoteViewPage(env, request, user, quoteId) {
   }
   const body = `${orgRail(user, "billing", "My Portal")}<p><a href="/app/billing">&larr; Billing</a></p><h1>${esc(quote.title)}</h1>
     <p class="muted">${quote.kind === "plan" ? "Service plan" : "Project"} quote from FlossByte. Total <strong>${fmtMoney(total)}</strong>${deposit > 0 ? `, with a ${quote.deposit_percent}% deposit of <strong>${fmtMoney(deposit)}</strong> due on acceptance and ${fmtMoney(total - deposit)} after that.` : "."}</p>
+    <p><button class="btn small secondary" type="button" onclick="window.print()">Print / save as PDF</button></p>
     ${statusBlock}
-    <div class="card" style="padding:8px 14px"><div class="tscroll"><table class="stack"><thead><tr><th>Description</th><th>Qty</th><th>Price</th><th>Amount</th></tr></thead>
+    <div class="card" style="padding:8px 14px"><div class="tscroll"><table class="stack"><thead><tr><th>Description</th><th class="num">Qty</th><th class="num">Price</th><th class="num">Amount</th></tr></thead>
     <tbody>${itemRows}</tbody></table></div></div>
     ${quote.terms ? `<div class="card"><h3>Terms</h3><div style="white-space:pre-wrap">${esc(quote.terms)}</div></div>` : ""}`;
   const msg = new URL(request.url).searchParams.get("msg");
@@ -637,12 +637,12 @@ async function invoicesSection(env, org) {
     const note = inv.kind === "deposit"
       ? (inv.status === "unpaid" ? `<div class="muted">Work is scheduled once this deposit is paid.</div>` : `<div class="muted">Deposit received.</div>`) : "";
     return `<tr><td>INV-${1000 + inv.id}</td><td>${esc(inv.title)}${note}</td>
-      <td>${esc(INVOICE_KIND[inv.kind] || "Invoice")}</td><td>${fmtMoney(inv.amount_cents)}</td>
-      <td><span class="pill ${inv.status === "paid" ? "on" : ""}">${inv.status === "paid" ? "Paid" : "Unpaid"}</span>${inv.status === "paid" && inv.paid_at ? `<div class="muted">${esc(inv.paid_at.slice(0, 10))}</div>` : ""}</td>
-      <td>${esc(inv.due_date || "")}</td><td>${pay}</td></tr>`;
+      <td>${esc(INVOICE_KIND[inv.kind] || "Invoice")}</td><td class="num">${fmtMoney(inv.amount_cents)}</td>
+      <td><span class="pill ${inv.status === "paid" ? "on" : ""}">${inv.status === "paid" ? "Paid" : "Unpaid"}</span>${inv.status === "paid" && inv.paid_at ? `<div class="muted">${esc(fmtDateUS(inv.paid_at))}</div>` : ""}</td>
+      <td>${esc(fmtDateUS(inv.due_date))}</td><td>${pay}</td></tr>`;
   }).join("");
   return `
-    <div class="card" style="padding:8px 14px"><div class="tscroll"><table class="stack"><thead><tr><th>Number</th><th>Invoice</th><th>Type</th><th>Amount</th><th>Status</th><th>Due</th><th></th></tr></thead>
+    <div class="card" style="padding:8px 14px"><div class="tscroll"><table class="stack"><thead><tr><th>Number</th><th>Invoice</th><th>Type</th><th class="num">Amount</th><th>Status</th><th>Due</th><th></th></tr></thead>
     <tbody>${rows || `<tr><td colspan="7" class="muted">No invoices yet.</td></tr>`}</tbody></table></div></div>`;
 }
 

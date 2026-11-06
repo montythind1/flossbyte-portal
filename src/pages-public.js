@@ -50,7 +50,7 @@ export async function setupPage(env, request) {
       <label>Password again <span class="req">*</span></label><input name="password2" type="password" required autocomplete="new-password">
       <p style="margin-top:18px"><button class="btn" type="submit">Create admin login</button></p>
     </form></div>`;
-  return page({ title: "Setup", body });
+  return page({ auth: true, title: "Setup", body });
 }
 
 export async function setupPost(env, request) {
@@ -60,10 +60,10 @@ export async function setupPost(env, request) {
   const email = String(form.get("email") || "").trim().toLowerCase();
   const pw = String(form.get("password") || "");
   if (!name || !isValidEmail(email) || pw.length < 10) {
-    return page({ title: "Setup", error: "Name, a valid email, and a password of at least 10 characters are required.", body: "" });
+    return page({ auth: true, title: "Setup", error: "Name, a valid email, and a password of at least 10 characters are required.", body: "" });
   }
   if (pw !== String(form.get("password2") || "")) {
-    return page({ title: "Setup", error: "The two passwords do not match.", body: "" });
+    return page({ auth: true, title: "Setup", error: "The two passwords do not match.", body: "" });
   }
   const res = await env.DB.prepare(
     `INSERT INTO users (email, name, password_hash, kind, role, status, email_verified_at)
@@ -87,7 +87,7 @@ export function loginPage(request) {
     </form>
     <p class="muted" style="margin-top:16px">New customer? <a href="/signup">Create account</a></p>
     <p class="muted">Forgot your password? <a href="/reset">Reset it</a></p></div>`;
-  return page({ title: "Sign in", body, flash: q.get("msg") || undefined, error: q.get("err") || undefined });
+  return page({ auth: true, title: "Sign in", body, flash: q.get("msg") || undefined, error: q.get("err") || undefined });
 }
 
 export async function loginPost(env, request) {
@@ -116,7 +116,7 @@ export function loginMfaPage(request) {
       <label>Code <span class="req">*</span></label><input name="code" inputmode="numeric" autocomplete="one-time-code" required>
       <p style="margin-top:18px"><button class="btn" type="submit" style="width:100%">Verify</button></p>
     </form></div>`;
-  return page({ title: "Verify", body, error: q.get("err") || undefined });
+  return page({ auth: true, title: "Verify", body, error: q.get("err") || undefined });
 }
 
 export async function loginMfaPost(env, request) {
@@ -155,7 +155,7 @@ export function signupPage(request) {
       <p style="margin-top:18px"><button class="btn" type="submit" style="width:100%">Create account</button></p>
     </form>
     <p class="muted" style="margin-top:16px">Already have a login? <a href="/login">Back to login</a></p></div>`;
-  return page({ title: "Create account", body, error: q.get("err") || undefined });
+  return page({ auth: true, title: "Create account", body, error: q.get("err") || undefined });
 }
 
 export async function signupPost(env, request) {
@@ -199,7 +199,7 @@ export async function resendInviteEmail(env, target) {
 
 export async function invitePage(env, request, tokenRaw) {
   const token = await peekAuthToken(env.DB, tokenRaw, "invite");
-  if (!token) return page({ title: "Link expired", body: `<div class="card narrow"><h1>Link expired</h1>
+  if (!token) return page({ auth: true, title: "Link expired", body: `<div class="card narrow"><h1>Link expired</h1>
     <p class="muted">Invite links work once and last 7 days. Enter the email the invite was sent to and a fresh link will be sent there.</p>
     <form method="post" action="/invite/resend">
       <label>Email <span class="req">*</span></label><input name="email" type="email" required autocomplete="email">
@@ -214,7 +214,7 @@ export async function invitePage(env, request, tokenRaw) {
       <label>Password again <span class="req">*</span></label><input name="password2" type="password" required autocomplete="new-password">
       <p style="margin-top:18px"><button class="btn" type="submit" style="width:100%">Set password and sign in</button></p>
     </form></div>`;
-  return page({ title: "Finish sign-in", body });
+  return page({ auth: true, title: "Finish sign-in", body });
 }
 
 export async function invitePost(env, request, tokenRaw) {
@@ -257,7 +257,7 @@ export async function inviteResendPost(env, request) {
       await audit(env.DB, target.id, "invite_resent_public", "user", target.id, email);
     }
   }
-  return page({ title: "Check your email", body: `<div class="card narrow"><h1>Check your email</h1>
+  return page({ auth: true, title: "Check your email", body: `<div class="card narrow"><h1>Check your email</h1>
     <p class="muted">If that email has a pending invite, a new link is on its way. The link works once and lasts 7 days.</p>
     <p class="muted"><a href="/login">Back to sign in</a></p></div>` });
 }
@@ -271,7 +271,7 @@ export function resetRequestPage(request) {
       <p style="margin-top:18px"><button class="btn" type="submit" style="width:100%">Email me a reset link</button></p>
     </form>
     <p class="muted" style="margin-top:16px"><a href="/login">Back to login</a></p></div>`;
-  return page({ title: "Reset password", body, flash: q.get("msg") || undefined });
+  return page({ auth: true, title: "Reset password", body, flash: q.get("msg") || undefined });
 }
 
 export async function resetRequestPost(env, request) {
@@ -289,14 +289,14 @@ export async function resetRequestPost(env, request) {
 
 export async function resetPage(env, request, tokenRaw) {
   const token = await peekAuthToken(env.DB, tokenRaw, "reset");
-  if (!token) return page({ title: "Link expired", body: `<div class="card narrow"><h1>Link expired</h1><p class="muted">This reset link is no longer valid. <a href="/reset">Request a new one</a>.</p></div>` });
+  if (!token) return page({ auth: true, title: "Link expired", body: `<div class="card narrow"><h1>Link expired</h1><p class="muted">This reset link is no longer valid. <a href="/reset">Request a new one</a>.</p></div>` });
   const body = `<div class="card narrow"><h1>Set a new password</h1>
     <form method="post" action="/reset/${esc(tokenRaw)}">
       <label>New password <span class="req">*</span></label><input name="password" type="password" required minlength="10" autocomplete="new-password">
       <label>Password again <span class="req">*</span></label><input name="password2" type="password" required autocomplete="new-password">
       <p style="margin-top:18px"><button class="btn" type="submit" style="width:100%">Set password</button></p>
     </form></div>`;
-  return page({ title: "Set new password", body });
+  return page({ auth: true, title: "Set new password", body });
 }
 
 export async function resetPost(env, request, tokenRaw) {

@@ -1,6 +1,6 @@
 // FlossByte admin console: clients, locations, product switches, logins,
 // pending signups, and (Super Admin only) admin account management.
-import { page, redirect, esc } from "./layout.js";
+import { page, redirect, esc, icon, fmtDateUS } from "./layout.js";
 import { createAuthToken, revokeAllSessions, verifyPassword } from "./auth.js";
 import { audit, isSuperAdmin, grantUserAccess, findCustomerByContactEmail, isValidEmail } from "./access.js";
 import { sendEmail, inviteEmail, newCustomerNoticeEmail, ownershipTransferEmail, quoteSentEmail } from "./email.js";
@@ -26,13 +26,13 @@ const PLAN_TERMS = "Service is billed monthly at the amount above, starting on t
 // and opens the content column. The shell divs are closed implicitly by
 // the end of <main> in layout.js, the same pattern the whole portal uses.
 function adminNav(active) {
-  const item = (key, href, label) =>
-    `<a class="rail-item${active === key ? " active" : ""}" href="${href}">${label}</a>`;
+  const item = (key, href, label, ic) =>
+    `<a class="rail-item${active === key ? " active" : ""}" href="${href}">${icon(ic)}${label}</a>`;
   return `<div class="shell"><aside class="rail">
     <div class="rail-context"><div class="rc-t">FlossByte</div><div class="rc-s">Admin console</div></div>
-    ${item("clients", "/admin", "Clients")}${item("new", "/admin/customers/new", "Add customer")}
-    ${item("pending", "/admin/pending", "Pending accounts")}${item("admins", "/admin/admins", "Admins")}
-    ${item("sync", "/admin/sync", "Device sync")}</aside><div class="shell-main">`;
+    ${item("clients", "/admin", "Clients", "users")}${item("new", "/admin/customers/new", "Add customer", "userPlus")}
+    ${item("pending", "/admin/pending", "Pending accounts", "clock")}${item("admins", "/admin/admins", "Admins", "shield")}
+    ${item("sync", "/admin/sync", "Device sync", "refresh")}</aside><div class="shell-main">`;
 }
 
 // ---------- Clients list ----------
@@ -562,11 +562,11 @@ export async function customerPage(env, request, user, customerId) {
     } else if (qt.status === "sent") {
       actions = `<span class="muted">Waiting for the customer</span>`;
     } else if (qt.status === "accepted") {
-      actions = `<span class="muted">Accepted ${(qt.accepted_at || "").slice(0, 10)}${qt.accepted_by ? " by " + esc(qt.accepted_by) : ""}. Invoiced ${fmtMoney(qt.invoiced_cents)} of ${fmtMoney(qt.total_cents)}.</span>`
+      actions = `<span class="muted">Accepted ${fmtDateUS(qt.accepted_at || "")}${qt.accepted_by ? " by " + esc(qt.accepted_by) : ""}. Invoiced ${fmtMoney(qt.invoiced_cents)} of ${fmtMoney(qt.total_cents)}.</span>`
         + (qt.invoiced_cents < qt.total_cents ? ` <form method="post" action="/admin/customers/${customerId}/quotes/${qt.id}/final" style="display:inline"><button class="btn small" type="submit">Invoice the rest</button></form>` : "");
     }
     return `<tr><td>${esc(qt.title)}</td><td>${qt.kind === "plan" ? "Service plan" : "Project"}</td>
-      <td>${fmtMoney(qt.total_cents)}</td><td>${qt.deposit_percent ? qt.deposit_percent + "%" : "None"}</td>
+      <td class="num">${fmtMoney(qt.total_cents)}</td><td>${qt.deposit_percent ? qt.deposit_percent + "%" : "None"}</td>
       <td>${statusPill}</td><td>${actions}</td></tr>`;
   }).join("");
   const invoiceRows = (invoiceList || []).map((inv) => {
@@ -576,12 +576,12 @@ export async function customerPage(env, request, user, customerId) {
            <button class="btn small" type="submit">Mark paid</button></form>
          <form method="post" action="/admin/customers/${customerId}/invoices/${inv.id}/void" style="display:inline"><button class="btn small danger" type="submit">Void</button></form>
          ${inv.pay_url ? `<a class="btn small secondary" href="${esc(inv.pay_url)}" target="_blank" rel="noopener">Pay link</a>` : ""}`
-      : inv.status === "paid" ? `<span class="muted">Paid ${(inv.paid_at || "").slice(0, 10)}${inv.paid_method ? " (" + esc(inv.paid_method) + ")" : ""}</span>` : `<span class="muted">Void</span>`;
+      : inv.status === "paid" ? `<span class="muted">Paid ${fmtDateUS(inv.paid_at || "")}${inv.paid_method ? " (" + esc(inv.paid_method) + ")" : ""}</span>` : `<span class="muted">Void</span>`;
     return `<tr><td>INV-${1000 + inv.id}</td><td>${esc(inv.title)}</td>
       <td>${inv.kind === "deposit" ? "Deposit" : inv.kind === "final" ? "Final balance" : "Invoice"}</td>
-      <td>${fmtMoney(inv.amount_cents)}</td>
+      <td class="num">${fmtMoney(inv.amount_cents)}</td>
       <td><span class="pill ${inv.status === "paid" ? "on" : inv.status === "void" ? "off" : ""}">${esc(inv.status)}</span></td>
-      <td>${esc(inv.due_date || "")}</td><td>${actions}</td></tr>`;
+      <td>${esc(fmtDateUS(inv.due_date))}</td><td>${actions}</td></tr>`;
   }).join("");
   const itemRow = `<div class="row" style="gap:8px;margin-top:6px">
       <span style="flex:3;min-width:160px"><input name="item_desc" placeholder="Description"></span>
@@ -590,12 +590,12 @@ export async function customerPage(env, request, user, customerId) {
   const tabParam = q(request).get("tab");
   const tab = ["organization", "locations", "products", "users", "billing", "manage"].includes(tabParam) ? tabParam : "organization";
   const locOptions = (locations || []).map((l) => `<option value="${l.id}">${esc(l.name)}</option>`).join("");
-  const railBtn = (key, label) => `<button type="button" class="tab-btn rail-item${tab === key ? " active" : ""}" data-tab="${key}">${label}</button>`;
+  const railBtn = (key, label, ic) => `<button type="button" class="tab-btn rail-item${tab === key ? " active" : ""}" data-tab="${key}">${icon(ic)}${label}</button>`;
   const body = `<div class="shell"><aside class="rail">
     <div class="rail-context"><div class="rc-t">${esc(c.name)}</div><div class="rc-s">Organization</div></div>
     <a class="rail-item" href="/admin">&larr; All clients</a>
-    ${railBtn("organization", "Organization")}${railBtn("locations", "Locations")}${railBtn("products", "Products")}
-    ${railBtn("users", "Users")}${railBtn("billing", "Billing")}${railBtn("manage", "Manage")}
+    ${railBtn("organization", "Organization", "building")}${railBtn("locations", "Locations", "pin")}${railBtn("products", "Products", "box")}
+    ${railBtn("users", "Users", "users")}${railBtn("billing", "Billing", "receipt")}${railBtn("manage", "Manage", "sliders")}
     </aside><div class="shell-main"><h1>${esc(c.name)}</h1>
     <p class="muted">${esc(c.contact_name || "")} ${esc(c.contact_email || "")} ${esc(c.phone || "")}</p>
     <noscript><style>.tab-panel{display:block}.rail{display:none}</style></noscript>
@@ -622,7 +622,7 @@ export async function customerPage(env, request, user, customerId) {
       <p class="muted">The invite email asks them to set a password and finish sign-in. Access starts only with this invite.</p></div>
     <div class="card tab-panel${tab === "billing" ? " active" : ""}" data-panel="billing">
       <h3 style="margin-top:0">Quotes</h3>
-      <div class="tscroll"><table class="stack"><thead><tr><th>Quote</th><th>Type</th><th>Total</th><th>Deposit</th><th>Status</th><th></th></tr></thead>
+      <div class="tscroll"><table class="stack"><thead><tr><th>Quote</th><th>Type</th><th class="num">Total</th><th>Deposit</th><th>Status</th><th></th></tr></thead>
       <tbody>${quoteRows || `<tr><td colspan="6" class="muted">No quotes yet. Build the first one below.</td></tr>`}</tbody></table></div>
       <h3 style="margin-top:22px">New quote</h3>
       <form method="post" action="/admin/customers/${customerId}/quotes">
@@ -640,7 +640,7 @@ export async function customerPage(env, request, user, customerId) {
       <script>(function(){var k=document.getElementById('quoteKind'),t=document.getElementById('quoteTerms');if(!k||!t)return;var T=${JSON.stringify({ project: PROJECT_TERMS, plan: PLAN_TERMS })};k.addEventListener('change',function(){if(t.value===T.project||t.value===T.plan){t.value=T[k.value]||t.value;}});})();</script>
     </div>
     <h3 style="margin-top:28px">Invoices</h3>
-      <div class="tscroll"><table class="stack"><thead><tr><th>Number</th><th>Invoice</th><th>Type</th><th>Amount</th><th>Status</th><th>Due</th><th></th></tr></thead>
+      <div class="tscroll"><table class="stack"><thead><tr><th>Number</th><th>Invoice</th><th>Type</th><th class="num">Amount</th><th>Status</th><th>Due</th><th></th></tr></thead>
       <tbody>${invoiceRows || `<tr><td colspan="7" class="muted">No invoices yet.</td></tr>`}</tbody></table></div>
       <h3 style="margin-top:22px">New invoice</h3>
       <form method="post" action="/admin/customers/${customerId}/invoices">
@@ -1057,7 +1057,7 @@ export async function pendingPage(env, request, user) {
   for (const p of pending || []) {
     const { results: locs } = await env.DB.prepare("SELECT id, name, customer_id FROM locations ORDER BY name").all();
     rows.push(`<div class="card"><div class="row between"><div><strong>${esc(p.name)}</strong>
-      <div class="muted">${esc(p.email)} , signed up ${esc(p.created_at.slice(0, 10))}</div></div></div>
+      <div class="muted">${esc(p.email)} , signed up ${esc(fmtDateUS(p.created_at))}</div></div></div>
       <form method="post" action="/admin/pending/${p.id}/connect" class="row" style="margin-top:10px;align-items:end">
         <span style="flex:1;min-width:200px"><label>Connect to location (or customer-wide by picking any of its locations, then scope) <span class="req">*</span></label>
         <select name="location_id" required>${(locs || []).map((l) => {
