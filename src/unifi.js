@@ -372,8 +372,15 @@ export async function runUnifiSync(env) {
     for (const local of Object.values(siteLocal)) {
       if (!local || !local.sectionStatus) continue;
       for (const [k, v] of Object.entries(local.sectionStatus)) {
+        const ok = v.startsWith("ok");
         if (!mergedChecks[k]) mergedChecks[k] = v;
-        else if (mergedChecks[k] !== v) mergedChecks[k] = "mixed";
+        else {
+          const curOk = mergedChecks[k].startsWith("ok");
+          if (ok && curOk) mergedChecks[k] = "ok"; // counts differ per site; fine
+          else if (ok && !curOk) mergedChecks[k] = `partial (${mergedChecks[k]})`;
+          else if (!ok && curOk) mergedChecks[k] = `partial (${v})`;
+          else if (mergedChecks[k] !== v && !mergedChecks[k].startsWith("partial")) mergedChecks[k] = "mixed errors";
+        }
       }
     }
     if (Object.keys(mergedChecks).length) summary.sectionChecks = mergedChecks;
