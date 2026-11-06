@@ -1316,7 +1316,7 @@ async function siteMappingBlock(env, provider, heading, emptyNote) {
        JOIN customers c ON c.id = l.customer_id ORDER BY c.name, l.name`).all();
     const locOptions = (selected) => `<option value="">Not mapped</option>` + (locs || []).map((l) =>
       `<option value="${l.id}" ${l.id === selected ? "selected" : ""}>${esc(l.cust_name)}: ${esc(l.loc_name)}</option>`).join("");
-    const siteRows = sites.map((s) => `<tr><td>${esc(s.site_name || s.site_id)}</td>
+    const siteRows = sites.map((s) => `<tr><td>${esc(s.site_name || s.site_id)}<div class="muted" style="font-size:12px">Site ID: ${esc(s.site_id)}</div></td>
       <td><form method="post" action="/admin/sync/map" class="row" style="gap:8px">
         <input type="hidden" name="provider" value="${provider}">
         <input type="hidden" name="site_id" value="${esc(s.site_id)}">
