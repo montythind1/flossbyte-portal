@@ -755,12 +755,12 @@ export async function quoteAcceptPost(env, request, user, quoteId) {
     invoiceNote = " The deposit invoice is on your Billing page; work is scheduled once it is paid.";
   }
   await audit(env.DB, user.id, "quote_accept", "quote", quoteId, `signed by ${signer}`);
-  if (env.ADMIN_ALERT_EMAIL) {
+  {
     const cust = await env.DB.prepare("SELECT name FROM customers WHERE id = ?").bind(org).first();
     const mail = quoteAcceptedNoticeEmail(env, {
       customerName: cust ? cust.name : "A customer", quoteTitle: quote.title, acceptedBy: signer, total: fmtMoney(total),
     });
-    await sendEmail(env, { to: env.ADMIN_ALERT_EMAIL, template: "quote_accepted", ...mail });
+    await alertFlossByte(env, "quote_accepted", mail);
   }
   return redirect(`/app/quotes/${quoteId}?msg=` + encodeURIComponent("Quote accepted. Thank you." + invoiceNote));
 }
