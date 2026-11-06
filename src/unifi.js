@@ -46,7 +46,11 @@ function deviceType(d) {
   // The Site Manager API has no type field; the model shortname carries it.
   const sn = String(d.shortname || "").toLowerCase();
   if (sn.startsWith("ucg") || sn.startsWith("udm") || sn.startsWith("udr") || sn.startsWith("uxg") || sn.startsWith("ugw")) return "Gateway";
-  if (sn.startsWith("uap")) return "Access point";
+  // Access points: UAP* shortnames, the U6*/U7* WiFi generations (U6 Pro,
+  // U7LR for the AC LR, ...), and legacy AC model names.
+  if (sn.startsWith("uap") || sn.startsWith("u6") || sn.startsWith("u7")) return "Access point";
+  const mdl = String(d.model || "");
+  if (/^(U6|U7)\b/.test(mdl) || /^AC\s/.test(mdl)) return "Access point";
   if (sn.startsWith("usw")) return "Switch";
   if (sn.startsWith("unvr")) return "Recorder";
   if (sn.startsWith("uck") || sn.startsWith("ucck")) return "Controller";
