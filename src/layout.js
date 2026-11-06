@@ -152,6 +152,7 @@ a.rail-item:hover,button.rail-item:hover{background:#f0f4f8;color:var(--ink)}
 .rail .tab-btn{border-bottom:none;margin-bottom:0}
 .rail .tab-btn.active{color:#00796b;border-bottom-color:transparent}
 .rail-sep{border-top:1px solid var(--line);margin:10px 4px}
+.rail-label{padding:12px 12px 2px;font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
 @media (max-width:900px){
 .shell{grid-template-columns:minmax(0,1fr);gap:14px}
 .rail{top:8px;z-index:20;display:flex;align-items:center;gap:6px;overflow-x:auto;padding:8px;scrollbar-width:none}

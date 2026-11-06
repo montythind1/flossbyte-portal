@@ -62,10 +62,16 @@ function locNav(loc, active) {
 function orgRail(user, active, orgName) {
   const item = (key, href, label, ic) =>
     `<a class="rail-item${active === key ? " active" : ""}" href="${href}">${icon(ic)}${label}</a>`;
+  // Account administration (services, team) sits in its own labeled
+  // group, and only the organization's admins see it at all; everyday
+  // items (practices, billing) stay above it.
+  const account = user.role === "customer_admin"
+    ? `<div class="rail-label">Account</div>${item("services", "/app/services", "Services", "shield")}${item("team", "/app/team", "Team", "users")}`
+    : "";
   return `<div class="shell"><aside class="rail">
     <div class="rail-context"><div class="rc-t">${esc(orgName || "My Portal")}</div><div class="rc-s">Client portal</div></div>
     ${item("practices", "/app", "Your practices", "home")}${item("billing", "/app/billing", "Billing", "receipt")}
-    ${user.role === "customer_admin" ? item("team", "/app/team", "Team", "users") : ""}</aside><div class="shell-main">`;
+    ${account}</aside><div class="shell-main">`;
 }
 
 function lockedTile(user, loc, productName, productKey) {
@@ -109,7 +115,7 @@ export async function productRequestPost(env, request, user, locationId) {
     });
     await alertFlossByte(env, "product_request", mail);
   }
-  return redirect(`/app/locations/${locationId}?msg=` + encodeURIComponent("Request sent. FlossByte will be in touch about it."));
+  return redirect("/app/services?msg=" + encodeURIComponent("Request sent. FlossByte will be in touch about it."));
 }
 
 // ---------- Entry: /app ----------
@@ -130,6 +136,8 @@ export async function appHome(env, request, user) {
       <span class="d">${esc(loc.customer_name)}${loc.city ? ", " + esc(loc.city) : ""}</span></a>`);
   }
   if (user.role === "customer_admin") {
+    cards.push(`<a class="tile" href="/app/services"><span class="t">Services</span>
+      <span class="d">What each practice has with FlossByte, and requesting a service you do not have yet.</span></a>`);
     cards.push(`<a class="tile" href="/app/team"><span class="t">Team</span>
       <span class="d">People with a login for your organization, and removing people who left.</span></a>`);
   }
@@ -157,7 +165,6 @@ export async function locationOverview(env, request, user, locationId) {
     `SELECT (SELECT COUNT(*) FROM quotes WHERE customer_id = ? AND status = 'sent') AS sent_quotes,
             (SELECT COUNT(*) FROM invoices WHERE customer_id = ? AND status = 'unpaid') AS unpaid_invoices`)
     .bind(loc.customer_id, loc.customer_id).first().catch(() => null);
-  const states = await productStates(db, loc.customer_id, locationId);
   const expiringHtml = expiring.length
     ? `<div class="notice"><strong>Needs attention, next 90 days</strong><ul style="margin:8px 0 0;padding-left:18px">
         ${expiring.map((e) => {
@@ -166,11 +173,9 @@ export async function locationOverview(env, request, user, locationId) {
           const days = daysUntil(date);
           return `<li>${esc(e.vendor || "")} ${esc(e.model || e.type || "Equipment")}: ${kind.toLowerCase()} expires ${esc(fmtDateUS(date))} (${days < 0 ? "expired" : days + " days"})</li>`;
         }).join("")}</ul></div>` : "";
-  const tiles = states.map((p) => p.enabled
-    ? `<a class="tile" href="/app/locations/${locationId}/products/${p.key}"><span class="t">${esc(p.name)}</span><span class="d"><span class="pill on">On</span> ${esc(p.description || "")}</span></a>`
-    : `<div class="tile"><span class="t">${esc(p.name)}</span><span class="d"><span class="pill off">Not included</span> ${esc(p.description || "")}</span>${requestForm(loc, p.key)}</div>`).join("");
   const quickLinks = [
     `<a href="/app/billing">Billing</a>${billing && billing.sent_quotes ? ` (${billing.sent_quotes} quote${billing.sent_quotes > 1 ? "s" : ""} waiting for you)` : ""}${billing && billing.unpaid_invoices ? ` (${billing.unpaid_invoices} unpaid invoice${billing.unpaid_invoices > 1 ? "s" : ""})` : ""}`,
+    user.role === "customer_admin" ? `<a href="/app/services">Services</a>` : "",
     user.role === "customer_admin" ? `<a href="/app/team">Manage your team</a>` : "",
   ].filter(Boolean).join(" &nbsp;·&nbsp; ");
   const body = `${locNav(loc, "overview")}<h1>${esc(loc.name)}</h1>
@@ -181,10 +186,37 @@ export async function locationOverview(env, request, user, locationId) {
       <a class="tile" href="/app/locations/${locationId}/tickets"><span class="tile-n">${counts.open_tickets}</span><span class="d">Open tickets</span></a>
       <a class="tile" href="/app/locations/${locationId}/documents"><span class="tile-n">${counts.documents}</span><span class="d">Documents</span></a>
       <a class="tile" href="${REMOTE_URL}" target="_blank" rel="noopener"><span class="t">Remote Support</span><span class="d">Start a session: download the app, then read us the 9-digit code it shows.</span></a>
-    </div>
-    <h2 style="margin-top:28px">Your services</h2><div class="grid">${tiles}</div>`;
+    </div>`;
   const msg = new URL(request.url).searchParams.get("msg");
   return page({ title: loc.name, user, body, flash: msg || undefined });
+}
+
+// ---------- Services (Account section, customer_admin only) ----------
+// What the organization has with FlossByte, per location, and where an
+// admin asks for a service the practice does not have yet. Kept off the
+// everyday location pages on purpose: this is account administration.
+export async function servicesPage(env, request, user) {
+  const org = await customerAdminOrg(env.DB, user);
+  if (org === null) return denied(user, 403);
+  const db = env.DB;
+  const cust = await db.prepare("SELECT name FROM customers WHERE id = ?").bind(org).first();
+  const { results: locs } = await db.prepare("SELECT * FROM locations WHERE customer_id = ? ORDER BY id").bind(org).all();
+  const cards = [];
+  for (const loc of locs || []) {
+    const states = await productStates(db, org, loc.id);
+    const rowsHtml = states.map((p) => `<tr><td><strong>${esc(p.name)}</strong>
+        <div class="muted">${esc(p.description || "")}</div></td>
+      <td>${p.enabled ? `<span class="pill on">On</span>` : `<span class="pill off">Not included</span>`}</td>
+      <td>${p.enabled ? "" : requestForm(loc, p.key)}</td></tr>`).join("");
+    cards.push(`<div class="card"><h2 style="margin-top:0">${esc(loc.name)}</h2>
+      <div class="tscroll"><table class="stack"><thead><tr><th>Service</th><th>Status</th><th></th></tr></thead>
+      <tbody>${rowsHtml}</tbody></table></div></div>`);
+  }
+  const body = `${orgRail(user, "services", cust ? cust.name : "My Portal")}<h1>Services</h1>
+    <p class="muted">What your organization has with FlossByte, office by office. Only your organization's admins see this page. To change a service that is on, contact FlossByte.</p>
+    ${cards.join("") || `<div class="card"><p class="muted">No offices yet.</p></div>`}`;
+  const qp = new URL(request.url).searchParams;
+  return page({ title: "Services", user, body, flash: qp.get("msg") || undefined, error: qp.get("err") || undefined });
 }
 
 // ---------- Team (customer_admin only) ----------
