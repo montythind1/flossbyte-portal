@@ -79,6 +79,15 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.5p
 .pill{display:inline-block;padding:2px 9px;border-radius:999px;font-size:12px;font-weight:600;background:#e7edf3;white-space:nowrap}
 .tscroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
 .tscroll>table{min-width:600px}
+@media (max-width:680px){
+.tscroll{overflow-x:visible}
+.tscroll>table.stack{min-width:0}
+table.stack thead{display:none}
+table.stack tr{display:block;padding:8px 0;border-bottom:1px solid var(--line)}
+table.stack td{display:block;border-bottom:none;padding:3px 0}
+table.stack td:empty{display:none}
+table.stack form.row{flex-wrap:wrap}
+}
 .pill.on{background:#e0f5ef;color:var(--ok)}
 .pill.off{background:#f3e2e0;color:var(--bad)}
 .pill.warn{background:var(--warn-bg);color:var(--warn)}

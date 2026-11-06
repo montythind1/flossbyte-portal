@@ -526,15 +526,15 @@ export async function customerPage(env, request, user, customerId) {
         <label>Phone <span class="req">*</span></label><input name="phone" data-phone inputmode="tel" value="${esc(c.phone || "")}">
         <p style="margin-top:12px"><button class="btn small" type="submit">Save</button> <button class="btn small secondary" type="button" data-cancel>Cancel</button></p></form></div>
     <div class="card tab-panel${tab === "locations" ? " active" : ""}" data-panel="locations">
-      <div class="tscroll"><table><thead><tr><th>Name</th><th>Address</th><th>Status</th><th>Edit</th></tr></thead><tbody>${locRows || `<tr><td colspan="4" class="muted">No locations yet.</td></tr>`}</tbody></table></div>
+      <div class="tscroll"><table class="stack"><thead><tr><th>Name</th><th>Address</th><th>Status</th><th>Edit</th></tr></thead><tbody>${locRows || `<tr><td colspan="4" class="muted">No locations yet.</td></tr>`}</tbody></table></div>
       <p style="margin-top:14px"><a class="btn small secondary" href="/admin/customers/${customerId}/locations/new">+ Add location</a></p></div>
     <script src="/assets/address-lookup.js"></script>
     <script src="/assets/phone-format.js"></script>
     <div class="card tab-panel${tab === "products" ? " active" : ""}" data-panel="products">
-      <div class="tscroll"><table><thead><tr><th>Product</th><th>State</th><th>Change</th></tr></thead><tbody>${prodRows}</tbody></table></div>
+      <div class="tscroll"><table class="stack"><thead><tr><th>Product</th><th>State</th><th>Change</th></tr></thead><tbody>${prodRows}</tbody></table></div>
       <p class="muted">Switches are enforced on the server. Off means the client sees a locked tile and their data requests for that service are refused.</p></div>
     <div class="card tab-panel${tab === "users" ? " active" : ""}" data-panel="users">
-      <div class="tscroll"><table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th></th></tr></thead><tbody>${memberRows || `<tr><td colspan="5" class="muted">No logins yet.</td></tr>`}</tbody></table></div>
+      <div class="tscroll"><table class="stack"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th></th></tr></thead><tbody>${memberRows || `<tr><td colspan="5" class="muted">No logins yet.</td></tr>`}</tbody></table></div>
       <p style="margin-top:14px"><a class="btn small secondary" href="/admin/customers/${customerId}/users/new">+ Add user</a></p>
       <p class="muted">The invite email asks them to set a password and finish sign-in. Access starts only with this invite.</p></div>
     <div class="card tab-panel${tab === "manage" ? " active" : ""}" data-panel="manage" style="border-color:#e5b4b0">
@@ -897,7 +897,7 @@ export async function adminsPage(env, request, user) {
       <td><span class="pill ${a.status === "disabled" ? "off" : "on"}">${esc(a.status)}</span></td><td>${controls}</td></tr>`;
   }).join("");
   const body = `${adminNav("admins")}<h1>Admin accounts</h1>
-    <div class="card" style="padding:8px 14px"><div class="tscroll"><table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th></th></tr></thead>
+    <div class="card" style="padding:8px 14px"><div class="tscroll"><table class="stack"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th></th></tr></thead>
     <tbody>${rows}</tbody></table></div></div>
     <div class="card"><h3>Create an admin</h3>
       <form method="post" action="/admin/admins" class="row" style="align-items:end">
