@@ -5,6 +5,7 @@ import { createAuthToken, revokeAllSessions, verifyPassword } from "./auth.js";
 import { audit, isSuperAdmin, grantUserAccess, findCustomerByContactEmail, isValidEmail } from "./access.js";
 import { sendEmail, inviteEmail, newCustomerNoticeEmail, ownershipTransferEmail } from "./email.js";
 import { resendInviteEmail } from "./pages-public.js";
+import { runUnifiSync, lastUnifiSync } from "./unifi.js";
 
 function origin(env) { return env.APP_ORIGIN || "https://portal.flossbyte.com"; }
 function q(request) { return new URL(request.url).searchParams; }
@@ -14,7 +15,8 @@ function adminNav(active) {
     `<a href="${href}" ${active === key ? 'style="color:#0A1628;font-weight:700"' : ""}>${label}</a>`;
   return `<nav class="row" style="gap:18px;margin-bottom:18px">
     ${link("clients", "/admin", "Clients")}${link("new", "/admin/customers/new", "Add customer")}
-    ${link("pending", "/admin/pending", "Pending accounts")}${link("admins", "/admin/admins", "Admins")}</nav>`;
+    ${link("pending", "/admin/pending", "Pending accounts")}${link("admins", "/admin/admins", "Admins")}
+    ${link("sync", "/admin/sync", "Device sync")}</nav>`;
 }
 
 // ---------- Clients list ----------
@@ -942,6 +944,70 @@ export async function adminsPage(env, request, user) {
         return eligible.map((a) => `<p><a class="btn small secondary" href="/admin/transfer/${a.id}">Transfer ownership to ${esc(a.name)}</a> <span class="muted">${esc(a.email)}</span></p>`).join("");
       })()}</div>`;
   return page({ title: "Admins", user, body, flash: q(request).get("msg") || undefined });
+}
+
+// ---------- Device sync (UniFi first; Sophos joins this page later) ----------
+export async function syncPage(env, request, user) {
+  const last = await lastUnifiSync(env);
+  const keySaved = !!env.UNIFI_API_KEY;
+  let sitesTable = "", sitesNote = "";
+  try {
+    const { results: sites } = await env.DB.prepare(
+      `SELECT * FROM sync_sites WHERE provider = 'unifi' ORDER BY site_name`).all();
+    const { results: locs } = await env.DB.prepare(
+      `SELECT l.id, l.name AS loc_name, c.name AS cust_name FROM locations l
+       JOIN customers c ON c.id = l.customer_id ORDER BY c.name, l.name`).all();
+    const locOptions = (selected) => `<option value="">Not mapped</option>` + (locs || []).map((l) =>
+      `<option value="${l.id}" ${l.id === selected ? "selected" : ""}>${esc(l.cust_name)}: ${esc(l.loc_name)}</option>`).join("");
+    if (sites && sites.length) {
+      const siteRows = sites.map((s) => `<tr><td>${esc(s.site_name || s.site_id)}</td>
+        <td><form method="post" action="/admin/sync/map" class="row" style="gap:8px">
+          <input type="hidden" name="site_id" value="${esc(s.site_id)}">
+          <select name="location_id">${locOptions(s.location_id)}</select>
+          <button class="btn small" type="submit">Save</button></form></td></tr>`).join("");
+      sitesTable = `<div class="tscroll"><table class="stack"><thead><tr><th>UniFi site</th><th>Portal location</th></tr></thead><tbody>${siteRows}</tbody></table></div>`;
+    } else {
+      sitesNote = `<p class="muted">No UniFi sites discovered yet. Once the API key is saved, run a sync and every site on the account will appear here, ready to map to a location.</p>`;
+    }
+  } catch {
+    sitesNote = `<p class="muted">The database update for device sync (migration 0007) has not been applied yet, so sites cannot be listed. The sync reports the same message until it is.</p>`;
+  }
+  const lastHtml = last
+    ? `<p class="muted" style="margin-top:12px">Last sync: ${esc(String(last.at).replace("T", " ").slice(0, 16))} UTC. ${esc(last.message)}${last.ok ? ` Sites: ${last.sites}. Devices seen: ${last.devices}. Added: ${last.inserted}. Updated: ${last.updated}. Marked offline: ${last.offlined}. Not imported (site not mapped): ${last.unmappedDevices}.` : ""}</p>`
+    : `<p class="muted" style="margin-top:12px">No sync has run yet.</p>`;
+  const body = `${adminNav("sync")}<h1>Device sync</h1>
+    <div class="card"><h3>UniFi</h3>
+      <p class="muted">${keySaved
+        ? "An API key is saved, so the portal polls your UniFi account every hour and keeps each mapped location's equipment list current: access points, switches, and gateways, with model, firmware, and online status."
+        : "Not connected yet. Create an API key in your UniFi account at unifi.ui.com, then save it in Cloudflare as the secret UNIFI_API_KEY. After that the portal polls UniFi every hour on its own."}</p>
+      <form method="post" action="/admin/sync/run"><button class="btn" type="submit">Sync now</button></form>
+      ${lastHtml}</div>
+    <div class="card"><h3>Which UniFi site is which office?</h3>
+      <p class="muted">A site's devices are imported only after you map the site to a location. Devices from unmapped sites are counted in the sync summary but never added.</p>
+      ${sitesTable}${sitesNote}</div>`;
+  return page({ title: "Device sync", user, body, flash: q(request).get("msg") || undefined });
+}
+
+export async function syncMapPost(env, request, user) {
+  const f = await request.formData();
+  const siteId = String(f.get("site_id") || "");
+  const locRaw = String(f.get("location_id") || "");
+  if (siteId) {
+    await env.DB.prepare(
+      `INSERT INTO sync_sites (provider, site_id, location_id) VALUES ('unifi', ?, ?)
+       ON CONFLICT(provider, site_id) DO UPDATE SET location_id = excluded.location_id, updated_at = datetime('now')`)
+      .bind(siteId, locRaw ? Number(locRaw) : null).run();
+    await audit(env.DB, user.id, "sync_site_map", "location", locRaw ? Number(locRaw) : null, siteId);
+  }
+  return redirect("/admin/sync?msg=" + encodeURIComponent("Site mapping saved."));
+}
+
+export async function syncRunPost(env, request, user) {
+  const s = await runUnifiSync(env);
+  const text = s.ok
+    ? `UniFi sync done. ${s.inserted} added, ${s.updated} updated, ${s.offlined} marked offline, ${s.unmappedDevices} not imported (site not mapped).`
+    : `UniFi sync did not run: ${s.message}`;
+  return redirect("/admin/sync?msg=" + encodeURIComponent(text));
 }
 
 // ---------- Ownership transfer (Super Admin only) ----------

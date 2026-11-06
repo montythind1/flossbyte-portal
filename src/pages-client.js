@@ -200,7 +200,8 @@ export async function equipmentPage(env, request, user, locationId) {
     const exp = [e.license_expires, e.warranty_expires].filter(Boolean).sort()[0];
     const days = daysUntil(exp);
     const pill = exp && days <= 90 ? `<span class="pill warn">${esc(exp)}</span>` : esc(exp || "");
-    return `<tr><td>${esc(e.vendor || "")}</td><td>${esc(e.type || "")}</td><td>${esc(e.model || "")}</td>
+    const modelCell = e.name ? (e.model ? `${e.name} (${e.model})` : e.name) : (e.model || "");
+    return `<tr><td>${esc(e.vendor || "")}</td><td>${esc(e.type || "")}</td><td>${esc(modelCell)}</td>
       <td>${esc(e.serial || "")}</td><td>${esc(e.status)}</td><td>${esc(e.firmware || "")}</td><td>${pill}</td></tr>`;
   }).join("");
   const addForm = canEdit ? `<div class="card"><h3>Add equipment</h3>
