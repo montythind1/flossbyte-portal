@@ -54,7 +54,7 @@ function baseName(e) {
   return n;
 }
 function deviceKind(e) {
-  const n = `${e.name || ""} ${e.model || ""}`.trim();
+  const n = `${baseName(e)} ${e.model || ""}`.trim();
   const t = String(e.type || "");
   if (t === "Gateway" || t === "Firewall") return t;
   if (t === "Access point") return "Access point";
