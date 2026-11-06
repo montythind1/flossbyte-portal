@@ -8,6 +8,7 @@ import * as client from "./pages-client.js";
 import * as admin from "./pages-admin.js";
 import * as places from "./places.js";
 import { runUnifiSync } from "./unifi.js";
+import { runSophosSync } from "./sophos.js";
 
 function notFound() { return new Response("Not found", { status: 404 }); }
 
@@ -20,10 +21,10 @@ export default {
       return new Response("Something went wrong on our side. Please try again.", { status: 500 });
     }
   },
-  // Hourly device sync (cron in wrangler.toml). The sync records its own
+  // Hourly device sync (cron in wrangler.toml). Each sync records its own
   // outcome for the Device sync page and never throws past this handler.
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(runUnifiSync(env).catch(() => {}));
+    ctx.waitUntil(Promise.allSettled([runUnifiSync(env), runSophosSync(env)]));
   },
 };
 
@@ -85,6 +86,7 @@ async function route(request, env) {
     if (path === "/admin/sync" && method === "GET") return admin.syncPage(env, request, user);
     if (path === "/admin/sync/map" && method === "POST") return admin.syncMapPost(env, request, user);
     if (path === "/admin/sync/run" && method === "POST") return admin.syncRunPost(env, request, user);
+    if (path === "/admin/sync/run-sophos" && method === "POST") return admin.syncRunSophosPost(env, request, user);
     m = path.match(/^\/admin\/transfer\/(\d+)$/);
     if (m && method === "GET") return admin.transferPage(env, request, user, Number(m[1]));
     if (m && method === "POST") return admin.transferPost(env, request, user, Number(m[1]));
