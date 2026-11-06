@@ -153,7 +153,7 @@ export async function removeUserFromCustomer(db, actor, targetUserId, customerId
   await db.prepare("UPDATE users SET status = 'disabled', updated_at = datetime('now') WHERE id = ?")
     .bind(targetUserId).run();
   await revokeAllSessions(db, Number(targetUserId));
-  await audit(db, actor.id, "user_remove", "user", Number(targetUserId), `customer ${customerId}`);
+  await audit(db, actor.id, "user_remove", "user", Number(targetUserId), `client ${customerId}`);
   return { ok: true, target };
 }
 

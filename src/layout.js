@@ -296,6 +296,10 @@ document.addEventListener("keydown",function(e){if(e.key==="Escape")close();});}
     <p><a href="https://flossbyte.com">flossbyte.com</a></p>
   </div>
 </div></footer>`;
+  // Shell pages (admin console, client portal) open two wrapper divs
+  // (.shell and .shell-main) that their templates never close; close
+  // them explicitly here so every page's markup is balanced.
+  const shellClose = body.includes('<div class="shell">') ? "</div></div>" : "";
   const html = `<!DOCTYPE html><html lang="en">${head}<body>
 <header class="site"><div class="header-in">
   <a class="brand" href="/">
@@ -306,7 +310,7 @@ document.addEventListener("keydown",function(e){if(e.key==="Escape")close();});}
 </div></header>
 <main>
 ${alerts}
-${body}
+${body}${shellClose}
 </main>
 ${footer}
 ${acctScript}

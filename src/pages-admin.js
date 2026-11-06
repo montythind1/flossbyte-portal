@@ -143,7 +143,7 @@ export async function ticketsInboxPage(env, request, user) {
     .map(([v, l]) => `<option value="${v}" ${statusF === v ? "selected" : ""}>${l}</option>`).join("");
   const custOpts = `<option value="0">All clients</option>` + (custList || []).map((c) => `<option value="${c.id}" ${custF === c.id ? "selected" : ""}>${esc(c.name)}</option>`).join("");
   const body = `${adminNav("tickets")}<h1>Tickets</h1>
-    <p class="muted">New tickets and customer replies also come to you by email.</p>
+    <p class="muted">New tickets and client replies also come to you by email.</p>
     <form method="get" class="row" style="margin-bottom:14px;align-items:end">
       <span style="min-width:190px"><label>Status</label><select name="status">${statusOpts}</select></span>
       <span style="min-width:190px"><label>Client</label><select name="customer">${custOpts}</select></span>
@@ -160,6 +160,7 @@ const ACTION_LABEL = {
   quote_accept: "Accepted a quote", product_request: "Requested a service", user_remove: "Removed a user",
   customer_delete: "Deleted a client", sync_map: "Mapped a sync site",
   password_change: "Changed their password", mfa_disabled: "Turned off two-step verification",
+  customer_create: "Created a client", customer_update: "Updated client details",
   signout_others: "Signed out other sessions", mfa_enabled: "Turned on two-step verification",
 };
 export async function activityPage(env, request, user) {
@@ -169,7 +170,7 @@ export async function activityPage(env, request, user) {
   const rows = (results || []).map((a) => `<tr><td>${esc(fmtDateUS(a.created_at))} <span class="muted">${esc(String(a.created_at).slice(11, 16))}</span></td>
     <td>${esc(a.actor_name || a.actor_email || "System")}</td>
     <td>${esc(ACTION_LABEL[a.action] || a.action.replace(/_/g, " "))}</td>
-    <td>${esc(a.entity || "")}${a.entity_id ? " #" + a.entity_id : ""}</td><td>${esc(a.detail || "")}</td></tr>`).join("");
+    <td>${esc(a.entity === "customer" ? "client" : (a.entity || ""))}${a.entity_id ? " #" + a.entity_id : ""}</td><td>${esc(a.detail || "")}</td></tr>`).join("");
   const body = `${adminNav("activity")}<h1>Activity</h1>
     <p class="muted">The last 200 recorded actions across the portal: who did what, and when.</p>
     <div class="card" style="padding:8px 14px"><div class="tscroll"><table class="stack"><thead><tr><th>When</th><th>Who</th><th>Action</th><th>On</th><th>Detail</th></tr></thead>
@@ -669,7 +670,7 @@ export async function customerPage(env, request, user, customerId) {
       actions = `<form method="post" action="/admin/customers/${customerId}/quotes/${qt.id}/send" style="display:inline"><button class="btn small" type="submit">Send to customer</button></form>
         <form method="post" action="/admin/customers/${customerId}/quotes/${qt.id}/delete" style="display:inline"><button class="btn small danger" type="submit">Delete</button></form>`;
     } else if (qt.status === "sent") {
-      actions = `<span class="muted">Waiting for the customer</span>`;
+      actions = `<span class="muted">Waiting for the client</span>`;
     } else if (qt.status === "accepted") {
       actions = `<span class="muted">Accepted ${fmtDateUS(qt.accepted_at || "")}${qt.accepted_by ? " by " + esc(qt.accepted_by) : ""}. Invoiced ${fmtMoney(qt.invoiced_cents)} of ${fmtMoney(qt.total_cents)}.</span>`
         + (qt.invoiced_cents < qt.total_cents ? ` <form method="post" action="/admin/customers/${customerId}/quotes/${qt.id}/final" style="display:inline"><button class="btn small" type="submit">Invoice the rest</button></form>` : "");
@@ -745,7 +746,7 @@ export async function customerPage(env, request, user, customerId) {
         <textarea id="quoteTerms" name="terms" rows="3">${esc(PROJECT_TERMS)}</textarea>
         <p style="margin-top:12px"><button class="btn" type="submit">Save draft quote</button></p>
       </form>
-      <p class="muted">Drafts are not visible to the customer. When you send, the customer gets an email and can review and accept in the portal. Accepting creates the deposit invoice automatically when a deposit is set.</p>
+      <p class="muted">Drafts are not visible to the client. When you send, the client gets an email and can review and accept in the portal. Accepting creates the deposit invoice automatically when a deposit is set.</p>
       <script>(function(){var k=document.getElementById('quoteKind'),t=document.getElementById('quoteTerms');if(!k||!t)return;var T=${JSON.stringify({ project: PROJECT_TERMS, plan: PLAN_TERMS })};k.addEventListener('change',function(){if(t.value===T.project||t.value===T.plan){t.value=T[k.value]||t.value;}});})();</script>
       <h3 style="margin-top:28px">Invoices</h3>
       <div class="tscroll"><table class="stack"><thead><tr><th>Number</th><th>Invoice</th><th>Type</th><th class="num">Amount</th><th>Status</th><th>Due</th><th></th></tr></thead>
@@ -1071,7 +1072,7 @@ export async function deleteCustomerPage(env, request, user, customerId) {
       <li>${plural(counts.locations, "location")}</li>
       <li>${plural(counts.equipment, "equipment record")}</li>
       <li>${plural(counts.tickets, "ticket")} with their full history</li>
-      <li>${counts.documents} document(s), including the stored files</li>
+      <li>${plural(counts.documents, "document")}, including the stored files</li>
       <li>Product settings for this organization</li>
     </ul>
     <p>${counts.logins === 1 ? "The 1 login is" : `The ${counts.logins} logins are`} signed out immediately and lose access. Their accounts are disabled, not erased, so ticket history keeps its authors.</p>
@@ -1280,7 +1281,7 @@ async function siteMappingBlock(env, provider, heading, emptyNote) {
 
 function lastRunHtml(last, unitLabel) {
   if (!last) return `<p class="muted" style="margin-top:12px">No sync has run yet.</p>`;
-  return `<p class="muted" style="margin-top:12px">Last sync: ${esc(String(last.at).replace("T", " ").slice(0, 16))} UTC. ${esc(last.message)}${last.ok ? ` ${unitLabel}: ${last.sites != null ? last.sites : last.tenants}. Devices seen: ${last.devices}. Added: ${last.inserted}. Updated: ${last.updated}. Marked offline: ${last.offlined}. Not imported (not mapped): ${last.unmappedDevices}.` : ""}</p>`;
+  return `<p class="muted" style="margin-top:12px">Last sync: ${esc(fmtDateUS(String(last.at).slice(0, 10)))} at ${esc(String(last.at).slice(11, 16))} UTC. ${esc(last.message)}${last.ok ? ` ${unitLabel}: ${last.sites != null ? last.sites : last.tenants}. Devices seen: ${last.devices}. Added: ${last.inserted}. Updated: ${last.updated}. Marked offline: ${last.offlined}. Not imported (not mapped): ${last.unmappedDevices}.` : ""}</p>`;
 }
 
 export async function syncPage(env, request, user) {
