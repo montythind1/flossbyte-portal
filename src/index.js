@@ -69,6 +69,7 @@ async function route(request, env) {
   if (path === "/mfa/verify" && method === "POST") return pub.mfaVerifyPost(env, request, user);
   if (path === "/mfa/skip" && method === "POST") return pub.mfaSkipPost(env, request, user);
   if (path === "/mfa/password" && method === "POST") return pub.passwordChangePost(env, request, user);
+  if (path === "/mfa/profile" && method === "POST") return pub.profilePost(env, request, user);
   if (path === "/mfa/disable" && method === "POST") return pub.mfaDisablePost(env, request, user);
   if (path === "/mfa/signout-others" && method === "POST") return pub.signoutOthersPost(env, request, user);
 
@@ -173,6 +174,8 @@ async function route(request, env) {
   if (m && method === "GET") return client.productPage(env, request, user, Number(m[1]), m[2]);
   m = path.match(/^\/app\/locations\/(\d+)\/equipment$/);
   if (m && method === "GET") return client.equipmentPage(env, request, user, Number(m[1]));
+  m = path.match(/^\/app\/locations\/(\d+)\/topology$/);
+  if (m && method === "GET") return client.topologyPage(env, request, user, Number(m[1]));
   if (m && method === "POST") return client.equipmentPost(env, request, user, Number(m[1]));
   m = path.match(/^\/app\/locations\/(\d+)\/equipment\/(\d+)\/edit$/);
   if (m && method === "GET") return client.equipmentEditPage(env, request, user, Number(m[1]), Number(m[2]));

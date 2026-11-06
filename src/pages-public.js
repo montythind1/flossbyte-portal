@@ -3,7 +3,7 @@ import { page, redirect, esc } from "./layout.js";
 import {
   hashPassword, verifyPassword, createSession, revokeSession, sessionCookie,
   clearCookie, readCookie, createAuthToken, consumeAuthToken, peekAuthToken,
-  revokeAllSessions, sha256Hex,
+  revokeAllSessions, sha256Hex, splitName, joinName, normalizePhone,
 } from "./auth.js";
 import { verifyTotp, generateSecret, otpauthUrl } from "./totp.js";
 import { audit, isValidEmail } from "./access.js";
@@ -285,9 +285,17 @@ export async function mfaPage(env, request, user) {
     super_admin: "FlossByte Super Admin", admin: "FlossByte admin",
     customer_admin: "Practice admin", customer_user: "Practice team member",
   }[user.role] || "";
-  const loginCard = `<div class="card narrow"><h2 style="margin-top:0">Your login</h2>
-    <p style="margin:4px 0"><strong>${esc(user.name)}</strong></p>
-    <p class="muted" style="margin:4px 0">${esc(user.email)}${roleLine ? " · " + roleLine : ""}</p></div>`;
+  const np = splitName(user.name);
+  const loginCard = `<div class="card narrow"><h2 style="margin-top:0">Your profile</h2>
+    <form method="post" action="/mfa/profile">
+      <div class="row"><span style="flex:1"><label>First name <span class="req">*</span></label><input name="first_name" value="${esc(np.first)}" required autocomplete="given-name"></span>
+      <span style="flex:1"><label>Middle name</label><input name="middle_name" value="${esc(np.middle)}" autocomplete="additional-name"></span>
+      <span style="flex:1"><label>Last name <span class="req">*</span></label><input name="last_name" value="${esc(np.last)}" required autocomplete="family-name"></span></div>
+      <label>Phone</label><input name="phone" inputmode="tel" autocomplete="tel" value="${esc(user.phone || "")}" placeholder="(555) 123-4567">
+      <label>Email</label><input value="${esc(user.email)}" disabled>
+      <p class="muted">Your email is your login and can't be changed.${roleLine ? ` Role: ${roleLine}.` : ""}</p>
+      <p style="margin-top:14px"><button class="btn" type="submit">Save profile</button></p>
+    </form></div>`;
   const passwordCard = `<div class="card narrow"><h2 style="margin-top:0">Password</h2>
     <form method="post" action="/mfa/password">
       <label>Current password <span class="req">*</span></label><input name="current_password" type="password" required autocomplete="current-password">
@@ -346,6 +354,24 @@ export async function mfaPage(env, request, user) {
 async function currentSessionHash(request) {
   const raw = readCookie(request, "fb_session");
   return raw ? sha256Hex(raw) : "";
+}
+
+export async function profilePost(env, request, user) {
+  const f = await request.formData();
+  const first = String(f.get("first_name") || "").trim();
+  const middle = String(f.get("middle_name") || "").trim();
+  const last = String(f.get("last_name") || "").trim();
+  if (!first || !last) return redirect("/mfa?err=" + encodeURIComponent("First name and last name are required."));
+  const rawPhone = String(f.get("phone") || "").trim();
+  let phone = "";
+  if (rawPhone) {
+    phone = normalizePhone(rawPhone);
+    if (!phone) return redirect("/mfa?err=" + encodeURIComponent("Enter a 10-digit phone number, or leave the phone blank."));
+  }
+  await env.DB.prepare("UPDATE users SET name = ?, phone = ?, updated_at = datetime('now') WHERE id = ?")
+    .bind(joinName(first, middle, last), phone, user.id).run();
+  await audit(env.DB, user.id, "profile_update", "user", user.id, "name and phone");
+  return redirect("/mfa?msg=" + encodeURIComponent("Your profile is saved."));
 }
 
 export async function passwordChangePost(env, request, user) {

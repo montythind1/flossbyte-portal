@@ -34,14 +34,16 @@ function pickArray(resp, key) {
   return [];
 }
 
-// Connected devices (the PCs, phones and printers on a site's network)
-// are served by the per-console Network API, reached through the Site
-// Manager cloud connector with the same API key. Resolves the console's
-// local site, then pages through its client list. Returns the client
-// array, or null when the console cannot be reached either way the
-// connector path is spelled; an empty array is a successful read of a
-// site with nothing connected.
-async function fetchSiteClients(env, hostId) {
+// The per-console Network API, reached through the Site Manager cloud
+// connector with the same API key, serves what the account-level API
+// cannot: the site's connected devices (PCs, phones, printers) and the
+// wiring between everything (each client and device names the UniFi
+// device it hangs off of, which is what the topology view draws).
+// Resolves the console's local site, then reads its device list (for
+// uuid -> MAC translation and device parents) and its client list.
+// Returns { clients, uuidToMac, deviceParent } or null when the console
+// cannot be reached either way the connector path is spelled.
+async function fetchSiteLocal(env, hostId, consoleMac) {
   const bases = [
     `/v1/connector/consoles/${hostId}/network/integration/v1`,
     `/v1/connector/consoles/${hostId}/proxy/network/integration/v1`,
@@ -53,17 +55,47 @@ async function fetchSiteClients(env, hostId) {
       const local = localSites.find((s) => String(s.internalReference || "").toLowerCase() === "default") || localSites[0];
       const uuid = String(local.id || "");
       if (!uuid) continue;
-      const out = [];
-      let offset = 0;
-      for (let page = 0; page < 10; page++) {
-        const resp = await fetchApi(env, `${base}/sites/${uuid}/clients?limit=200&offset=${offset}`);
-        const batch = pickArray(resp, "clients");
-        out.push(...batch);
-        const total = Number(resp && resp.totalCount);
-        offset += batch.length;
-        if (!batch.length || (Number.isFinite(total) && offset >= total)) break;
+      const paged = async (path) => {
+        const out = [];
+        let offset = 0;
+        for (let page = 0; page < 10; page++) {
+          const resp = await fetchApi(env, `${base}/sites/${uuid}/${path}?limit=200&offset=${offset}`);
+          const batch = pickArray(resp, path);
+          out.push(...batch);
+          const total = Number(resp && resp.totalCount);
+          offset += batch.length;
+          if (!batch.length || (Number.isFinite(total) && offset >= total)) break;
+        }
+        return out;
+      };
+      const localDevices = await paged("devices");
+      const uuidToMac = {};
+      for (const d of localDevices) {
+        const m = normMac(d.macAddress || d.mac);
+        if (d.id && m) uuidToMac[String(d.id)] = m;
       }
-      return out;
+      // Each local device's parent: its own uplink when the console will
+      // say (a details read per device), otherwise the console itself,
+      // which is where small-office gear hangs in practice.
+      const deviceParent = {};
+      for (const d of localDevices) {
+        const m = normMac(d.macAddress || d.mac);
+        if (!m) continue;
+        if (consoleMac && m === consoleMac) { deviceParent[m] = null; continue; }
+        let parent = consoleMac || null;
+        try {
+          const resp = await fetchApi(env, `${base}/sites/${uuid}/devices/${d.id}`);
+          const det = resp && resp.data && typeof resp.data === "object" && !Array.isArray(resp.data) ? resp.data : resp;
+          const up = (det && det.uplink) || {};
+          const upId = up.deviceId || up.id || up.uplinkDeviceId || (det && det.uplinkDeviceId);
+          const upMac = normMac(up.macAddress || up.mac);
+          if (upId && uuidToMac[String(upId)] && uuidToMac[String(upId)] !== m) parent = uuidToMac[String(upId)];
+          else if (upMac && upMac !== m) parent = upMac;
+        } catch { /* keep the console fallback */ }
+        deviceParent[m] = parent;
+      }
+      const clients = await paged("clients");
+      return { clients, uuidToMac, deviceParent };
     } catch { /* try the other connector path spelling */ }
   }
   return null;
@@ -206,6 +238,32 @@ export async function runUnifiSync(env) {
     const locationBySite = {};
     for (const r of mapRows || []) locationBySite[r.site_id] = r.location_id;
 
+    // Topology parents (migration 0010) are written only when the
+    // column exists, so this sync keeps working before it is applied.
+    let hasParent = true;
+    try { await env.DB.prepare("SELECT parent_mac FROM equipment LIMIT 1").all(); } catch { hasParent = false; }
+
+    // Each console's own MAC, per site, from the Site Manager device
+    // list: the anchor the topology parents hang off of.
+    const consoleMacBySite = {};
+    for (const d of devices) {
+      if (!d.isConsole || !d.hostId) continue;
+      const cands = hostToSites[String(d.hostId)] || [];
+      if (cands.length === 1) {
+        const m = normMac(d.mac);
+        if (m) consoleMacBySite[cands[0]] = m;
+      }
+    }
+    // One read of each mapped site's console-local API up front: the
+    // device phase takes its topology parents from it and the client
+    // phase below takes the connected devices.
+    const siteLocal = {};
+    for (const [siteId] of Object.entries(locationBySite)) {
+      const hostId = hostIdBySite[siteId];
+      siteLocal[siteId] = hostId ? await fetchSiteLocal(env, hostId, consoleMacBySite[siteId] || null) : null;
+      if (!siteLocal[siteId]) summary.clientsError = "One or more consoles could not be read for connected devices.";
+    }
+
     const seenByLocation = {};
     for (const locId of Object.values(locationBySite)) seenByLocation[locId] = new Set();
 
@@ -237,22 +295,40 @@ export async function runUnifiSync(env) {
         row = await env.DB.prepare(
           "SELECT * FROM equipment WHERE location_id = ? AND serial = ?").bind(locationId, fields.serial).first();
       }
+      const local = siteId ? siteLocal[String(siteId)] : null;
+      const parentMac = hasParent && local && mac ? (local.deviceParent[mac] ?? null) : null;
       if (row) {
         if (row.source !== "unifi") summary.claimed++;
-        await env.DB.prepare(
-          `UPDATE equipment SET location_id = ?, vendor = 'UniFi', type = ?, model = ?, name = ?,
-             serial = COALESCE(?, serial), status = ?, firmware = ?, mac = ?, source = 'unifi',
-             external_id = ?, last_seen_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`)
-          .bind(locationId, fields.type, fields.model, fields.name, fields.serial,
-            fields.status, fields.firmware, mac, externalId, row.id).run();
+        if (hasParent) {
+          await env.DB.prepare(
+            `UPDATE equipment SET location_id = ?, vendor = 'UniFi', type = ?, model = ?, name = ?,
+               serial = COALESCE(?, serial), status = ?, firmware = ?, mac = ?, source = 'unifi',
+               external_id = ?, parent_mac = COALESCE(?, parent_mac),
+               last_seen_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`)
+            .bind(locationId, fields.type, fields.model, fields.name, fields.serial,
+              fields.status, fields.firmware, mac, externalId, parentMac, row.id).run();
+        } else {
+          await env.DB.prepare(
+            `UPDATE equipment SET location_id = ?, vendor = 'UniFi', type = ?, model = ?, name = ?,
+               serial = COALESCE(?, serial), status = ?, firmware = ?, mac = ?, source = 'unifi',
+               external_id = ?, last_seen_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`)
+            .bind(locationId, fields.type, fields.model, fields.name, fields.serial,
+              fields.status, fields.firmware, mac, externalId, row.id).run();
+        }
         summary.updated++;
         seenByLocation[locationId].add(row.id);
       } else {
-        const ins = await env.DB.prepare(
-          `INSERT INTO equipment (location_id, vendor, type, model, serial, status, firmware, name, mac, source, external_id, last_seen_at)
-           VALUES (?, 'UniFi', ?, ?, ?, ?, ?, ?, ?, 'unifi', ?, datetime('now'))`)
-          .bind(locationId, fields.type, fields.model, fields.serial, fields.status,
-            fields.firmware, fields.name, mac, externalId).run();
+        const ins = hasParent
+          ? await env.DB.prepare(
+            `INSERT INTO equipment (location_id, vendor, type, model, serial, status, firmware, name, mac, source, external_id, parent_mac, last_seen_at)
+             VALUES (?, 'UniFi', ?, ?, ?, ?, ?, ?, ?, 'unifi', ?, ?, datetime('now'))`)
+            .bind(locationId, fields.type, fields.model, fields.serial, fields.status,
+              fields.firmware, fields.name, mac, externalId, parentMac).run()
+          : await env.DB.prepare(
+            `INSERT INTO equipment (location_id, vendor, type, model, serial, status, firmware, name, mac, source, external_id, last_seen_at)
+             VALUES (?, 'UniFi', ?, ?, ?, ?, ?, ?, ?, 'unifi', ?, datetime('now'))`)
+            .bind(locationId, fields.type, fields.model, fields.serial, fields.status,
+              fields.firmware, fields.name, mac, externalId).run();
         summary.inserted++;
         seenByLocation[locationId].add(ins.meta.last_row_id);
       }
@@ -283,14 +359,12 @@ export async function runUnifiSync(env) {
       const seenClientsByLocation = {};
       const readLocations = new Set();
       for (const [siteId, locationId] of Object.entries(locationBySite)) {
-        const hostId = hostIdBySite[siteId];
-        if (!hostId) continue;
-        const clients = await fetchSiteClients(env, hostId);
-        if (!clients) { summary.clientsError = "One or more consoles could not be read for connected devices."; continue; }
+        const local = siteLocal[siteId];
+        if (!local) continue;
         readLocations.add(locationId);
         if (!seenClientsByLocation[locationId]) seenClientsByLocation[locationId] = new Set();
         const seen = seenClientsByLocation[locationId];
-        for (const c of clients) {
+        for (const c of local.clients) {
           const kind = String(c.type || "").toUpperCase();
           if (kind !== "WIRED" && kind !== "WIRELESS") continue;
           const mac = normMac(c.macAddress || c.mac);
@@ -298,6 +372,9 @@ export async function runUnifiSync(env) {
           summary.clientsSeen++;
           const externalId = "client:" + mac.replace(/:/g, "");
           const name = c.name ? String(c.name) : mac;
+          const parentMac = hasParent
+            ? (c.uplinkDeviceId && local.uuidToMac[String(c.uplinkDeviceId)]) || consoleMacBySite[siteId] || null
+            : null;
           let row = await env.DB.prepare(
             "SELECT * FROM equipment WHERE source = 'unifi-client' AND external_id = ?").bind(externalId).first();
           if (!row) {
@@ -305,18 +382,32 @@ export async function runUnifiSync(env) {
               "SELECT * FROM equipment WHERE location_id = ? AND mac = ?").bind(locationId, mac).first();
           }
           if (row) {
-            await env.DB.prepare(
-              `UPDATE equipment SET location_id = ?, vendor = 'UniFi', type = 'Connected device', name = ?,
-                 status = 'online', mac = ?, source = 'unifi-client', external_id = ?,
-                 last_seen_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`)
-              .bind(locationId, name, mac, externalId, row.id).run();
+            if (hasParent) {
+              await env.DB.prepare(
+                `UPDATE equipment SET location_id = ?, vendor = 'UniFi', type = 'Connected device', name = ?,
+                   status = 'online', mac = ?, source = 'unifi-client', external_id = ?,
+                   parent_mac = COALESCE(?, parent_mac),
+                   last_seen_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`)
+                .bind(locationId, name, mac, externalId, parentMac, row.id).run();
+            } else {
+              await env.DB.prepare(
+                `UPDATE equipment SET location_id = ?, vendor = 'UniFi', type = 'Connected device', name = ?,
+                   status = 'online', mac = ?, source = 'unifi-client', external_id = ?,
+                   last_seen_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`)
+                .bind(locationId, name, mac, externalId, row.id).run();
+            }
             summary.clientsUpdated++;
             seen.add(row.id);
           } else {
-            const ins = await env.DB.prepare(
-              `INSERT INTO equipment (location_id, vendor, type, model, serial, status, firmware, name, mac, source, external_id, last_seen_at)
-               VALUES (?, 'UniFi', 'Connected device', NULL, NULL, 'online', NULL, ?, ?, 'unifi-client', ?, datetime('now'))`)
-              .bind(locationId, name, mac, externalId).run();
+            const ins = hasParent
+              ? await env.DB.prepare(
+                `INSERT INTO equipment (location_id, vendor, type, model, serial, status, firmware, name, mac, source, external_id, parent_mac, last_seen_at)
+                 VALUES (?, 'UniFi', 'Connected device', NULL, NULL, 'online', NULL, ?, ?, 'unifi-client', ?, ?, datetime('now'))`)
+                .bind(locationId, name, mac, externalId, parentMac).run()
+              : await env.DB.prepare(
+                `INSERT INTO equipment (location_id, vendor, type, model, serial, status, firmware, name, mac, source, external_id, last_seen_at)
+                 VALUES (?, 'UniFi', 'Connected device', NULL, NULL, 'online', NULL, ?, ?, 'unifi-client', ?, datetime('now'))`)
+                .bind(locationId, name, mac, externalId).run();
             summary.clientsAdded++;
             seen.add(ins.meta.last_row_id);
           }

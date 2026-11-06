@@ -38,6 +38,7 @@ const ICON_PATHS = {
   headset: '<path d="M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M21 14h-3a2 2 0 0 0-2 2v3a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2z"/><path d="M3 14v-2a9 9 0 0 1 18 0v2"/>',
   activity: '<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>',
   check: '<polyline points="20 6 9 17 4 12"/>',
+  topology: '<circle cx="12" cy="5" r="2.2"/><circle cx="5" cy="19" r="2.2"/><circle cx="19" cy="19" r="2.2"/><path d="M12 7.2v3.1M12 10.3 5.9 16.9M12 10.3l6.1 6.6"/>',
 };
 export function icon(name) {
   return `<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON_PATHS[name] || ""}</svg>`;
@@ -153,6 +154,18 @@ a.rail-item:hover,button.rail-item:hover{background:#f0f4f8;color:var(--ink)}
 .rail .tab-btn{border-bottom:none;margin-bottom:0}
 .rail .tab-btn.active{color:#00796b;border-bottom-color:transparent}
 .rail-sep{border-top:1px solid var(--line);margin:10px 4px}
+.topo ul{list-style:none;margin:0;padding-left:20px;border-left:2px solid #e0e8f0}
+.topo>ul{padding-left:0;border-left:none}
+.topo li{margin:8px 0;position:relative}
+.topo ul li::before{content:"";position:absolute;left:-20px;top:17px;width:18px;border-top:2px solid #e0e8f0}
+.topo-node{display:inline-flex;align-items:center;gap:8px;background:#fff;border:1px solid #dde5ee;border-radius:10px;padding:7px 12px;max-width:100%}
+.topo-node.root{border-color:#0A1628;background:#0A1628;color:#fff}
+.topo-node.root .topo-meta{color:#aebdd2}
+.topo-dot{width:9px;height:9px;border-radius:50%;background:#12b76a;flex:none}
+.topo-node.off{opacity:.6}
+.topo-node.off .topo-dot{background:#98a2b3}
+.topo-name{font-weight:600}
+.topo-meta{color:#667085;font-size:12.5px}
 .rail-label{padding:12px 12px 2px;font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
 @media (max-width:900px){
 .shell{grid-template-columns:minmax(0,1fr);gap:14px}

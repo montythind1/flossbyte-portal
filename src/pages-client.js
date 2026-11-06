@@ -53,6 +53,7 @@ function locNav(loc, active) {
   return `<div class="shell"><aside class="rail">
     <div class="rail-context"><div class="rc-t">${esc(loc.name)}</div><div class="rc-s">${esc(loc.customer_name)}</div></div>
     ${item("overview", base, "Overview", "grid")}${item("equipment", base + "/equipment", "Equipment", "monitor")}
+    ${item("topology", base + "/topology", "Topology", "topology")}
     ${item("tickets", base + "/tickets", "Tickets", "ticket")}${item("documents", base + "/documents", "Documents", "folder")}
     ${item("ask", base + "/ask", "Ask", "chat")}
     <div class="rail-sep"></div>
@@ -371,6 +372,68 @@ export async function equipmentPage(env, request, user, locationId) {
     <div class="card" style="padding:8px 14px"><div class="tscroll"><table class="stack"><thead><tr><th>Vendor</th><th>Type</th><th>Model</th><th>Serial</th><th>Status</th><th>Firmware</th><th>Next expiry</th>${canEdit ? "<th></th>" : ""}</tr></thead>
     <tbody>${rows || `<tr><td colspan="${canEdit ? 8 : 7}" class="muted">No equipment recorded yet.</td></tr>`}</tbody></table></div></div>${addForm}`;
   return page({ title: "Equipment", user, body });
+}
+
+// ---------- Topology ----------
+// The office network drawn as a tree from the equipment record: each
+// row points at the device it hangs off of (parent_mac, filled by the
+// UniFi sync), so the gateway sits at the top, switches and access
+// points branch under it, and endpoints hang under those. Rows with no
+// known parent (hand-entered gear, other vendors) list as roots.
+export async function topologyPage(env, request, user, locationId) {
+  const { loc, error } = await guard(env, user, locationId);
+  if (error) return denied(user, error);
+  if (!(await laneOn(env.DB, loc.customer_id, locationId))) return lockedTile(user, loc, "Topology", "managed_it");
+  let hasParent = false;
+  try {
+    const cols = await env.DB.prepare("PRAGMA table_info(equipment)").all();
+    hasParent = (cols.results || []).some((c) => c.name === "parent_mac");
+  } catch { hasParent = false; }
+  if (!hasParent) {
+    const body = `${locNav(loc, "topology")}<h1>Network topology</h1>
+      <div class="card"><p style="margin:0">The topology view needs the latest portal database update before it can draw. Once that update is in, this page builds itself from the hourly sync, with no setup here.</p></div>`;
+    return page({ title: "Topology", user, body });
+  }
+  const { results } = await env.DB.prepare("SELECT * FROM equipment WHERE location_id = ?").bind(locationId).all();
+  const all = results || [];
+  if (!all.length) {
+    const body = `${locNav(loc, "topology")}<h1>Network topology</h1>
+      <div class="card"><p class="muted" style="margin:0">No equipment recorded yet, so there is nothing to draw. Synced network gear appears here as a tree once it is on the <a href="/app/locations/${locationId}/equipment">Equipment</a> list.</p></div>`;
+    return page({ title: "Topology", user, body });
+  }
+  const label = (e) => e.name ? (e.model ? `${e.name} (${e.model})` : e.name) : (e.model || e.type || "Equipment");
+  const byMac = new Map();
+  for (const e of all) if (e.mac) byMac.set(e.mac, e);
+  const kids = new Map();
+  const roots = [];
+  for (const e of all) {
+    const p = e.parent_mac && e.parent_mac !== e.mac ? byMac.get(e.parent_mac) : null;
+    if (p) { if (!kids.has(p.id)) kids.set(p.id, []); kids.get(p.id).push(e); }
+    else roots.push(e);
+  }
+  const rank = (e) => e.type === "Gateway" ? 0 : e.type === "Firewall" ? 1 : e.type === "Switch" ? 2
+    : e.type === "Access point" ? 3 : e.type === "Controller" ? 4 : e.type === "Recorder" ? 5
+    : e.source === "unifi-client" ? 8 : 6;
+  const byRank = (a, b) => rank(a) - rank(b) || label(a).localeCompare(label(b));
+  roots.sort(byRank);
+  for (const list of kids.values()) list.sort(byRank);
+  const seen = new Set();
+  const nodeHtml = (e, depth) => {
+    if (seen.has(e.id) || depth > 8) return "";
+    seen.add(e.id);
+    const children = (kids.get(e.id) || []).map((c) => nodeHtml(c, depth + 1)).join("");
+    return `<li><span class="topo-node${e.status === "offline" ? " off" : ""}${depth === 0 ? " root" : ""}"><span class="topo-dot"></span><span class="topo-name">${esc(label(e))}</span><span class="topo-meta">${esc(e.type || "")}</span></span>${children ? `<ul>${children}</ul>` : ""}</li>`;
+  };
+  let tree = roots.map((e) => nodeHtml(e, 0)).join("");
+  const leftovers = all.filter((e) => !seen.has(e.id));
+  if (leftovers.length) {
+    tree += leftovers.map((e) => `<li><span class="topo-node${e.status === "offline" ? " off" : ""}"><span class="topo-dot"></span><span class="topo-name">${esc(label(e))}</span><span class="topo-meta">${esc(e.type || "")}</span></span></li>`).join("");
+  }
+  const online = all.filter((e) => e.status === "online").length;
+  const body = `${locNav(loc, "topology")}<h1>Network topology</h1>
+    <p class="muted" style="margin-top:0">${all.length} devices on record, ${online} online. Drawn from the equipment record and refreshed by the hourly sync. Gear behind a non-UniFi switch shows under the gateway, because UniFi cannot see through it.</p>
+    <div class="card"><div class="topo"><ul>${tree}</ul></div></div>`;
+  return page({ title: "Topology", user, body });
 }
 
 export async function equipmentPost(env, request, user, locationId) {
