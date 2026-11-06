@@ -95,7 +95,64 @@ async function fetchSiteLocal(env, hostId, consoleMac) {
         deviceParent[m] = parent;
       }
       const clients = await paged("clients");
-      return { clients, uuidToMac, deviceParent };
+      // Everything else the console will tell us, each section read on
+      // its own so one missing endpoint never sinks the others. Items
+      // are trimmed to display fields; the full rule trees stay in
+      // UniFi where they belong.
+      const pick = (items, fields) => (Array.isArray(items) ? items : []).slice(0, 200).map((it) => {
+        const o = {};
+        for (const f of fields) if (it && it[f] !== undefined && it[f] !== null) o[f] = it[f];
+        return o;
+      });
+      const section = async (path, fields) => {
+        try { return pick(await paged(path), fields); } catch { return null; }
+      };
+      const wans = await section("wans", ["name", "ipAddress", "ip", "state", "status", "type"]);
+      const networks = await section("networks", ["name", "vlanId", "enabled", "default", "management"]);
+      let ssids = null;
+      try {
+        const rawSsids = await paged("wifi/broadcasts");
+        ssids = pick(rawSsids, ["name", "ssid", "enabled"]).map((s, i) => {
+          const r = rawSsids[i] || {};
+          const sec = r.security || (r.securityConfiguration && (r.securityConfiguration.type || r.securityConfiguration.mode)) || r.encryption;
+          return sec ? { ...s, security: String(sec) } : s;
+        });
+      } catch { ssids = null; }
+      const fwPolicies = await section("firewall/policies", ["name", "action", "enabled"]);
+      const fwZones = await section("firewall/zones", ["name"]);
+      const aclRules = await section("acl-rules", ["name", "action", "enabled"]);
+      const vpnServers = await section("vpn/servers", ["name", "type", "enabled"]);
+      const vpnTunnels = await section("vpn/site-to-site-tunnels", ["name", "type", "enabled", "state", "status"]);
+      const radiusProfiles = await section("radius/profiles", ["name"]);
+      // Latest statistics for each adopted device (uptime, CPU, memory).
+      const deviceStats = [];
+      for (const d of localDevices.slice(0, 25)) {
+        if (!d.id) continue;
+        try {
+          const st = await fetchApi(env, `${base}/sites/${uuid}/devices/${d.id}/statistics/latest`);
+          const s = st && typeof st === "object"
+            ? (st.uptimeSec !== undefined || st.cpuUtilizationPct !== undefined ? st : (st.data && typeof st.data === "object" ? st.data : null))
+            : null;
+          if (s) deviceStats.push({
+            mac: d.macAddress || "", name: d.name || d.model || "",
+            cpu: typeof s.cpuUtilizationPct === "number" ? s.cpuUtilizationPct : null,
+            mem: typeof s.memoryUtilizationPct === "number" ? s.memoryUtilizationPct : null,
+            uptimeSec: typeof s.uptimeSec === "number" ? s.uptimeSec : null,
+            load1: typeof s.loadAverage1Min === "number" ? s.loadAverage1Min : null,
+          });
+        } catch { /* one device's statistics are optional */ }
+      }
+      // Protect probe: only consoles actually running Protect answer.
+      let protect = null;
+      for (const pbase of [`/v1/connector/consoles/${hostId}/protect/integration/v1`, `/v1/connector/consoles/${hostId}/proxy/protect/integration/v1`]) {
+        try {
+          await fetchApi(env, `${pbase}/meta/info`);
+          const cams = await fetchApi(env, `${pbase}/cameras`);
+          protect = { cameras: pick(pickArray(cams, "cameras"), ["name", "model", "state", "status"]) };
+          break;
+        } catch { protect = null; }
+      }
+      return { clients, uuidToMac, deviceParent, sections: { wans, networks, ssids, fwPolicies, fwZones, aclRules, vpnServers, vpnTunnels, radiusProfiles, deviceStats, protect } };
     } catch { /* try the other connector path spelling */ }
   }
   return null;
@@ -233,6 +290,34 @@ export async function runUnifiSync(env) {
     }
     summary.devices = devices.length;
 
+    // ISP metrics (account level; hourly metrics are retained 30 days):
+    // aggregate the last 24 hours per site for the internet-health
+    // snapshot. Purely an enhancement; failure skips the section.
+    const ispBySite = {};
+    try {
+      const resp = await fetchApi(env, "/v1/isp-metrics/1h?duration=7d");
+      for (const entry of pickArray(resp, "metrics")) {
+        if (!entry || !entry.siteId || !Array.isArray(entry.periods) || !entry.periods.length) continue;
+        const periods = entry.periods.slice(-24);
+        const metrics = periods.map((p) => (p.data && p.data.wan) || {});
+        const avg = (k) => {
+          const vals = metrics.map((w) => Number(w[k])).filter((v) => Number.isFinite(v));
+          return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
+        };
+        ispBySite[String(entry.siteId)] = {
+          ispName: (metrics[metrics.length - 1] || {}).ispName || null,
+          hours: periods.length,
+          avgLatencyMs: avg("avgLatency"),
+          maxLatencyMs: Math.max(0, ...metrics.map((w) => Number(w.maxLatency) || 0)),
+          packetLossPct: avg("packetLoss"),
+          uptimePct: avg("uptime"),
+          downtimeSec: metrics.reduce((a, w) => a + (Number(w.downtime) || 0), 0),
+          downMbps: avg("download_kbps") != null ? avg("download_kbps") / 1000 : null,
+          upMbps: avg("upload_kbps") != null ? avg("upload_kbps") / 1000 : null,
+        };
+      }
+    } catch { /* ISP metrics are an enhancement */ }
+
     const { results: mapRows } = await env.DB.prepare(
       "SELECT site_id, location_id FROM sync_sites WHERE provider = 'unifi' AND location_id IS NOT NULL").all();
     const locationBySite = {};
@@ -242,6 +327,10 @@ export async function runUnifiSync(env) {
     // column exists, so this sync keeps working before it is applied.
     let hasParent = true;
     try { await env.DB.prepare("SELECT parent_mac FROM equipment LIMIT 1").all(); } catch { hasParent = false; }
+    // Snapshots (migration 0011) are stored only when the table exists,
+    // so this sync keeps working before it is applied.
+    let hasSnapshots = true;
+    try { await env.DB.prepare("SELECT id FROM network_snapshots LIMIT 1").all(); } catch { hasSnapshots = false; }
 
     // Each console's own MAC, per site, from the Site Manager device
     // list: the anchor the topology parents hang off of.
@@ -431,6 +520,42 @@ export async function runUnifiSync(env) {
       }
     } catch (err) {
       summary.clientsError = String(err && err.message || err);
+    }
+    // Network snapshots (migration 0011): store the latest reads per
+    // mapped location for the Network page. A section that failed to
+    // read this run keeps its previous snapshot untouched.
+    if (hasSnapshots) {
+      try {
+        for (const [siteId, locationId] of Object.entries(locationBySite)) {
+          const local = siteLocal[siteId];
+          const writes = [];
+          const isp = ispBySite[siteId] || null;
+          const wans = local && local.sections ? local.sections.wans : null;
+          if (isp || wans) writes.push(["internet", { isp, wans: wans || [] }]);
+          if (local && local.sections) {
+            const s = local.sections;
+            if (s.networks || s.ssids || s.fwPolicies || s.fwZones || s.vpnServers || s.vpnTunnels) {
+              writes.push(["config", {
+                networks: s.networks || [], ssids: s.ssids || [],
+                firewallPolicies: s.fwPolicies || [], firewallZones: s.fwZones || [],
+                aclRules: s.aclRules || [], vpnServers: s.vpnServers || [],
+                vpnTunnels: s.vpnTunnels || [], radiusProfiles: s.radiusProfiles || [],
+              }]);
+            }
+            if (s.deviceStats && s.deviceStats.length) writes.push(["device_stats", { devices: s.deviceStats }]);
+            if (s.protect) writes.push(["protect", s.protect]);
+          }
+          for (const [kind, payload] of writes) {
+            await env.DB.prepare(
+              `INSERT INTO network_snapshots (location_id, kind, payload, captured_at) VALUES (?, ?, ?, datetime('now'))
+               ON CONFLICT(location_id, kind) DO UPDATE SET payload = excluded.payload, captured_at = datetime('now')`)
+              .bind(locationId, kind, JSON.stringify(payload)).run();
+            summary.snapshots = (summary.snapshots || 0) + 1;
+          }
+        }
+      } catch (err) {
+        summary.snapshotError = String(err && err.message || err);
+      }
     }
     summary.ok = true;
     summary.message = "Sync complete.";

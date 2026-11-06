@@ -159,6 +159,10 @@ a.rail-item:hover,button.rail-item:hover{background:#f0f4f8;color:var(--ink)}
 .topo li{margin:8px 0;position:relative}
 .topo ul li::before{content:"";position:absolute;left:-20px;top:17px;width:18px;border-top:2px solid #e0e8f0}
 .topo-node{display:inline-flex;align-items:center;gap:8px;background:#fff;border:1px solid #dde5ee;border-radius:10px;padding:7px 12px;max-width:100%}
+.statgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin:6px 0 14px}
+.stat{background:#f6f9fc;border:1px solid #dde5ee;border-radius:10px;padding:10px 12px}
+.stat b{display:block;font-size:19px;color:var(--ink)}
+.stat span{color:#667085;font-size:12px}
 .topo-node.root{border-color:#0A1628;background:#0A1628;color:#fff}
 .topo-node.root .topo-meta{color:#aebdd2}
 .topo-dot{width:9px;height:9px;border-radius:50%;background:#12b76a;flex:none}

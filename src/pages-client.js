@@ -54,6 +54,7 @@ function locNav(loc, active) {
     <div class="rail-context"><div class="rc-t">${esc(loc.name)}</div><div class="rc-s">${esc(loc.customer_name)}</div></div>
     ${item("overview", base, "Overview", "grid")}${item("equipment", base + "/equipment", "Equipment", "monitor")}
     ${item("topology", base + "/topology", "Topology", "topology")}
+    ${item("network", base + "/network", "Network", "activity")}
     ${item("tickets", base + "/tickets", "Tickets", "ticket")}${item("documents", base + "/documents", "Documents", "folder")}
     ${item("ask", base + "/ask", "Ask", "chat")}
     <div class="rail-sep"></div>
@@ -434,6 +435,101 @@ export async function topologyPage(env, request, user, locationId) {
     <p class="muted" style="margin-top:0">${all.length} devices on record, ${online} online. Drawn from the equipment record and refreshed by the hourly sync. Gear behind a non-UniFi switch shows under the gateway, because UniFi cannot see through it.</p>
     <div class="card"><div class="topo"><ul>${tree}</ul></div></div>`;
   return page({ title: "Topology", user, body });
+}
+
+// The Network page renders the snapshots the UniFi sync stores per
+// location (migration 0011): internet health from ISP metrics, the
+// office's network/WiFi/firewall/VPN settings, per-device health, and
+// Protect cameras where a console runs Protect. Everything shown is a
+// read; the page itself changes nothing.
+export async function networkPage(env, request, user, locationId) {
+  const { loc, error } = await guard(env, user, locationId);
+  if (error) return denied(user, error);
+  if (!(await laneOn(env.DB, loc.customer_id, locationId))) return lockedTile(user, loc, "Network", "managed_it");
+  let hasTable = false;
+  try {
+    hasTable = !!(await env.DB.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'network_snapshots'").first());
+  } catch { hasTable = false; }
+  if (!hasTable) {
+    const body = `${locNav(loc, "network")}<h1>Network</h1>
+      <div class="card"><p style="margin:0">The Network page needs the latest portal database update before it can fill in. Once that update is in, this page builds itself from the hourly sync, with no setup here.</p></div>`;
+    return page({ title: "Network", user, body });
+  }
+  const { results } = await env.DB.prepare(
+    "SELECT kind, payload, captured_at FROM network_snapshots WHERE location_id = ?").bind(locationId).all();
+  const snaps = {};
+  let captured = "";
+  for (const r of results || []) {
+    try { snaps[r.kind] = JSON.parse(r.payload || "{}"); } catch { snaps[r.kind] = {}; }
+    if (r.captured_at && r.captured_at > captured) captured = r.captured_at;
+  }
+  if (!Object.keys(snaps).length) {
+    const body = `${locNav(loc, "network")}<h1>Network</h1>
+      <div class="card"><p class="muted" style="margin:0">No network data captured yet. For UniFi offices, the hourly sync fills this page in: internet health, network and WiFi settings, firewall and VPN setup, device health, and cameras where UniFi Protect is running.</p></div>`;
+    return page({ title: "Network", user, body });
+  }
+  const n0 = (v) => (typeof v === "number" && Number.isFinite(v)) ? Math.round(v).toLocaleString("en-US") : "—";
+  const n1 = (v) => (typeof v === "number" && Number.isFinite(v)) ? v.toFixed(1) : "—";
+  const pct = (v) => (typeof v === "number" && Number.isFinite(v)) ? `${Math.round(v)}%` : "—";
+  const uptimeFmt = (sec) => {
+    if (typeof sec !== "number" || !(sec > 0)) return "—";
+    const d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600), m = Math.floor((sec % 3600) / 60);
+    return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : `${m}m`;
+  };
+  const onPill = (on) => on === false ? `<span class="pill off">Off</span>` : `<span class="pill on">On</span>`;
+  const statePill = (s) => {
+    const t = String(s || "");
+    if (!t) return "";
+    const bad = /off|down|disconn|fail/i.test(t), good = /on|up|connect|active|established/i.test(t);
+    return ` <span class="pill${bad ? " off" : good ? " on" : ""}">${esc(t)}</span>`;
+  };
+  const table = (head, rows) => rows.length
+    ? `<div class="tscroll"><table class="stack"><thead><tr>${head.map((h) => `<th>${esc(h)}</th>`).join("")}</tr></thead><tbody>${rows.join("")}</tbody></table></div>` : "";
+  const cards = [];
+  const inet = snaps.internet || {};
+  const isp = inet.isp || null;
+  const wanRows = (inet.wans || []).map((w) => `<tr><td>${esc(w.name || "WAN")}</td><td>${esc(w.ipAddress || w.ip || "—")}</td><td>${esc(w.type || "")}${statePill(w.state || w.status)}</td></tr>`);
+  if (isp || wanRows.length) {
+    const stats = isp ? `<div class="statgrid">
+      <div class="stat"><b>${n0(isp.avgLatencyMs)} ms</b><span>Average latency</span></div>
+      <div class="stat"><b>${n0(isp.maxLatencyMs)} ms</b><span>Peak latency</span></div>
+      <div class="stat"><b>${n1(isp.packetLossPct)}%</b><span>Packet loss</span></div>
+      <div class="stat"><b>${n1(isp.uptimePct)}%</b><span>Uptime, last ${isp.hours || 24} hours</span></div>
+      <div class="stat"><b>${n1((isp.downtimeSec || 0) / 60)} min</b><span>Downtime, last ${isp.hours || 24} hours</span></div>
+      <div class="stat"><b>${n1(isp.downMbps)} Mbps</b><span>Average download</span></div>
+      <div class="stat"><b>${n1(isp.upMbps)} Mbps</b><span>Average upload</span></div>
+    </div>` : "";
+    cards.push(`<div class="card"><h2 style="margin-top:0">Internet</h2>
+      ${isp && isp.ispName ? `<p class="muted" style="margin-top:0">Provider: ${esc(isp.ispName)}</p>` : ""}
+      ${stats}${table(["Interface", "IP address", "Status"], wanRows)}</div>`);
+  }
+  const statRows = ((snaps.device_stats || {}).devices || []).map((d) => `<tr><td>${esc(d.name || d.mac || "Device")}</td><td>${uptimeFmt(d.uptimeSec)}</td><td>${pct(d.cpu)}</td><td>${pct(d.mem)}</td><td>${typeof d.load1 === "number" ? d.load1.toFixed(2) : "—"}</td></tr>`);
+  if (statRows.length) cards.push(`<div class="card"><h2 style="margin-top:0">Device health</h2>${table(["Device", "Uptime", "CPU", "Memory", "Load"], statRows)}</div>`);
+  const cfg = snaps.config || {};
+  const netRows = (cfg.networks || []).map((n) => `<tr><td>${esc(n.name || "Network")}${n.default ? ` <span class="pill">Default</span>` : ""}</td><td>${n.vlanId != null ? "VLAN " + esc(String(n.vlanId)) : "—"}</td><td>${onPill(n.enabled)}</td></tr>`);
+  const ssidRows = (cfg.ssids || []).map((s) => `<tr><td>${esc(s.name || s.ssid || "WiFi network")}</td><td>${esc(s.security || "—")}</td><td>${onPill(s.enabled)}</td></tr>`);
+  if (netRows.length || ssidRows.length) {
+    cards.push(`<div class="card"><h2 style="margin-top:0">Networks and WiFi</h2>
+      ${netRows.length ? `<h3>Networks</h3>${table(["Name", "VLAN", "Status"], netRows)}` : ""}
+      ${ssidRows.length ? `<h3>WiFi networks</h3>${table(["Name", "Security", "Status"], ssidRows)}` : ""}</div>`);
+  }
+  const polRows = (cfg.firewallPolicies || []).map((p) => `<tr><td>${esc(p.name || "Policy")}</td><td>${esc(p.action || "")}</td><td>${onPill(p.enabled)}</td></tr>`);
+  const srvRows = (cfg.vpnServers || []).map((v) => `<tr><td>${esc(v.name || "VPN server")}</td><td>${esc(v.type || "")}</td><td>${onPill(v.enabled)}</td></tr>`);
+  const tunRows = (cfg.vpnTunnels || []).map((v) => `<tr><td>${esc(v.name || "Tunnel")}</td><td>${esc(v.type || "")}${statePill(v.state || v.status)}</td><td>${onPill(v.enabled)}</td></tr>`);
+  if (polRows.length || srvRows.length || tunRows.length || (cfg.firewallZones || []).length || (cfg.aclRules || []).length || (cfg.radiusProfiles || []).length) {
+    cards.push(`<div class="card"><h2 style="margin-top:0">Firewall and VPN</h2>
+      ${(cfg.firewallZones || []).length ? `<p style="margin-top:0">Zones: ${(cfg.firewallZones || []).map((z) => `<span class="pill">${esc(z.name || "Zone")}</span>`).join(" ")}</p>` : ""}
+      ${polRows.length ? `<h3>Firewall policies</h3>${table(["Policy", "Action", "Status"], polRows)}` : ""}
+      ${(cfg.aclRules || []).length ? `<p class="muted">${(cfg.aclRules || []).length} switch access rules in place.</p>` : ""}
+      ${srvRows.length ? `<h3>VPN servers</h3>${table(["Server", "Type", "Status"], srvRows)}` : ""}
+      ${tunRows.length ? `<h3>Site-to-site tunnels</h3>${table(["Tunnel", "Type", "Status"], tunRows)}` : ""}
+      ${(cfg.radiusProfiles || []).length ? `<p class="muted">RADIUS profiles: ${(cfg.radiusProfiles || []).map((r) => esc(r.name || "")).filter(Boolean).join(", ")}</p>` : ""}</div>`);
+  }
+  const camRows = ((snaps.protect || {}).cameras || []).map((c) => `<tr><td>${esc(c.name || "Camera")}</td><td>${esc(c.model || "")}</td><td>${esc(c.state || c.status || "")}</td></tr>`);
+  if (camRows.length) cards.push(`<div class="card"><h2 style="margin-top:0">Cameras</h2>${table(["Camera", "Model", "State"], camRows)}</div>`);
+  const capLine = captured ? `<p class="muted" style="margin-top:0">Captured ${esc(fmtDateUS(captured.slice(0, 10)))} at ${esc(captured.slice(11, 16))} UTC by the hourly sync. Read-only: nothing on this page can change the office's network.</p>` : "";
+  const body = `${locNav(loc, "network")}<h1>Network</h1>${capLine}${cards.join("")}`;
+  return page({ title: "Network", user, body });
 }
 
 export async function equipmentPost(env, request, user, locationId) {
