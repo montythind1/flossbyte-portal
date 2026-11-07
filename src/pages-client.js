@@ -325,9 +325,19 @@ export async function appHome(env, request, user) {
       <div class="muted" style="margin-top:4px;margin-left:19px">${esc(bandSub)}</div></div>
       ${chips ? `<div style="display:flex;gap:8px;flex-wrap:wrap">${chips}</div>` : ""}
     </div></div>`;
+  // The organization totals sit under the band as a stat row in the
+  // portal's standard tile style (Montek asked for the numbers back
+  // with the white-band design kept).
+  const strip = `<div class="statgrid">
+    <div class="stat"><b>${locs.length}</b><span>${locs.length === 1 ? "Practice" : "Practices"}</span></div>
+    <div class="stat"><b>${totDevices ? `${totOnline} of ${totDevices}` : "0"}</b><span>Devices online</span></div>
+    <div class="stat"><b>${totTickets}</b><span>Open tickets</span></div>
+    <div class="stat"><b>${billing ? billing.unpaid || 0 : 0}</b><span>Unpaid invoices</span></div>
+  </div>`;
   const orgName = locs.length ? locs[0].customer_name : "";
   const body = `${orgRail(user, "practices", orgName || "My Portal", locs)}<h1 style="margin-bottom:14px">${esc(orgName || "Your practices")}</h1>
     ${band}
+    ${strip}
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px">${cards.join("")}</div>`;
   return page({ title: "My Portal", user, body });
 }
