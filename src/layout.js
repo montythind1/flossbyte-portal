@@ -297,8 +297,14 @@ ${body}
   // the navigating, and everything personal lives in the account menu
   // (a real button menu that closes on outside click / Escape — the old
   // <details> menu stayed open until tapped again and felt broken).
+  // Remote Support is an action, not navigation: one link in the top
+  // bar, visible on every signed-in customer page, next to the
+  // account menu. (FlossByte staff provide support; they do not need
+  // the customer download link.)
+  const remoteLink = user && user.kind === "customer"
+    ? `<a href="https://flossbyte.com/remote" target="_blank" rel="noopener" style="color:#fff;font-weight:600;font-size:14px;text-decoration:none;margin-right:18px">Remote Support</a>` : "";
   const nav = user
-    ? `<div class="acct" id="acct"><button class="acct-btn" id="acctBtn" type="button" aria-haspopup="true" aria-expanded="false"><span class="avatar">${esc(initials)}</span><span class="acct-name">${esc(user.name.split(" ")[0])}</span></button>
+    ? `${remoteLink}<div class="acct" id="acct"><button class="acct-btn" id="acctBtn" type="button" aria-haspopup="true" aria-expanded="false"><span class="avatar">${esc(initials)}</span><span class="acct-name">${esc(user.name.split(" ")[0])}</span></button>
        <div class="acct-menu" id="acctMenu"><div class="acct-head"><strong>${esc(user.name)}</strong><span>${esc(user.email)}</span></div>
        <a href="/mfa">Account &amp; security</a><a href="/logout">Sign out</a></div></div>`
     : `<a href="/login">Sign in</a>

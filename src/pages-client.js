@@ -157,10 +157,7 @@ function locNav(loc, active) {
     ${item("overview", base, "Overview", "grid")}
     <a class="rail-item${["network", "equipment", "topology"].includes(active) ? " active" : ""}" href="${base}/network">${icon("topology")}Office IT</a>
     ${item("tickets", base + "/tickets", "Tickets", "ticket")}${item("documents", base + "/documents", "Documents", "folder")}
-    ${item("ask", base + "/ask", "Ask", "chat")}
-    <div class="rail-sep"></div>
-    ${item("billing", "/app/billing", "Billing", "receipt")}
-    <a class="rail-item" href="${REMOTE_URL}" target="_blank" rel="noopener">${icon("headset")}Remote Support</a></aside><div class="shell-main">`;
+    ${item("ask", base + "/ask", "Ask", "chat")}</aside><div class="shell-main">`;
 }
 
 // Top tabs inside the Network section: the sidebar picks the place,
@@ -173,7 +170,7 @@ function locTabs(loc, current) {
   return `<div style="display:flex;gap:2px;border-bottom:2px solid #E6EBF2;margin:4px 0 18px;overflow-x:auto">${tab("network", base + "/network", "WiFi &amp; Internet")}${tab("equipment", base + "/equipment", "Equipment")}${tab("topology", base + "/topology", "Network map")}</div>`;
 }
 
-function orgRail(user, active, orgName) {
+function orgRail(user, active, orgName, locs) {
   const item = (key, href, label, ic) =>
     `<a class="rail-item${active === key ? " active" : ""}" href="${href}">${icon(ic)}${label}</a>`;
   // Account administration (services, team) sits in its own labeled
@@ -182,10 +179,25 @@ function orgRail(user, active, orgName) {
   const account = user.role === "customer_admin"
     ? `<div class="rail-label">Account</div>${item("services", "/app/services", "Services", "shield")}${item("team", "/app/team", "Team", "users")}`
     : "";
+  // Direct shortcuts into each practice, so from any organization
+  // page (Billing included) a practice is one click away. This is the
+  // "way back" from organization scope into a practice.
+  const practiceLinks = locs && locs.length
+    ? `<div class="rail-label">Go to a practice</div>${locs.map((l) => `<a class="rail-item" href="/app/locations/${l.id}">${icon("pin")}${esc(l.name)}</a>`).join("")}`
+    : "";
   return `<div class="shell"><aside class="rail">
     <div class="rail-context"><div class="rc-t">${esc(orgName || "My Portal")}</div><div class="rc-s">Client portal</div></div>
     ${item("practices", "/app", "Your practices", "home")}${item("billing", "/app/billing", "Billing", "receipt")}
-    ${account}</aside><div class="shell-main">`;
+    ${practiceLinks}${account}</aside><div class="shell-main">`;
+}
+
+// The locations a login can reach, shaped for the org rail shortcuts.
+async function railLocs(env, user) {
+  const ids = await accessibleLocationIds(env.DB, user);
+  if (!ids) return [];
+  const out = [];
+  for (const id of ids) { const l = await getLocation(env.DB, id); if (l) out.push({ id: l.id, name: l.name }); }
+  return out;
 }
 
 function lockedTile(user, loc, productName, productKey) {
@@ -288,7 +300,7 @@ export async function appHome(env, request, user) {
     <div class="stat"><b>${billing ? billing.unpaid || 0 : 0}</b><span>Unpaid invoices</span></div>
   </div>`;
   const orgName = locs.length ? locs[0].customer_name : "";
-  const body = `${orgRail(user, "practices", "My Portal")}<h1 style="margin-bottom:2px">Your practices</h1>
+  const body = `${orgRail(user, "practices", "My Portal", locs)}<h1 style="margin-bottom:2px">Your practices</h1>
     ${orgName ? `<p class="muted" style="margin:0 0 14px">${esc(orgName)}</p>` : ""}
     ${strip}
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px">${cards.join("")}</div>`;
@@ -307,12 +319,8 @@ export async function locationOverview(env, request, user, locationId) {
     .bind(locationId, locationId, locationId).first();
   const managedOn = await laneOn(db, loc.customer_id, locationId);
   const expiring = managedOn ? await expiringItems(db, locationId, 90) : [];
-  // Billing counts are best-effort: before migration 0008 the tables do
-  // not exist and the overview must still render.
-  const billing = await db.prepare(
-    `SELECT (SELECT COUNT(*) FROM quotes WHERE customer_id = ? AND status = 'sent') AS sent_quotes,
-            (SELECT COUNT(*) FROM invoices WHERE customer_id = ? AND status = 'unpaid') AS unpaid_invoices`)
-    .bind(loc.customer_id, loc.customer_id).first().catch(() => null);
+  // (Billing is organization scope, so it is not linked from inside a
+  // practice at all; it lives one level up, on the organization rail.)
   const expiringHtml = expiring.length
     ? `<div class="notice"><strong>Needs attention, next 90 days</strong><ul style="margin:8px 0 0;padding-left:18px">
         ${expiring.map((e) => {
@@ -322,20 +330,11 @@ export async function locationOverview(env, request, user, locationId) {
           return `<li>${esc(e.vendor || "")} ${esc(e.model || e.type || "Equipment")}: ${kind.toLowerCase()} expires ${esc(fmtDateUS(date))} (${days < 0 ? "expired" : days + " days"})</li>`;
         }).join("")}</ul></div>` : "";
   const health = await officeHealth(env.DB, locationId);
-  // Billing is not repeated here: the rail already carries it. The
-  // header keeps only the two organization actions the location rail
-  // does not have (Services, Team, for the client admin).
-  const headerActions = [
-    user.role === "customer_admin" ? `<a class="btn small secondary" href="/app/services">Services</a>` : "",
-    user.role === "customer_admin" ? `<a class="btn small secondary" href="/app/team">Team</a>` : "",
-  ].filter(Boolean).join("\n      ");
   const netSnap = await db.prepare(
     "SELECT payload FROM network_snapshots WHERE location_id = ? AND kind = 'internet'").bind(locationId).first().catch(() => null);
   let ispTile = null;
   if (netSnap) { try { ispTile = JSON.parse(netSnap.payload || "{}").isp || null; } catch { ispTile = null; } }
-  const body = `${locNav(loc, "overview")}<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:16px">
-    <h1 style="margin:0">${esc(loc.name)}</h1>
-    <div style="display:flex;gap:8px;flex-wrap:wrap">${headerActions}</div></div>
+  const body = `${locNav(loc, "overview")}<h1>${esc(loc.name)}</h1>
     ${expiringHtml}
     ${healthCard(health)}
     <div class="grid">
@@ -369,7 +368,8 @@ export async function servicesPage(env, request, user) {
       <div class="tscroll"><table class="stack"><thead><tr><th>Service</th><th>Status</th><th></th></tr></thead>
       <tbody>${rowsHtml}</tbody></table></div></div>`);
   }
-  const body = `${orgRail(user, "services", cust ? cust.name : "My Portal")}<h1>Services</h1>
+  const rail = await railLocs(env, user);
+  const body = `${orgRail(user, "services", cust ? cust.name : "My Portal", rail)}<h1>Services</h1>
     <p class="muted">What your organization has with FlossByte, office by office. Only your organization's admins see this page. To change a service that is on, contact FlossByte.</p>
     ${cards.join("") || `<div class="card"><p class="muted">No offices yet.</p></div>`}`;
   const qp = new URL(request.url).searchParams;
@@ -393,7 +393,8 @@ export async function teamPage(env, request, user) {
       <td><span class="pill ${m.status === "disabled" ? "off" : "on"}">${esc(m.status)}</span></td>
       <td>${action}</td></tr>`;
   }).join("");
-  const body = `${orgRail(user, "team", cust ? cust.name : "My Portal")}<h1>Team</h1>
+  const rail = await railLocs(env, user);
+  const body = `${orgRail(user, "team", cust ? cust.name : "My Portal", rail)}<h1>Team</h1>
     <p class="muted">People with a login for ${esc(cust ? cust.name : "your organization")}. Use Edit to fix someone's name; an email address can't be changed once a login is created. Removing someone signs them out right away and takes away everything they could see here. Tickets and documents they created stay on record.</p>
     <div class="card" style="padding:8px 14px"><div class="tscroll"><table class="stack"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Sees</th><th>Status</th><th></th></tr></thead>
     <tbody>${rows || `<tr><td colspan="6" class="muted">No logins yet.</td></tr>`}</tbody></table></div></div>`;
@@ -1677,7 +1678,7 @@ async function quotesSection(env, org) {
       <td>${esc(fmtDateUS((qt.sent_at || qt.created_at || "")))}</td></tr>`);
   }
   return `
-    <div class="card" style="padding:8px 14px"><div class="tscroll"><table class="stack"><thead><tr><th>Quote</th><th>Type</th><th class="num">Total</th><th>Status</th><th>Sent</th></tr></thead>
+    <div class="card" style="padding:10px 14px"><h3 style="margin:2px 0 8px">Quotes</h3><div class="tscroll"><table class="stack"><thead><tr><th>Quote</th><th>Type</th><th class="num">Total</th><th>Status</th><th>Sent</th></tr></thead>
     <tbody>${rows.join("") || `<tr><td colspan="5" class="muted">No quotes yet. When FlossByte sends you one, it shows up here for review and acceptance.</td></tr>`}</tbody></table></div></div>`;
 }
 
@@ -1708,7 +1709,8 @@ export async function quoteViewPage(env, request, user, quoteId) {
   } else {
     statusBlock = `<div class="card"><p class="muted">This quote is waiting for your practice's admin to review and accept it.</p></div>`;
   }
-  const body = `${orgRail(user, "billing", "My Portal")}<p><a href="/app/billing">&larr; Billing</a></p><h1>${esc(quote.title)}</h1>
+  const rail = await railLocs(env, user);
+  const body = `${orgRail(user, "billing", "My Portal", rail)}<p><a href="/app/billing">&larr; Billing</a></p><h1>${esc(quote.title)}</h1>
     <p class="muted">${quote.kind === "plan" ? "Service plan" : "Project"} quote from FlossByte. Total <strong>${fmtMoney(total)}</strong>${deposit > 0 ? `, with a ${quote.deposit_percent}% deposit of <strong>${fmtMoney(deposit)}</strong> due on acceptance and ${fmtMoney(total - deposit)} after that.` : "."}</p>
     <p><button class="btn small secondary" type="button" onclick="window.print()">Print / save as PDF</button></p>
     ${statusBlock}
@@ -1780,7 +1782,7 @@ async function invoicesSection(env, org) {
       <td>${esc(fmtDateUS(inv.due_date))}</td><td>${pay}</td></tr>`;
   }).join("");
   return `
-    <div class="card" style="padding:8px 14px"><div class="tscroll"><table class="stack"><thead><tr><th>Number</th><th>Invoice</th><th>Type</th><th class="num">Amount</th><th>Status</th><th>Due</th><th></th></tr></thead>
+    <div class="card" style="padding:10px 14px;margin-top:16px"><h3 style="margin:2px 0 8px">Invoices</h3><div class="tscroll"><table class="stack"><thead><tr><th>Number</th><th>Invoice</th><th>Type</th><th class="num">Amount</th><th>Status</th><th>Due</th><th></th></tr></thead>
     <tbody>${rows || `<tr><td colspan="7" class="muted">No invoices yet.</td></tr>`}</tbody></table></div></div>`;
 }
 
@@ -1793,7 +1795,8 @@ export async function invoiceViewPage(env, request, user, invoiceId) {
   const pay = inv.status === "unpaid" && inv.pay_url
     ? `<p style="margin-top:16px"><a class="btn" href="${esc(inv.pay_url)}" target="_blank" rel="noopener">Pay ${fmtMoney(inv.amount_cents)}</a></p>`
     : inv.status === "unpaid" ? `<p class="muted" style="margin-top:16px">FlossByte will email a payment link for this invoice. Questions: call (669) 237-2264.</p>` : "";
-  const body = `${orgRail(user, "billing", cust ? cust.name : "My Portal")}<p><a href="/app/billing">&larr; Billing</a></p>
+  const rail = await railLocs(env, user);
+  const body = `${orgRail(user, "billing", cust ? cust.name : "My Portal", rail)}<p><a href="/app/billing">&larr; Billing</a></p>
     <h1>INV-${1000 + inv.id}</h1>
     <p class="muted">${esc(inv.title)}</p>
     <p><button class="btn small secondary" type="button" onclick="window.print()">Print / save as PDF</button></p>
@@ -1811,12 +1814,26 @@ export async function invoiceViewPage(env, request, user, invoiceId) {
 export async function billingPage(env, request, user) {
   const org = await clientOrgId(env, user);
   if (org === null) return denied(user, 403);
-  const cust = await env.DB.prepare("SELECT name FROM customers WHERE id = ?").bind(org).first();
+  const db = env.DB;
+  const cust = await db.prepare("SELECT name FROM customers WHERE id = ?").bind(org).first();
+  const sums = await db.prepare(
+    `SELECT (SELECT COUNT(*) FROM quotes WHERE customer_id = ? AND status = 'sent') AS quotes_waiting,
+            (SELECT COUNT(*) FROM invoices WHERE customer_id = ? AND status = 'unpaid') AS unpaid_count,
+            (SELECT COALESCE(SUM(amount_cents), 0) FROM invoices WHERE customer_id = ? AND status = 'unpaid') AS outstanding,
+            (SELECT COUNT(*) FROM invoices WHERE customer_id = ? AND status = 'paid') AS paid_count`)
+    .bind(org, org, org, org).first().catch(() => null);
+  const strip = sums ? `<div class="statgrid">
+    <div class="stat"><b>${sums.quotes_waiting}</b><span>Quotes waiting for you</span></div>
+    <div class="stat"><b>${sums.unpaid_count}</b><span>Unpaid invoices</span></div>
+    <div class="stat"><b>${fmtMoney(sums.outstanding)}</b><span>Outstanding</span></div>
+    <div class="stat"><b>${sums.paid_count}</b><span>Invoices paid</span></div>
+  </div>` : "";
+  const rail = await railLocs(env, user);
   const quotesHtml = await quotesSection(env, org);
   const invoicesHtml = await invoicesSection(env, org);
-  const body = `${orgRail(user, "billing", cust ? cust.name : "My Portal")}<h1>Billing</h1>
-    <h2>Quotes</h2>${quotesHtml}
-    <h2 style="margin-top:26px">Invoices</h2>${invoicesHtml}`;
+  const body = `${orgRail(user, "billing", cust ? cust.name : "My Portal", rail)}<h1 style="margin-bottom:2px">Billing</h1>
+    <p class="muted" style="margin:0 0 14px">${esc(cust ? cust.name : "")} · quotes and invoices for the whole organization</p>
+    ${strip}${quotesHtml}${invoicesHtml}`;
   const msg = new URL(request.url).searchParams.get("msg");
   return page({ title: "Billing", user, body, flash: msg || undefined, error: new URL(request.url).searchParams.get("err") || undefined });
 }
