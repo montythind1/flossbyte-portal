@@ -2641,9 +2641,9 @@ export async function askPage(env, request, user, locationId) {
   <p class="muted" ${openThread ? 'id="chat-status"' : ""} style="margin:6px 0 14px">${openThread ? esc(statusLine) : `From this office's records only. ${seeAll ? "You see everyone's conversations (admin login)." : "Private to your login; office admins can see them."}`}</p>
   <div class="card">
     <div class="chat gstream" id="gstream">${emptyState}${streamInner}</div>
-  </div>
   ${composer}
   ${underRow}
+  </div>
   </div>
   ${pollScript}
   ${typeScript}

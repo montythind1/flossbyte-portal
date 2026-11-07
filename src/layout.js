@@ -222,6 +222,8 @@ html{scroll-padding-top:84px;scroll-padding-bottom:120px}
 .gpage>.card{flex:1 1 auto;display:flex;flex-direction:column;min-height:0}
 .gpage .gstream{flex:1 1 auto;overflow-y:auto;min-height:0;overscroll-behavior:contain}
 .gpage .gcomposer{position:static}
+.gpage>.card .gcomposer{border:none;border-top:1px solid var(--line);border-radius:0;box-shadow:none;margin:10px -22px 0;padding:12px 22px 2px}
+@media (max-width:900px){.gpage>.card .gcomposer{margin-left:-18px;margin-right:-18px;padding-left:18px;padding-right:18px}}
 @media (max-width:900px){.gpage{height:calc(100vh - 300px);height:calc(100dvh - 300px)}}
 main:has(.gfill-shell){max-width:none;padding:0}
 .gfill-shell{height:calc(100vh - 72px);height:calc(100dvh - 72px);gap:0;align-items:stretch}
