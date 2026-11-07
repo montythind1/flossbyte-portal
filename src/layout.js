@@ -200,6 +200,19 @@ td.num,th.num{text-align:right}
 .msg{max-width:88%;padding:10px 14px;border-radius:14px;font-size:14px;line-height:1.5;white-space:pre-wrap}
 .msg.q{align-self:flex-end;background:#e6f7f3;border-bottom-right-radius:4px}
 .msg.a{align-self:flex-start;background:#f0f4f8;border-bottom-left-radius:4px}
+.gstream{margin-top:0}
+.gex{display:flex;flex-direction:column;gap:8px}
+.gstream .msg.a{max-width:94%}
+.glabel{font-size:11px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:#00796b}
+.gcomposer{position:sticky;bottom:14px;z-index:5;display:flex;gap:8px;align-items:center;background:#fff;border:1px solid var(--line);border-radius:14px;padding:10px;box-shadow:0 8px 28px rgba(10,22,40,.10);margin-top:14px}
+.gcomposer input{flex:1;font-size:16px;border:none;outline:none;background:transparent;padding:10px 6px;font-family:inherit;color:var(--ink);min-width:0}
+.gcomposer .btn{border-radius:10px;flex:0 0 auto}
+.gempty{text-align:center;padding:26px 8px 8px}
+.gmark{display:inline-flex;align-items:center;justify-content:center;width:46px;height:46px;border-radius:50%;background:var(--navy,#0A1628);color:#fff;font-family:'Plus Jakarta Sans',Inter,sans-serif;font-weight:800;font-size:20px}
+.gchips{display:grid;grid-template-columns:1fr 1fr;gap:8px;max-width:600px;margin:16px auto 4px;text-align:left}
+.gdivider{display:flex;align-items:center;gap:10px;color:var(--muted);font-size:12.5px;margin:8px 0}
+.gdivider:before,.gdivider:after{content:"";flex:1;border-top:1px solid var(--line)}
+@media(max-width:680px){.gchips{grid-template-columns:1fr}}
 footer.slim{border-top:1px solid var(--line);margin-top:10px}
 .footer-slim-in{max-width:1300px;margin:0 auto;padding:16px 20px;color:var(--muted);font-size:13px;display:flex;gap:6px;flex-wrap:wrap}
 footer.slim a{color:var(--muted)}
