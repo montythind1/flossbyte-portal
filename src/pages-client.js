@@ -405,21 +405,24 @@ export async function servicesPage(env, request, user) {
   const db = env.DB;
   const cust = await db.prepare("SELECT name FROM customers WHERE id = ?").bind(org).first();
   const { results: locs } = await db.prepare("SELECT * FROM locations WHERE customer_id = ? ORDER BY id").bind(org).all();
-  const cards = [];
-  for (const loc of locs || []) {
-    const states = await productStates(db, org, loc.id);
-    const inc = states.filter((p) => p.enabled);
-    const avail = states.filter((p) => !p.enabled);
-    const glabel = (t) => `<div style="font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);padding:12px 0 2px">${t}</div>`;
-    const rowIn = (p) => `<div style="display:flex;justify-content:space-between;align-items:center;gap:14px;padding:9px 0;border-bottom:1px solid #EEF2F7"><span style="font-weight:600">${esc(p.name)}</span><span class="pill on">Included</span></div>`;
-    const rowOut = (p) => `<div style="display:flex;justify-content:space-between;align-items:center;gap:14px;padding:10px 0;border-bottom:1px solid #EEF2F7">
-      <div><div style="font-weight:600">${esc(p.name)}</div><div class="muted">${esc(PRODUCT_PLAIN[p.key] || p.description || "")}</div></div>
-      <div style="display:flex;align-items:center;gap:8px;flex:none"><span class="pill off">Not included</span>${requestForm(loc, p.key, true)}</div></div>`;
-    const both = inc.length > 0 && avail.length > 0;
-    cards.push(`<div class="card"><h2 style="margin-top:0">${esc(loc.name)}</h2>
-      ${both ? glabel("Included") : ""}${inc.map(rowIn).join("")}
-      ${avail.length ? `${both ? glabel("Available to add") : ""}${avail.map(rowOut).join("")}` : ""}</div>`);
-  }
+  // Service-first cards: each service appears ONCE, with one chip
+  // per office carrying that office's state. The per-office layout
+  // printed the whole catalog once per office, which read as bulk.
+  const locStates = [];
+  for (const loc of locs || []) locStates.push({ loc, states: await productStates(db, org, loc.id) });
+  const products = locStates.length ? locStates[0].states : [];
+  const reqChip = (loc, key) => `<form method="post" action="/app/locations/${loc.id}/request-product" style="margin:0"><input type="hidden" name="product" value="${esc(key)}"><button class="btn small" type="submit">Request</button></form>`;
+  const cards = products.map((p) => {
+    const chips = locStates.map(({ loc, states }) => {
+      const st = states.find((s) => s.key === p.key);
+      return st && st.enabled
+        ? `<span class="pill on">${esc(loc.name)} · Included</span>`
+        : `<span style="display:inline-flex;align-items:center;gap:6px"><span class="pill off">${esc(loc.name)} · Not included</span>${reqChip(loc, p.key)}</span>`;
+    }).join("");
+    return `<div class="card"><div style="font-weight:700;font-size:16px">${esc(p.name)}</div>
+      <div class="muted" style="margin-top:2px">${esc(PRODUCT_PLAIN[p.key] || p.description || "")}</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;align-items:center">${chips}</div></div>`;
+  });
   const rail = await railLocs(env, user);
   const body = `${orgRail(user, "services", cust ? cust.name : "My Portal", rail)}<h1>Services</h1>
     <p class="muted">What each office has with FlossByte, and what you can add. To change a service that's on, contact FlossByte.</p>
