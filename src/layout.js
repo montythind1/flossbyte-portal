@@ -216,6 +216,11 @@ td.num,th.num{text-align:right}
 .gcomposer{position:sticky;bottom:14px;z-index:5;display:flex;gap:8px;align-items:center;background:#fff;border:1px solid var(--line);border-radius:14px;padding:8px;box-shadow:0 8px 28px rgba(10,22,40,.10);margin-top:14px}
 .gcomposer input{flex:1;font-size:16px;border:none;outline:none;background:transparent;padding:8px 6px;font-family:inherit;color:var(--ink);min-width:0}
 html{scroll-padding-top:84px;scroll-padding-bottom:120px}
+.gpage{display:flex;flex-direction:column;height:calc(100vh - 165px);height:calc(100dvh - 165px);min-height:300px}
+.gpage>.card{flex:1 1 auto;display:flex;flex-direction:column;min-height:0}
+.gpage .gstream{flex:1 1 auto;overflow-y:auto;min-height:0;overscroll-behavior:contain}
+.gpage .gcomposer{position:static}
+@media (max-width:900px){.gpage{height:calc(100vh - 300px);height:calc(100dvh - 300px)}}
 .gcomposer .btn{border-radius:10px;flex:0 0 auto}
 .gempty{text-align:center;padding:26px 8px 8px}
 .gmark{display:inline-flex;align-items:center;justify-content:center;width:46px;height:46px;border-radius:50%;background:var(--navy,#0A1628);color:#fff;font-family:'Plus Jakarta Sans',Inter,sans-serif;font-weight:800;font-size:20px}

@@ -2419,14 +2419,15 @@ export async function askPage(env, request, user, locationId) {
     var frameId = 0;
     el.textContent = '';
     function scrollAboveBar(){
-      // Scroll the whole latest exchange (answer + its action button),
-      // not just the answer bubble, so the button stays clear of the bar.
+      // Scroll the whole latest exchange (answer + its action button)
+      // to the bottom of the conversation pane, not just the answer.
       var wrap = document.getElementById('latest') || el;
-      var bar = document.querySelector('.gcomposer');
-      var reserve = bar ? bar.offsetHeight + 30 : 110;
+      var box = document.getElementById('gstream');
+      if (!box || !wrap) return;
       var r = wrap.getBoundingClientRect();
-      var target = window.pageYOffset + r.bottom - (window.innerHeight - reserve);
-      if (target > window.pageYOffset) window.scrollTo(0, target);
+      var br = box.getBoundingClientRect();
+      var delta = r.bottom - (br.bottom - 10);
+      if (delta > 0) box.scrollTop += delta;
     }
     function finish(){
       if (frameId) cancelAnimationFrame(frameId);
@@ -2460,13 +2461,15 @@ export async function askPage(env, request, user, locationId) {
     var LOC = ${locationId}, ESC = ${canEscalate ? "true" : "false"};
     function el(tag, cls, text){ var d = document.createElement(tag); if (cls) d.className = cls; if (text != null) d.textContent = text; return d; }
     function scrollAboveBar(node){
-      // Keep the growing answer's tail ABOVE the sticky composer bar
-      // instead of letting scrollIntoView bury it underneath.
-      var bar = document.querySelector('.gcomposer');
-      var reserve = bar ? bar.offsetHeight + 30 : 110;
+      // The conversation scrolls inside its own pane; keep the growing
+      // answer's tail visible at the pane's bottom edge. The page
+      // itself never scrolls, so typing cannot move it.
+      var box = document.getElementById('gstream');
+      if (!box || !node) return;
       var r = node.getBoundingClientRect();
-      var target = window.pageYOffset + r.bottom - (window.innerHeight - reserve);
-      if (target > window.pageYOffset) window.scrollTo(0, target);
+      var br = box.getBoundingClientRect();
+      var delta = r.bottom - (br.bottom - 10);
+      if (delta > 0) box.scrollTop += delta;
     }
     function typeInto(node, full, onDone){
       if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) { node.textContent = full; if (onDone) onDone(); return; }
@@ -2579,11 +2582,12 @@ export async function askPage(env, request, user, locationId) {
   (function(){
     var last = ${lastChatId}, loc = ${locationId}, box = document.getElementById('chat-msgs');
     function sAbove(node){
-      var bar = document.querySelector('.gcomposer');
-      var reserve = bar ? bar.offsetHeight + 30 : 110;
+      var box = document.getElementById('gstream');
+      if (!box || !node) return;
       var r = node.getBoundingClientRect();
-      var target = window.pageYOffset + r.bottom - (window.innerHeight - reserve);
-      if (target > window.pageYOffset) window.scrollTo(0, target);
+      var br = box.getBoundingClientRect();
+      var delta = r.bottom - (br.bottom - 10);
+      if (delta > 0) box.scrollTop += delta;
     }
     var cform = document.getElementById('composer-form');
     if (cform) {
@@ -2631,6 +2635,7 @@ export async function askPage(env, request, user, locationId) {
   })();
   </script>` : "";
   const body = `${locNav(loc, "ask")}
+  <div class="gpage">
   <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
     <h1 style="margin:0">${openThread ? "FlossByte Support" : "Genius"}</h1>${endBtn}</div>
   <p class="muted" ${openThread ? 'id="chat-status"' : ""} style="margin:6px 0 14px">${openThread ? esc(statusLine) : `Answers come only from this office's records. ${seeAll ? "You see everyone's conversations here, because your login is an admin login." : "Your conversations are private to your login; admin logins at this office can see them."}`}</p>
@@ -2640,11 +2645,12 @@ export async function askPage(env, request, user, locationId) {
   </div>
   ${composer}
   ${underRow}
+  </div>
   ${pollScript}
   ${typeScript}
   ${askScript}
   <script>
-  (function(){ var el = document.getElementById('latest') || document.getElementById('chat-msgs'); if (!el) return; var bar = document.querySelector('.gcomposer'); var reserve = bar ? bar.offsetHeight + 30 : 110; var r = el.getBoundingClientRect(); var y = window.pageYOffset + r.bottom - (window.innerHeight - reserve); if (y > 0) window.scrollTo(0, y); })();
+  (function(){ var el = document.getElementById('latest') || document.getElementById('chat-msgs'); var box = document.getElementById('gstream'); if (!el || !box) return; var r = el.getBoundingClientRect(); var br = box.getBoundingClientRect(); var delta = r.bottom - (br.bottom - 10); if (delta > 0) box.scrollTop += delta; })();
   </script>`;
   return page({ title: openThread ? "Live chat" : "Genius", user, body });
 }
