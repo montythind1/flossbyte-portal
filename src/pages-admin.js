@@ -1390,6 +1390,11 @@ async function siteMappingBlock(env, provider, heading, emptyNote) {
 
 function lastRunHtml(last, unitLabel) {
   if (!last) return `<p class="muted" style="margin-top:12px">No sync has run yet.</p>`;
+  // A provider that was never connected has nothing to timestamp:
+  // show its state plainly instead of a "Last sync" line.
+  if (!last.ok && /no .* (credentials|api key) .* saved/i.test(last.message || "")) {
+    return `<p class="muted" style="margin-top:12px">${esc(last.message)}</p>`;
+  }
   const srow = (label, val) => val != null && val !== ""
     ? `<div style="display:flex;justify-content:space-between;gap:14px;padding:6px 0;border-bottom:1px solid #EEF2F7"><span style="color:#45566E;font-weight:600">${label}</span><span style="text-align:right;font-weight:600">${val}</span></div>` : "";
   const SECTION_LABEL = {
@@ -1425,6 +1430,7 @@ function lastRunHtml(last, unitLabel) {
     ${last.clientsSeen != null ? srow("Connected devices", `${last.clientsSeen} seen · ${last.clientsAdded || 0} added · ${last.clientsUpdated || 0} updated · ${last.clientsOfflined || 0} offline`) : ""}
     ${last.snapshots != null ? srow("Network snapshots updated", last.snapshots) : ""}
     ${last.patchAgents != null ? srow("Computers with patch state", last.patchAgents) : ""}
+    ${last.installedAgents != null ? srow("Computers with installed-patch history", last.installedAgents) : ""}
     ${last.alerts != null ? srow("Open alerts mirrored", last.alerts) : ""}
     ${last.monDevices != null ? srow("Monitoring devices mirrored", last.monDevices) : ""}
     ${last.monError ? `<p style="color:#b91c1c;margin:8px 0 0">${esc(last.monError)}</p>` : ""}
@@ -1446,14 +1452,14 @@ export async function syncPage(env, request, user) {
   const body = `${adminNav("sync")}<h1>Device sync</h1>
     <div class="card"><h3>UniFi</h3>
       <p class="muted">${env.UNIFI_API_KEY
-        ? "An API key is saved, so the portal polls your UniFi account every hour and keeps each mapped location's equipment list current: access points, switches, and gateways, with model, firmware, and online status."
-        : "Not connected yet. Create an API key in your UniFi account at unifi.ui.com, then save it in Cloudflare as the secret UNIFI_API_KEY. After that the portal polls UniFi every hour on its own."}</p>
+        ? "An API key is saved, so the portal polls your UniFi account every 15 minutes and keeps each mapped location's equipment list current: access points, switches, and gateways, with model, firmware, and online status."
+        : "Not connected yet. Create an API key in your UniFi account at unifi.ui.com, then save it in Cloudflare as the secret UNIFI_API_KEY. After that the portal polls UniFi every 15 minutes on its own."}</p>
       <form method="post" action="/admin/sync/run"><button class="btn" type="submit">Sync now</button></form>
       ${lastRunHtml(lastUnifi, "Sites")}</div>
     <div class="card"><h3>Sophos</h3>
       <p class="muted">${env.SOPHOS_CLIENT_ID && env.SOPHOS_CLIENT_SECRET
-        ? "API credentials are saved, so the portal polls Sophos Central every hour and keeps each mapped location's equipment list current: firewalls with model, firmware, and license dates where Sophos ties them to the serial number, plus the protected computers and servers."
-        : "Not connected yet. Create an API credential in Sophos Central (partner or tenant admin, API credentials), then save the two values in Cloudflare as the secrets SOPHOS_CLIENT_ID and SOPHOS_CLIENT_SECRET. After that the portal polls Sophos Central every hour on its own."}</p>
+        ? "API credentials are saved, so the portal polls Sophos Central every 15 minutes and keeps each mapped location's equipment list current: firewalls with model, firmware, and license dates where Sophos ties them to the serial number, plus the protected computers and servers."
+        : "Not connected yet. Create an API credential in Sophos Central (partner or tenant admin, API credentials), then save the two values in Cloudflare as the secrets SOPHOS_CLIENT_ID and SOPHOS_CLIENT_SECRET. After that the portal polls Sophos Central every 15 minutes on its own."}</p>
       <form method="post" action="/admin/sync/run-sophos"><button class="btn" type="submit">Sync now</button></form>
       ${lastRunHtml(lastSophos, "Tenants")}</div>
     <div class="card"><h3>Atera</h3>

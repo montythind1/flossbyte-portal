@@ -922,7 +922,7 @@ export async function equipmentDetailPage(env, request, user, locationId, equipm
     return drow(label, `${esc(fmtDateUS(d))}${days <= 90 ? ` <span class="pill warn">${days < 0 ? "expired" : days + " days left"}</span>` : ""}`);
   };
   const detailRows = [
-    row.model ? drow("Model", esc((row.vendor ? row.vendor + " " : "") + row.model)) : "",
+    row.model ? drow("Model", esc((row.vendor && row.source !== "atera" && row.source !== "atera-device" ? row.vendor + " " : "") + row.model)) : "",
     row.serial ? drow("Serial number", esc(row.serial)) : "",
     row.firmware ? drow("Firmware", esc(row.firmware)) : "",
     isFb && row.mac ? drow("MAC address", esc(row.mac)) : "",

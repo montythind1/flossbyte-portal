@@ -130,7 +130,9 @@ function agentShape(a) {
     // Atera reports memory in MB (16165 means ~16 GB); a value that
     // small in GB would be a very strange machine, so convert.
     memoryGb: (() => { const m = pick(a, "Memory", "RAM", "RamGB"); const n = Number(m); if (!Number.isFinite(n) || n <= 0) return null; const gb = n > 200 ? n / 1024 : n; return Math.round(gb * 10) / 10; })(),
-    user: pick(a, "CurrentLoggedUser", "CurrentUser", "LoggedUser") || pickFuzzy(a, /(logged|current).*(user|in)/i),
+    // Atera sometimes appends "(Since: Nov 6, 2026 5:50:55 PM)" to
+    // the signed-in user; the portal shows the person, not the note.
+    user: (() => { const u = pick(a, "CurrentLoggedUser", "CurrentUser", "LoggedUser") || pickFuzzy(a, /(logged|current).*(user|in)/i); return u ? String(u).replace(/\s*\(since:[^)]*\)\s*$/i, "").trim() : u; })(),
     lastReboot: isoDate(pick(a, "LastRebootTime", "LastReboot", "LastBootTime") || pickFuzzy(a, /^last.*(reboot|boot|restart)/i)),
   };
 }
@@ -142,7 +144,7 @@ function agentShape(a) {
 function deviceShape(d) {
   const siteName = pick(d, "SiteName", "FolderName");
   const siteId = pick(d, "SiteID", "SiteId", "FolderID");
-  const rawType = String(pick(d, "DeviceType", "Type", "MonitorType", "DeviceClass") || "");
+  const rawType = String(pick(d, "DeviceType", "Type", "MonitorType", "DeviceClass") || d.__kind || "");
   const type = /printer/i.test(rawType) ? "Printer"
     : /nas|storage/i.test(rawType) ? "NAS"
     : /ups|battery/i.test(rawType) ? "UPS"
@@ -185,7 +187,7 @@ export async function runAteraSync(env) {
     at: new Date().toISOString(), ok: false, message: "",
     sites: 0, devices: 0, inserted: 0, updated: 0, offlined: 0,
     unmappedDevices: 0, patchAgents: 0, alerts: 0,
-    monDevices: 0, monUnmapped: 0,
+    monDevices: 0, monUnmapped: 0, installedAgents: 0,
   };
   const finish = async (msg) => {
     summary.message = msg;
@@ -211,8 +213,33 @@ export async function runAteraSync(env) {
   }
   // Monitoring devices join the same mapping units; a customer with
   // devices but no agents still gets a group so it can be mapped.
+  // The devices endpoint rejects the paged call shape the other lists
+  // accept (HTTP 400 in production), so ask plainly, then fall back
+  // to the per-kind lists. An empty answer from a working list is a
+  // fine result (nothing registered); only total failure is an error.
   try {
-    const monDevices = (await listAll(env, "/api/v3/devices")).map(deviceShape).filter((d) => d.id != null && d.customerId != null);
+    let rawDevices = [];
+    let anyOk = false;
+    try {
+      const data = await apiGet(env, "/api/v3/devices");
+      rawDevices = Array.isArray(data) ? data : (data.items || data.data || []);
+      anyOk = true;
+      summary.monSource = "devices";
+    } catch { /* try the per-kind lists */ }
+    if (!anyOk) {
+      const kinds = [["generic", "Generic"], ["snmpdevices", "SNMP"], ["httpdevices", "HTTP"], ["tcp", "TCP"]];
+      for (const [seg, label] of kinds) {
+        try {
+          const data = await apiGet(env, `/api/v3/devices/${seg}`);
+          const items = Array.isArray(data) ? data : (data.items || data.data || []);
+          anyOk = true;
+          summary.monSource = "per-kind lists";
+          for (const it of items) { it.__kind = label; rawDevices.push(it); }
+        } catch { /* one kind failing must not sink the rest */ }
+      }
+    }
+    if (!anyOk) throw new Error("no device list answered");
+    const monDevices = rawDevices.map(deviceShape).filter((d) => d.id != null && d.customerId != null);
     for (const d of monDevices) {
       const key = groupKey(d);
       if (!groups.has(key)) groups.set(key, { key, name: [d.customerName, d.siteName].filter(Boolean).join(" · ") || key, agents: [], devices: [] });
@@ -303,15 +330,23 @@ export async function runAteraSync(env) {
             at: new Date().toISOString(),
           };
           // Installed patch history rides the same hourly pass; its
-          // own failure must not lose the waiting list above.
+          // own failure must not lose the waiting list above. The
+          // endpoint spelling is tried both ways; success is counted
+          // in the summary so a silent failure stays visible.
           try {
-            const done = await listAll(env, `/api/v3/agents/${encodeURIComponent(a.guid)}/installed-patches`);
-            const recent = done.map((p) => ({
-              t: String(pick(p, "Title", "Name", "KB", "Description") || "Update"),
-              d: (isoDate(pick(p, "InstalledOn", "InstallDate", "DateInstalled", "InstalledDate", "CreatedDate")) || "").slice(0, 10) || null,
-            })).filter((x) => x.t)
-              .sort((x, y) => String(y.d || "").localeCompare(String(x.d || "")));
-            patches.installed = { count: done.length, recent: recent.slice(0, 8) };
+            let done = null;
+            try { done = await listAll(env, `/api/v3/agents/${encodeURIComponent(a.guid)}/installed-patches`); }
+            catch { done = null; }
+            if (done === null) { try { done = await listAll(env, `/api/v3/agents/${encodeURIComponent(a.guid)}/installedpatches`); } catch { done = null; } }
+            if (done) {
+              const recent = done.map((p) => ({
+                t: String(pick(p, "Title", "Name", "KB", "Description") || "Update"),
+                d: (isoDate(pick(p, "InstalledOn", "InstallDate", "DateInstalled", "InstalledDate", "CreatedDate")) || "").slice(0, 10) || null,
+              })).filter((x) => x.t)
+                .sort((x, y) => String(y.d || "").localeCompare(String(x.d || "")));
+              patches.installed = { count: done.length, recent: recent.slice(0, 8) };
+              summary.installedAgents++;
+            }
           } catch { /* installed history is best-effort */ }
           patchCache[String(a.agentId)] = patches;
           patchCacheDirty = true;

@@ -766,13 +766,13 @@ export async function runUnifiSync(env) {
       if (siteDown) {
         mails.push({
           subject: `Portal alert: ${locName} appears to be down`,
-          text: `Every device at ${where} went offline in the latest check (${preOnline} devices). This usually means the internet connection or power is out at the office. The portal keeps checking every hour.`,
+          text: `Every device at ${where} went offline in the latest check (${preOnline} devices). This usually means the internet connection or power is out at the office. The portal keeps checking every 15 minutes.`,
         });
       } else {
         for (const d of wentOffline.filter(isKeyDevice).slice(0, 3)) {
           mails.push({
             subject: `Portal alert: ${d.name || d.type || "A device"} is offline at ${locName}`,
-            text: `${d.name || d.type || "A device"} at ${where} was online and is now offline as of the latest check. The portal keeps checking every hour.`,
+            text: `${d.name || d.type || "A device"} at ${where} was online and is now offline as of the latest check. The portal keeps checking every 15 minutes.`,
           });
         }
       }
