@@ -90,6 +90,20 @@ function isoDate(v) {
   return Number.isNaN(d.getTime()) ? null : d.toISOString();
 }
 
+// Atera's field names drift between API generations (LastSeen vs
+// LastContactTime, MachineName vs AgentName), so after the exact
+// candidates, fall back to any key that looks like the concept.
+function pickFuzzy(obj, pattern) {
+  if (!obj) return null;
+  for (const k of Object.keys(obj)) {
+    if (pattern.test(k)) {
+      const v = obj[k];
+      if (v !== undefined && v !== null && v !== "") return v;
+    }
+  }
+  return null;
+}
+
 function agentShape(a) {
   const siteName = pick(a, "SiteName", "FolderName");
   const siteId = pick(a, "SiteID", "SiteId", "FolderID");
@@ -103,9 +117,9 @@ function agentShape(a) {
     customerName: pick(a, "CustomerName"),
     siteKey: siteId != null ? String(siteId) : (siteName ? String(siteName).toLowerCase().replace(/[^a-z0-9]+/g, "-") : null),
     siteName: siteName ? String(siteName) : null,
-    name: String(pick(a, "MachineName", "DeviceName", "Name") || "Computer"),
+    name: String(pick(a, "MachineName", "DeviceName", "AgentName", "HostName", "ComputerName", "Name") || pickFuzzy(a, /^(machine|host|computer|device|agent)name$/i) || "Computer"),
     online: a.Online === true || a.Online === 1 || String(a.Online).toLowerCase() === "online" || String(a.Online).toLowerCase() === "true",
-    lastSeen: isoDate(pick(a, "LastSeen", "LastSeenDate", "LastConnectionTime")),
+    lastSeen: isoDate(pick(a, "LastSeen", "LastSeenDate", "LastConnectionTime") || pickFuzzy(a, /^last.*(seen|contact|online|activity|checkin)/i)),
     type: /server/i.test(osType) || /server/i.test(os || "") ? "Server" : "Computer",
     os,
     mac: normMac(asList(pick(a, "MacAddresses", "MacAddress", "MACAddress", "Mac"))[0] || ""),
@@ -113,9 +127,11 @@ function agentShape(a) {
     serial: pick(a, "SerialNumber", "Serial"),
     model: [pick(a, "SystemManufacturer", "Manufacturer", "Vendor"), pick(a, "SystemModel", "Model")].filter(Boolean).join(" ") || null,
     cpu: pick(a, "Processor", "CPU", "Cpu"),
-    memoryGb: (() => { const m = pick(a, "Memory", "RAM", "RamGB"); const n = Number(m); return Number.isFinite(n) && n > 0 ? Math.round(n * 10) / 10 : null; })(),
-    user: pick(a, "CurrentLoggedUser", "CurrentUser", "LoggedUser"),
-    lastReboot: isoDate(pick(a, "LastRebootTime", "LastReboot", "LastBootTime")),
+    // Atera reports memory in MB (16165 means ~16 GB); a value that
+    // small in GB would be a very strange machine, so convert.
+    memoryGb: (() => { const m = pick(a, "Memory", "RAM", "RamGB"); const n = Number(m); if (!Number.isFinite(n) || n <= 0) return null; const gb = n > 200 ? n / 1024 : n; return Math.round(gb * 10) / 10; })(),
+    user: pick(a, "CurrentLoggedUser", "CurrentUser", "LoggedUser") || pickFuzzy(a, /(logged|current).*(user|in)/i),
+    lastReboot: isoDate(pick(a, "LastRebootTime", "LastReboot", "LastBootTime") || pickFuzzy(a, /^last.*(reboot|boot|restart)/i)),
   };
 }
 

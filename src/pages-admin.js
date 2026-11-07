@@ -1661,6 +1661,7 @@ async function findDuplicatePairs(env) {
         let score = 0;
         if (a.mac && b.mac && String(a.mac).toLowerCase() === String(b.mac).toLowerCase()) { reasons.push("Same MAC address"); score += 4; }
         if (a.serial && b.serial && String(a.serial).trim().toLowerCase() === String(b.serial).trim().toLowerCase()) { reasons.push("Same serial number"); score += 4; }
+        if (a.ip_address && b.ip_address && String(a.ip_address).trim() === String(b.ip_address).trim()) { reasons.push("Same IP address"); score += 3; }
         const na = dupNorm(a.name), nb = dupNorm(b.name);
         if (na && na === nb && na.length >= 4) { reasons.push("Same name"); score += 3; }
         else if (na && nb && Math.min(na.length, nb.length) >= 6 && (na.startsWith(nb) || nb.startsWith(na))) { reasons.push("Very similar names"); score += 2; }

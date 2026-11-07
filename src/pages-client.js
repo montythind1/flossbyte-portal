@@ -128,7 +128,8 @@ async function saveRenames(db, locationId, names) {
 }
 function relTime(iso) {
   if (!iso) return "";
-  const t = Date.parse(String(iso).replace(" ", "T") + "Z");
+  const s = String(iso).replace(" ", "T");
+  const t = Date.parse(/[zZ]$|[+-]\d{2}:?\d{2}$/.test(s) ? s : s + "Z");
   if (!t) return "";
   const mins = Math.max(0, Math.round((Date.now() - t) / 60000));
   if (mins < 2) return "just now";
