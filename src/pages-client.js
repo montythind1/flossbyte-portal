@@ -93,9 +93,9 @@ function kindIcon(kind) {
   if (kind === "Gateway" || kind === "Switch" || kind === "Access point") return "topology";
   return "box";
 }
-function kindTile(e, size) {
+function kindTile(e, size, dark) {
   const s = size || 34;
-  return `<span style="display:inline-flex;align-items:center;justify-content:center;width:${s}px;height:${s}px;border-radius:9px;background:#EAF7F4;color:#0A7C6E;flex:none">${icon(kindIcon(deviceKind(e)))}</span>`;
+  return `<span style="display:inline-flex;align-items:center;justify-content:center;width:${s}px;height:${s}px;border-radius:9px;background:${dark ? "rgba(255,255,255,.14)" : "#EAF7F4"};color:${dark ? "#8FF5E2" : "#0A7C6E"};flex:none">${icon(kindIcon(deviceKind(e)))}</span>`;
 }
 // Filter buckets for the equipment list: the office's own groupings.
 function kindBucket(e) {
@@ -622,46 +622,67 @@ export async function equipmentDetailPage(env, request, user, locationId, equipm
   const statusPill = row.status === "online" ? `<span class="pill on">Online</span>`
     : row.status === "offline" ? `<span class="pill off">Offline</span>` : `<span class="pill">${esc(row.status)}</span>`;
   const upFmt = (sec) => { if (typeof sec !== "number") return ""; const d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600); return d ? `${d}d ${h}h` : `${h}h`; };
-  const expField = (label, d) => {
-    if (!d) return "";
-    const days = daysUntil(d);
-    return `<div><span class="muted">${label}</span><br><b>${esc(fmtDateUS(d))}</b>${days <= 90 ? ` <span class="pill warn">${days < 0 ? "expired" : days + " days left"}</span>` : ""}</div>`;
-  };
   const bn = baseName(row);
   const renamed = (row.external_id && renames[row.external_id]) || (row.mac && renames[row.mac]);
-  const fields = [
-    row.ip_address ? `<div><span class="muted">IP address</span><br><b>${esc(row.ip_address)}</b>${row.ip_mode === "static" ? ' <span class="pill">Static</span>' : row.ip_mode === "dhcp" ? ' <span class="pill">DHCP</span>' : ""}</div>` : "",
-    parent ? `<div><span class="muted">Plugged into</span><br><a href="/app/locations/${locationId}/equipment/${parent.id}"><b>${esc(displayName(parent, renames))}</b></a></div>` : "",
-    row.model ? `<div><span class="muted">Model</span><br>${esc(row.vendor ? row.vendor + " " : "")}${esc(row.model)}</div>` : "",
-    row.serial ? `<div><span class="muted">Serial number</span><br>${esc(row.serial)}</div>` : "",
-    row.firmware ? `<div><span class="muted">Firmware</span><br>${esc(row.firmware)}</div>` : "",
-    isFb && row.mac ? `<div><span class="muted">MAC address</span><br>${esc(row.mac)}</div>` : "",
-    !renamed && bn && bn !== title ? `<div><span class="muted">Network name</span><br>${esc(bn)}</div>` : "",
-    row.last_seen_at ? `<div><span class="muted">Last seen</span><br>${esc(relTime(row.last_seen_at))}</div>` : "",
-    expField("License expires", row.license_expires),
-    expField("Warranty expires", row.warranty_expires),
-    `<div><span class="muted">Record</span><br>${row.source === "unifi" || row.source === "unifi-client" ? "Synced from UniFi" : row.source === "sophos" ? "Synced from Sophos" : "Added by FlossByte"}</div>`,
+  const recordLabel = row.source === "unifi" || row.source === "unifi-client" ? "Synced from UniFi" : row.source === "sophos" ? "Synced from Sophos" : "Added by FlossByte";
+  // Header band: navy, with the handful of facts people actually come
+  // for (IP, uptime, last seen) as quiet highlights.
+  const quick = [
+    row.ip_address ? ["IP address", `${esc(row.ip_address)}${row.ip_mode === "static" ? " · Static" : row.ip_mode === "dhcp" ? " · DHCP" : ""}`] : null,
+    stats && typeof stats.uptimeSec === "number" ? ["Uptime", upFmt(stats.uptimeSec)] : null,
+    row.last_seen_at ? ["Last seen", esc(relTime(row.last_seen_at))] : null,
+    ["Record", recordLabel],
+  ].filter(Boolean).map(([k, v]) =>
+    `<div><div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#8FA5C4">${k}</div><div style="font-weight:700;margin-top:2px">${v}</div></div>`).join("");
+  const header = `<div class="card" style="padding:0;overflow:hidden">
+    <div style="background:linear-gradient(135deg,#0A1628 0%,#14335F 100%);color:#fff;padding:22px">
+      <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">${kindTile(row, 48, true)}
+        <div style="flex:1;min-width:200px"><h1 style="margin:0;color:#fff">${esc(title)}</h1>
+        <p style="margin:3px 0 0;color:#B9C7DC">${esc(kind)} · ${esc(loc.name)}</p></div>
+        <div>${statusPill}</div></div>
+      ${quick ? `<div style="display:flex;gap:30px;flex-wrap:wrap;margin-top:18px">${quick}</div>` : ""}
+    </div>
+    <div style="padding:14px 22px;display:flex;gap:8px;flex-wrap:wrap">
+      <a class="btn small secondary" href="/app/locations/${locationId}/tickets?device=${encodeURIComponent(title + (row.ip_address ? " (" + row.ip_address + ")" : ""))}">Report a problem with this device</a>
+      ${canEdit ? `<a class="btn small" href="/app/locations/${locationId}/equipment/${row.id}/edit">Edit this device</a>` : ""}
+    </div></div>`;
+  // Details as a quiet divider list, not boxes.
+  const drow = (label, valueHtml) =>
+    `<div style="display:flex;justify-content:space-between;gap:16px;padding:10px 0;border-bottom:1px solid #EEF2F7"><span class="muted">${label}</span><span style="text-align:right;font-weight:600">${valueHtml}</span></div>`;
+  const expRow = (label, d) => {
+    if (!d) return "";
+    const days = daysUntil(d);
+    return drow(label, `${esc(fmtDateUS(d))}${days <= 90 ? ` <span class="pill warn">${days < 0 ? "expired" : days + " days left"}</span>` : ""}`);
+  };
+  const detailRows = [
+    row.model ? drow("Model", esc((row.vendor ? row.vendor + " " : "") + row.model)) : "",
+    row.serial ? drow("Serial number", esc(row.serial)) : "",
+    row.firmware ? drow("Firmware", esc(row.firmware)) : "",
+    isFb && row.mac ? drow("MAC address", esc(row.mac)) : "",
+    !renamed && bn && bn !== title ? drow("Network name", esc(bn)) : "",
+    expRow("License expires", row.license_expires),
+    expRow("Warranty expires", row.warranty_expires),
   ].filter(Boolean).join("");
+  const parentCard = parent ? `<div class="card"><h3 style="margin-top:0">Plugged into</h3>
+    <div style="display:flex;gap:12px;align-items:center">${kindTile(parent, 38)}
+      <div style="flex:1"><a href="/app/locations/${locationId}/equipment/${parent.id}" style="font-weight:700;color:inherit;text-decoration:none">${esc(displayName(parent, renames))}</a>
+      <br><span class="muted">${esc(deviceKind(parent))}${parent.ip_address ? " · " + esc(parent.ip_address) : ""}</span></div>
+      <span class="pill ${parent.status === "online" ? "on" : parent.status === "offline" ? "off" : ""}">${esc(parent.status)}</span></div></div>` : "";
   const health = stats ? `<div class="card"><h3 style="margin-top:0">Health</h3>
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px">
-      ${typeof stats.cpu === "number" ? `<div><span class="muted">Processor</span><br><b>${Math.round(stats.cpu)}%</b> used</div>` : ""}
-      ${typeof stats.mem === "number" ? `<div><span class="muted">Memory</span><br><b>${Math.round(stats.mem)}%</b> used</div>` : ""}
-      ${typeof stats.uptimeSec === "number" ? `<div><span class="muted">Uptime</span><br><b>${upFmt(stats.uptimeSec)}</b></div>` : ""}
-    </div></div>` : "";
+    ${typeof stats.cpu === "number" ? drow("Processor", `${Math.round(stats.cpu)}% used`) : ""}
+    ${typeof stats.mem === "number" ? drow("Memory", `${Math.round(stats.mem)}% used`) : ""}
+    ${typeof stats.uptimeSec === "number" ? drow("Uptime", upFmt(stats.uptimeSec)) : ""}
+    </div>` : "";
   const kids = children.length ? `<div class="card"><h3 style="margin-top:0">Plugged into this device</h3>
-    ${children.slice(0, 15).map((c) => `<p style="margin:6px 0"><a href="/app/locations/${locationId}/equipment/${c.id}">${esc(displayName(c, renames))}</a> <span class="muted">${esc(deviceKind(c))}${c.ip_address ? " · " + esc(c.ip_address) : ""}</span></p>`).join("")}
-    ${children.length > 15 ? `<p class="muted">and ${children.length - 15} more</p>` : ""}</div>` : "";
+    ${children.slice(0, 15).map((c) => `<div style="display:flex;justify-content:space-between;gap:12px;padding:8px 0;border-bottom:1px solid #EEF2F7"><a href="/app/locations/${locationId}/equipment/${c.id}" style="font-weight:600;color:inherit;text-decoration:none">${esc(displayName(c, renames))}</a><span class="muted">${esc(deviceKind(c))}${c.ip_address ? " · " + esc(c.ip_address) : ""}</span></div>`).join("")}
+    ${children.length > 15 ? `<p class="muted" style="margin-bottom:0">and ${children.length - 15} more</p>` : ""}</div>` : "";
   const body = `${locNav(loc, "equipment")}<p class="flash-print-hide"><a href="/app/locations/${locationId}/equipment">&larr; Equipment</a></p>
-    <div class="card"><div style="display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap">
-      ${kindTile(row, 46)}
-      <div style="flex:1;min-width:220px"><h1 style="margin:0 0 4px">${esc(title)}</h1>
-      <p class="muted" style="margin:0">${esc(kind)} at ${esc(loc.name)}</p></div>
-      <div>${statusPill}</div></div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px;margin-top:18px">${fields}</div>
-      ${row.notes ? `<p style="margin:16px 0 0"><span class="muted">Notes</span><br>${esc(row.notes)}</p>` : ""}
-      <p style="margin:18px 0 0"><a class="btn small secondary" href="/app/locations/${locationId}/tickets?device=${encodeURIComponent(title + (row.ip_address ? " (" + row.ip_address + ")" : ""))}">Report a problem with this device</a>
-      ${canEdit ? ` <a class="btn small" href="/app/locations/${locationId}/equipment/${row.id}/edit">Edit this device</a>` : ""}</p>
-    </div>${health}${kids}`;
+    ${header}
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px;align-items:start">
+      <div class="card"><h3 style="margin-top:0">Details</h3>${detailRows || '<p class="muted">Nothing else on file for this device.</p>'}
+      ${row.notes ? `<p style="margin:14px 0 0"><span class="muted">Notes</span><br>${esc(row.notes)}</p>` : ""}</div>
+      <div style="display:grid;gap:16px">${parentCard}${health}${kids}</div>
+    </div>`;
   return page({ title: title, user, body });
 }
 
@@ -707,6 +728,27 @@ export async function equipmentCsv(env, request, user, locationId) {
   return new Response(lines.join("\n") + "\n", {
     headers: { "Content-Type": "text/csv; charset=utf-8", "Content-Disposition": `attachment; filename="equipment-${locationId}.csv"` },
   });
+}
+
+export async function ispServicePost(env, request, user, locationId) {
+  const { loc, error } = await guard(env, user, locationId);
+  if (error) return denied(user, error);
+  if (user.kind !== "flossbyte") return denied(user, 403);
+  const f = await request.formData();
+  const num = (v) => { const n = Number(v); return Number.isFinite(n) && n > 0 ? Math.round(n) : null; };
+  const svc = {
+    provider: String(f.get("provider") || "").trim().slice(0, 60),
+    plan: String(f.get("plan") || "").trim().slice(0, 80),
+    down: num(f.get("down")), up: num(f.get("up")),
+    account: String(f.get("account") || "").trim().slice(0, 40),
+    contractEnd: /^\d{4}-\d{2}-\d{2}$/.test(String(f.get("contract_end") || "")) ? String(f.get("contract_end")) : "",
+  };
+  await env.DB.prepare(
+    `INSERT INTO network_snapshots (location_id, kind, payload, captured_at) VALUES (?, 'isp_service', ?, datetime('now'))
+     ON CONFLICT(location_id, kind) DO UPDATE SET payload = excluded.payload, captured_at = datetime('now')`)
+    .bind(locationId, JSON.stringify(svc)).run();
+  await audit(env.DB, user.id, "isp_service_update", "location", locationId, svc.provider || "");
+  return redirect(`/app/locations/${locationId}/network?msg=` + encodeURIComponent("Internet plan details saved."));
 }
 
 // ---------- Topology ----------
@@ -948,7 +990,40 @@ function wpCopy(b){var c=b.parentElement.querySelector('.wp');if(!c||!navigator.
       <div style="display:flex;gap:3px;align-items:flex-end;height:90px">${bars}</div>
       <p class="muted" style="margin-bottom:0">Each bar is one day's internet uptime, ending today. Green means 99.5% or better. Hover a bar for the day's numbers.</p></div>`;
   }
-  const sections = [wifiCard, internetCard, historyCard, camerasCard, changesCard, techCard].filter(Boolean);
+  const svc = snaps.isp_service || null;
+  const ispNow = (snaps.internet || {}).isp || null;
+  const svcField = (label, name, val, ph, type) => `<span style="flex:1;min-width:130px"><label>${label}</label><input name="${name}" value="${esc(val == null ? "" : String(val))}" placeholder="${ph || ""}"${type ? ` type="${type}"` : ""}></span>`;
+  const svcForm = (v) => `<form method="post" action="/app/locations/${locationId}/isp-service" class="row" style="align-items:end">
+    ${svcField("Provider", "provider", v.provider || (ispNow && ispNow.ispName) || "", "Comcast Business")}
+    ${svcField("Plan", "plan", v.plan, "Gigabit")}
+    ${svcField("Promised download (Mbps)", "down", v.down, "500")}
+    ${svcField("Promised upload (Mbps)", "up", v.up, "35")}
+    ${svcField("Account number", "account", v.account, "")}
+    ${svcField("Contract ends", "contract_end", v.contractEnd, "", "date")}
+    <button class="btn small" type="submit">Save plan</button></form>`;
+  let ispCard = "";
+  if (svc && (svc.provider || svc.plan || svc.down)) {
+    const promised = Number(svc.down) || 0;
+    const measured = ispNow && ispNow.downMbps != null ? Math.round(ispNow.downMbps) : null;
+    const pct = promised && measured != null ? Math.min(100, Math.round((measured / promised) * 100)) : null;
+    const cDays = svc.contractEnd ? daysUntil(svc.contractEnd) : null;
+    const srow = (label, val) => val ? `<div style="display:flex;justify-content:space-between;gap:16px;padding:8px 0;border-bottom:1px solid #EEF2F7"><span class="muted">${label}</span><span style="text-align:right;font-weight:600">${val}</span></div>` : "";
+    ispCard = `<div class="card"><h2 style="margin-top:0">Internet service</h2>
+      ${srow("Provider", esc(svc.provider || ""))}
+      ${srow("Plan", esc(svc.plan || ""))}
+      ${srow("Promised speed", svc.down || svc.up ? `${svc.down ? esc(String(svc.down)) + " down" : ""}${svc.down && svc.up ? " · " : ""}${svc.up ? esc(String(svc.up)) + " up" : ""} Mbps` : "")}
+      ${srow("Account number", esc(svc.account || ""))}
+      ${srow("Contract ends", svc.contractEnd ? `${esc(fmtDateUS(svc.contractEnd))}${cDays != null && cDays <= 90 ? ` <span class="pill warn">${cDays < 0 ? "ended" : cDays + " days left"}</span>` : ""}` : "")}
+      ${pct != null ? `<div style="margin-top:12px"><div style="height:8px;background:#E6EBF2;border-radius:99px;overflow:hidden"><div style="height:100%;width:${pct}%;background:${pct >= 80 ? "#00BFA5" : pct >= 50 ? "#f59e0b" : "#dc2626"}"></div></div>
+      <p class="muted" style="margin:6px 0 0">Measured download is ${measured} Mbps, ${pct}% of the ${promised} Mbps on the plan.</p></div>` : ""}
+      ${isFb ? `<details style="margin-top:12px"><summary class="muted" style="cursor:pointer">Update plan details</summary><div style="margin-top:10px">${svcForm(svc)}</div></details>` : ""}
+    </div>`;
+  } else if (isFb) {
+    ispCard = `<div class="card"><h2 style="margin-top:0">Internet service</h2>
+      <p class="muted">Add the plan details from the office's internet bill once, and this page compares what they pay for with what they actually get.${ispNow && ispNow.ispName ? ` The connection itself already reports ${esc(ispNow.ispName)}.` : ""}</p>
+      ${svcForm({})}</div>`;
+  }
+  const sections = [wifiCard, internetCard, ispCard, historyCard, camerasCard, changesCard, techCard].filter(Boolean);
   if (!Object.keys(snaps).length && !isFb) {
     const body = `${locNav(loc, "network")}<h1>WiFi &amp; Internet</h1>${locTabs(loc, "network")}
       <div class="card"><p class="muted" style="margin:0">Nothing here yet. Once FlossByte connects this office, this page shows its WiFi names and passwords, internet health, and cameras, all kept up to date automatically.</p></div>`;
