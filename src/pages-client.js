@@ -208,8 +208,8 @@ function lockedTile(user, loc, productName, productKey) {
 }
 
 // One-click "ask FlossByte for this service" — emails the FlossByte team.
-function requestForm(loc, productKey) {
-  return `<form method="post" action="/app/locations/${loc.id}/request-product" style="margin-top:12px">
+function requestForm(loc, productKey, inline) {
+  return `<form method="post" action="/app/locations/${loc.id}/request-product" style="${inline ? "margin:0" : "margin-top:12px"}">
     <input type="hidden" name="product" value="${esc(productKey)}">
     <button class="btn small" type="submit">Request this service</button></form>`;
 }
@@ -408,17 +408,21 @@ export async function servicesPage(env, request, user) {
   const cards = [];
   for (const loc of locs || []) {
     const states = await productStates(db, org, loc.id);
-    const rowsHtml = states.map((p) => `<tr><td><strong>${esc(p.name)}</strong>
-        <div class="muted">${esc(PRODUCT_PLAIN[p.key] || p.description || "")}</div></td>
-      <td>${p.enabled ? `<span class="pill on">Included</span>` : `<span class="pill off">Not included</span>`}</td>
-      <td>${p.enabled ? "" : requestForm(loc, p.key)}</td></tr>`).join("");
+    const inc = states.filter((p) => p.enabled);
+    const avail = states.filter((p) => !p.enabled);
+    const glabel = (t) => `<div style="font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);padding:12px 0 2px">${t}</div>`;
+    const rowIn = (p) => `<div style="display:flex;justify-content:space-between;align-items:center;gap:14px;padding:9px 0;border-bottom:1px solid #EEF2F7"><span style="font-weight:600">${esc(p.name)}</span><span class="pill on">Included</span></div>`;
+    const rowOut = (p) => `<div style="display:flex;justify-content:space-between;align-items:center;gap:14px;padding:10px 0;border-bottom:1px solid #EEF2F7">
+      <div><div style="font-weight:600">${esc(p.name)}</div><div class="muted">${esc(PRODUCT_PLAIN[p.key] || p.description || "")}</div></div>
+      <div style="display:flex;align-items:center;gap:8px;flex:none"><span class="pill off">Not included</span>${requestForm(loc, p.key, true)}</div></div>`;
+    const both = inc.length > 0 && avail.length > 0;
     cards.push(`<div class="card"><h2 style="margin-top:0">${esc(loc.name)}</h2>
-      <div class="tscroll"><table class="stack"><thead><tr><th>Service</th><th>Status</th><th></th></tr></thead>
-      <tbody>${rowsHtml}</tbody></table></div></div>`);
+      ${both ? glabel("Included") : ""}${inc.map(rowIn).join("")}
+      ${avail.length ? `${both ? glabel("Available to add") : ""}${avail.map(rowOut).join("")}` : ""}</div>`);
   }
   const rail = await railLocs(env, user);
   const body = `${orgRail(user, "services", cust ? cust.name : "My Portal", rail)}<h1>Services</h1>
-    <p class="muted">What your organization has with FlossByte, office by office. Only your organization's admins see this page. To change a service that is on, contact FlossByte.</p>
+    <p class="muted">What each office has with FlossByte, and what you can add. To change a service that's on, contact FlossByte.</p>
     ${cards.join("") || `<div class="card"><p class="muted">No offices yet.</p></div>`}`;
   const qp = new URL(request.url).searchParams;
   return page({ title: "Services", user, body, flash: qp.get("msg") || undefined, error: qp.get("err") || undefined });
