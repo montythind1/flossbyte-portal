@@ -358,6 +358,90 @@ export async function appHome(env, request, user) {
 }
 
 // ---------- Location overview ----------
+// Morning check: the office manager's opening glance, computed from
+// the same records the rest of the portal shows, so it can never
+// contradict them. Core lines (internet, front desk, operatories)
+// always render when the office has such devices; printers, backups,
+// and this-week expiries appear only when they need attention.
+// Levels: ok / caution / blocker; the headline is the worst line.
+async function morningCheckCard(db, loc, ispTile, expiring, checkedAt) {
+  const { results: rows } = await db.prepare(
+    "SELECT * FROM equipment WHERE location_id = ?").bind(loc.id).all();
+  const eq = rows || [];
+  if (!eq.length && !ispTile) return "";
+  const renames = await loadRenames(db, loc.id);
+  const nm = (e) => displayName(e, renames);
+  const names = (list) => list.slice(0, 3).map(nm).join(", ") + (list.length > 3 ? `, and ${list.length - 3} more` : "");
+  const lines = [];
+  // Internet, same thresholds (and therefore same verdict) as the
+  // Internet tile and the WiFi & Internet page.
+  if (ispTile && ispTile.uptimePct != null) {
+    const prov = ispTile.ispName ? ` · ${esc(ispTile.ispName)}` : "";
+    if (ispTile.uptimePct >= 99) lines.push({ level: "ok", text: `Internet is working${prov}` });
+    else if (ispTile.uptimePct >= 95) lines.push({ level: "caution", text: `Internet was unstable at times in the last 24 hours${prov}` });
+    else lines.push({ level: "blocker", text: `Internet looks down, or close to it${prov}` });
+  }
+  const offIn = (pred) => eq.filter((e) => e.status === "offline" && pred(e));
+  const anyIn = (pred) => eq.some(pred);
+  // Strong front-desk signals only: a phone named Front-iPhone being
+  // away must not block the morning; FRONT1 and FRONTDESK must.
+  const isFront = (e) => /frontdesk|reception|check.?in/i.test(baseName(e)) || /^front\s?\d/i.test(baseName(e));
+  const isOp = (e) => /^op\s?\d/i.test(baseName(e)) || /operatory/i.test(e.name || "");
+  const isPrinter = (e) => e.type === "Printer";
+  if (anyIn(isFront)) {
+    const off = offIn(isFront);
+    lines.push(off.length
+      ? { level: "blocker", text: `Front desk: ${names(off)} ${off.length === 1 ? "is" : "are"} offline` }
+      : { level: "ok", text: "Front desk computers are online" });
+  }
+  if (anyIn(isOp)) {
+    const off = offIn(isOp);
+    lines.push(off.length
+      ? { level: "blocker", text: `Operatories: ${names(off)} ${off.length === 1 ? "is" : "are"} offline` }
+      : { level: "ok", text: "Operatory computers are online" });
+  }
+  const printOff = offIn(isPrinter);
+  if (printOff.length) lines.push({ level: "caution", text: `Printer offline: ${names(printOff)}` });
+  // Backup line lights up when a backup feed starts writing the
+  // 'backup' snapshot; until then it stays silent rather than guess.
+  const bSnap = await db.prepare(
+    "SELECT payload FROM network_snapshots WHERE location_id = ? AND kind = 'backup'").bind(loc.id).first().catch(() => null);
+  if (bSnap) {
+    try {
+      const b = JSON.parse(bSnap.payload || "{}");
+      const at = b.at || b.lastRunAt || null;
+      const ageH = at ? (Date.now() - new Date(at).getTime()) / 36e5 : null;
+      if (b.ok === false) lines.push({ level: "caution", text: "The last backup did not complete" });
+      else if (ageH != null && ageH > 36) lines.push({ level: "caution", text: `No completed backup in ${Math.floor(ageH / 24)} days` });
+      else if (b.ok) lines.push({ level: "ok", text: "Backup completed" + (at ? ` ${relTime(at)}` : "") });
+    } catch { /* an unreadable backup snapshot shows nothing */ }
+  }
+  const soon = (expiring || []).map((e) => {
+    const dates = [e.license_expires, e.warranty_expires].filter(Boolean).sort();
+    return { e, date: dates[0] || null, days: dates[0] ? daysUntil(dates[0]) : null };
+  }).filter((x) => x.days != null && x.days <= 7);
+  if (soon.length) {
+    const first = soon[0];
+    lines.push({ level: "caution", text: soon.length === 1
+      ? `${esc(first.e.vendor || "")} ${esc(first.e.model || first.e.type || "Equipment")}: ${first.days < 0 ? "already expired" : `expires in ${first.days} day${first.days === 1 ? "" : "s"}`}`.replace(/\s+/g, " ").trim()
+      : `${soon.length} items expire within a week` });
+  }
+  if (!lines.length) return "";
+  const worst = lines.some((l) => l.level === "blocker") ? "blocker"
+    : lines.some((l) => l.level === "caution") ? "caution" : "ok";
+  const dot = (lv) => `<span style="color:${lv === "ok" ? "#0A7C6E" : lv === "caution" ? "#b45309" : "#b91c1c"}">&#9679;</span>`;
+  const headline = worst === "blocker" ? "Needs attention before patients arrive"
+    : worst === "caution" ? "Mostly ready, a few things to know" : "Ready for patients";
+  return `<div class="card">
+    <div style="display:flex;justify-content:space-between;gap:12px;align-items:baseline;flex-wrap:wrap">
+      <p style="margin:0;font-size:16px"><b>${dot(worst)} ${headline}</b></p>
+      <span class="muted" style="font-size:13px">Morning check${checkedAt ? ` · checked ${esc(relTime(checkedAt))}` : ""}</span>
+    </div>
+    <div style="margin-top:8px">${lines.map((l) => `<div style="display:flex;gap:9px;padding:6px 0;border-top:1px solid #EEF2F7"><span>${dot(l.level)}</span><span>${l.text}</span></div>`).join("")}</div>
+    <p style="margin:10px 0 0"><a href="/app/locations/${loc.id}/tickets">Something not right? Report a problem</a></p>
+  </div>`;
+}
+
 export async function locationOverview(env, request, user, locationId) {
   const { loc, error } = await guard(env, user, locationId);
   if (error) return denied(user, error);
@@ -381,10 +465,12 @@ export async function locationOverview(env, request, user, locationId) {
         }).join("")}</ul></div>` : "";
   const health = await officeHealth(env.DB, locationId);
   const netSnap = await db.prepare(
-    "SELECT payload FROM network_snapshots WHERE location_id = ? AND kind = 'internet'").bind(locationId).first().catch(() => null);
+    "SELECT payload, captured_at FROM network_snapshots WHERE location_id = ? AND kind = 'internet'").bind(locationId).first().catch(() => null);
   let ispTile = null;
   if (netSnap) { try { ispTile = JSON.parse(netSnap.payload || "{}").isp || null; } catch { ispTile = null; } }
+  const morningHtml = managedOn ? await morningCheckCard(db, loc, ispTile, expiring, netSnap ? netSnap.captured_at : null) : "";
   const body = `${locNav(loc, "overview")}<h1>${esc(loc.name)}</h1>
+    ${morningHtml}
     ${expiringHtml}
     ${healthCard(health)}
     <div class="grid">
