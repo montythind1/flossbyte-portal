@@ -285,7 +285,7 @@ export async function appHome(env, request, user) {
     cards.push(`<a class="card" href="/app/locations/${loc.id}" style="text-decoration:none;color:inherit;display:block">
       <div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start">
         <div><div style="font-size:18px;font-weight:800">${esc(loc.name)}</div>
-        <div class="muted">${esc(loc.customer_name)}${loc.city ? " · " + esc(loc.city) : ""}</div></div>
+        ${loc.city ? `<div class="muted">${esc(loc.city)}</div>` : ""}</div>
         <div>${pill}</div></div>
       <div style="margin-top:8px">
       ${srow("Internet", isp ? `${isp.uptimePct != null && isp.uptimePct >= 99 ? "Working" : "Check connection"}${isp.ispName ? " · " + esc(isp.ispName) : ""}` : "—")}
