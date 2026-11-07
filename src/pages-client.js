@@ -163,7 +163,7 @@ function locNav(loc, active) {
   const item = (key, href, label, ic) =>
     `<a class="rail-item${active === key ? " active" : ""}" href="${href}">${icon(ic)}${label}</a>`;
   return `<div class="shell"><aside class="rail">
-    <a href="/app" style="display:block;padding:0 10px 9px;margin-bottom:9px;border-bottom:1px solid #EEF2F7;color:#5B6B82;text-decoration:none;font-size:13px;font-weight:600">&larr; Overview</a>
+    <a class="rail-back" href="/app">&larr; Overview</a>
     <div class="rail-context"><div class="rc-t">${esc(loc.name)}</div><div class="rc-s">${esc(loc.customer_name)}</div></div>
     ${item("overview", base, "Overview", "grid")}
     <a class="rail-item${["network", "equipment", "topology"].includes(active) ? " active" : ""}" href="${base}/network">${icon("topology")}Office IT</a>
@@ -2640,8 +2640,7 @@ export async function askPage(env, request, user, locationId) {
     <h1 style="margin:0">${openThread ? "FlossByte Support" : "Genius"}</h1>${endBtn}</div>
   <p class="muted" ${openThread ? 'id="chat-status"' : ""} style="margin:6px 0 14px">${openThread ? esc(statusLine) : `From this office's records only. ${seeAll ? "You see everyone's conversations (admin login)." : "Private to your login; office admins can see them."}`}</p>
   <div class="card">
-    ${emptyState}
-    <div class="chat gstream" id="gstream">${streamInner}</div>
+    <div class="chat gstream" id="gstream">${emptyState}${streamInner}</div>
   </div>
   ${composer}
   ${underRow}
@@ -2655,7 +2654,8 @@ export async function askPage(env, request, user, locationId) {
     var box = document.getElementById('gstream');
     function fit(){
       if (!pageEl) return;
-      var h = window.innerHeight - pageEl.getBoundingClientRect().top - 10;
+      var slack = window.innerWidth <= 900 ? 78 : 10;
+      var h = window.innerHeight - pageEl.getBoundingClientRect().top - slack;
       if (h > 260) pageEl.style.height = h + 'px';
     }
     function toBottom(){ if (box) box.scrollTop = box.scrollHeight; }
