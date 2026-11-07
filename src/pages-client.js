@@ -263,6 +263,7 @@ export async function appHome(env, request, user) {
   // one status card per practice. No link is repeated.
   const srow = (label, val) => `<div style="display:flex;justify-content:space-between;gap:14px;padding:8px 0;border-bottom:1px solid #EEF2F7"><span style="color:#45566E;font-weight:600">${label}</span><span style="text-align:right;font-weight:600">${val}</span></div>`;
   let totOnline = 0, totDevices = 0, totTickets = 0;
+  let worst = null;
   const cards = [];
   for (const loc of locs) {
     const c = await db.prepare(
@@ -271,6 +272,9 @@ export async function appHome(env, request, user) {
     const t = await db.prepare(
       "SELECT COUNT(*) AS n FROM tickets WHERE location_id = ? AND status != 'closed'").bind(loc.id).first();
     const health = await officeHealth(db, loc.id);
+    if (health && typeof health.score === "number" && (!worst || health.score < worst.score)) {
+      worst = { name: loc.name, score: health.score, label: health.label, reasons: health.reasons || [] };
+    }
     const snap = await db.prepare(
       "SELECT payload FROM network_snapshots WHERE location_id = ? AND kind = 'internet'").bind(loc.id).first();
     let isp = null;
@@ -291,18 +295,33 @@ export async function appHome(env, request, user) {
       <p style="margin:12px 0 0;color:#0A7C6E;font-weight:700">Open practice ›</p></a>`);
   }
   const billing = locs.length ? await db.prepare(
-    "SELECT COUNT(*) AS unpaid FROM invoices WHERE customer_id = ? AND status = 'unpaid'")
-    .bind(locs[0].customer_id).first().catch(() => null) : null;
-  const strip = `<div class="statgrid">
-    <div class="stat"><b>${locs.length}</b><span>${locs.length === 1 ? "Practice" : "Practices"}</span></div>
-    <div class="stat"><b>${totDevices ? `${totOnline} of ${totDevices}` : "0"}</b><span>Devices online</span></div>
-    <div class="stat"><b>${totTickets}</b><span>Open tickets</span></div>
-    <div class="stat"><b>${billing ? billing.unpaid || 0 : 0}</b><span>Unpaid invoices</span></div>
-  </div>`;
+    `SELECT (SELECT COUNT(*) FROM invoices WHERE customer_id = ? AND status = 'unpaid') AS unpaid,
+            (SELECT COUNT(*) FROM quotes WHERE customer_id = ? AND status = 'sent') AS quotes_waiting`)
+    .bind(locs[0].customer_id, locs[0].customer_id).first().catch(() => null) : null;
+  // Status band: the organization name is the headline, and under it
+  // one navy band carries the overall status in words plus only the
+  // actionable numbers (quotes waiting, unpaid invoices, open
+  // tickets). The per-practice counts live on the cards, not repeated
+  // here as tiles.
+  const bandMain = !worst || worst.score >= 85 ? "Everything is running"
+    : worst.score >= 60 ? `${worst.name} is running fair` : `${worst.name} needs attention`;
+  const bandSub = !worst || worst.score >= 85 ? "Nothing needs attention at any practice."
+    : (worst.reasons.slice(0, 2).join(" · ") || "See its practice card for details.");
+  const chip = "background:rgba(255,255,255,.13);color:#fff;border-radius:99px;padding:6px 12px;font-weight:600;font-size:13px;text-decoration:none;white-space:nowrap";
+  const chips = [
+    billing && billing.quotes_waiting ? `<a href="/app/billing" style="${chip}">${billing.quotes_waiting} quote${billing.quotes_waiting > 1 ? "s" : ""} waiting</a>` : "",
+    billing && billing.unpaid ? `<a href="/app/billing" style="${chip}">${billing.unpaid} unpaid invoice${billing.unpaid > 1 ? "s" : ""}</a>` : "",
+    totTickets ? `<span style="${chip}">${totTickets} open ticket${totTickets > 1 ? "s" : ""}</span>` : "",
+  ].filter(Boolean).join("");
+  const band = `<div class="card" style="padding:0;overflow:hidden;margin-bottom:16px">
+    <div style="background:linear-gradient(135deg,#0A1628 0%,#14335F 100%);color:#fff;padding:18px 22px;display:flex;justify-content:space-between;gap:14px;flex-wrap:wrap;align-items:center">
+      <div><div style="font-size:18px;font-weight:800">${esc(bandMain)}</div>
+      <div style="color:#B9C7DC;margin-top:3px">${esc(bandSub)}</div></div>
+      ${chips ? `<div style="display:flex;gap:8px;flex-wrap:wrap">${chips}</div>` : ""}
+    </div></div>`;
   const orgName = locs.length ? locs[0].customer_name : "";
-  const body = `${orgRail(user, "practices", "My Portal", locs)}<h1 style="margin-bottom:2px">Your practices</h1>
-    ${orgName ? `<p class="muted" style="margin:0 0 14px">${esc(orgName)}</p>` : ""}
-    ${strip}
+  const body = `${orgRail(user, "practices", orgName || "My Portal", locs)}<h1 style="margin-bottom:14px">${esc(orgName || "Your practices")}</h1>
+    ${band}
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px">${cards.join("")}</div>`;
   return page({ title: "My Portal", user, body });
 }
