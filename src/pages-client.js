@@ -181,8 +181,10 @@ function orgRail(user, active, orgName, locs) {
     : "";
   // Direct shortcuts into each practice, so from any organization
   // page (Billing included) a practice is one click away. This is the
-  // "way back" from organization scope into a practice.
-  const practiceLinks = locs && locs.length
+  // "way back" from organization scope into a practice. Hidden on the
+  // practices page itself, where the practice cards already list them
+  // (the same two names twice on one screen read as repetition).
+  const practiceLinks = locs && locs.length && active !== "practices"
     ? `<div class="rail-label">Go to a practice</div>${locs.map((l) => `<a class="rail-item" href="/app/locations/${l.id}">${icon("pin")}${esc(l.name)}</a>`).join("")}`
     : "";
   return `<div class="shell"><aside class="rail">
