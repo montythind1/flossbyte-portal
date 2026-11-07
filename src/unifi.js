@@ -11,6 +11,8 @@
 // the Worker cron and on demand from the Device sync page; the outcome
 // of every run is recorded in system_state for that page to show.
 
+import { sendEmail, wrap } from "./email.js";
+
 const TYPE_LABELS = {
   uap: "Access point", usw: "Switch", ugw: "Gateway", uxg: "Gateway",
   udm: "Gateway", udr: "Gateway", uck: "Controller", ucck: "Controller",
@@ -237,6 +239,22 @@ export async function lastUnifiSync(env) {
   try { return JSON.parse(raw); } catch { return null; }
 }
 
+async function alertRecipients(env) {
+  if (env.ADMIN_ALERT_EMAIL) return [env.ADMIN_ALERT_EMAIL];
+  try {
+    const { results } = await env.DB.prepare(
+      "SELECT email FROM users WHERE kind = 'flossbyte' AND status = 'active' AND email IS NOT NULL").all();
+    return (results || []).map((r) => r.email).filter(Boolean);
+  } catch { return []; }
+}
+
+async function alertsMuted(env) {
+  try {
+    const row = await env.DB.prepare("SELECT value FROM system_state WHERE key = 'alerts_muted_until'").first();
+    return !!(row && row.value && new Date(row.value).getTime() > Date.now());
+  } catch { return false; }
+}
+
 export async function runUnifiSync(env) {
   const summary = {
     at: new Date().toISOString(), ok: false, message: "",
@@ -245,6 +263,8 @@ export async function runUnifiSync(env) {
     clientsSeen: 0, clientsAdded: 0, clientsUpdated: 0, clientsOfflined: 0,
   };
   const finish = async () => { await setState(env.DB, "unifi_last_sync", JSON.stringify(summary)); return summary; };
+  let preState = {};
+  let locMeta = {};
   try {
     if (!env.UNIFI_API_KEY) { summary.message = "No UniFi API key is saved yet."; return finish(); }
     try {
@@ -344,6 +364,25 @@ export async function runUnifiSync(env) {
       "SELECT site_id, location_id FROM sync_sites WHERE provider = 'unifi' AND location_id IS NOT NULL").all();
     const locationBySite = {};
     for (const r of mapRows || []) locationBySite[r.site_id] = r.location_id;
+
+    // Pre-run equipment state per mapped location, so after the run
+    // the sync can tell what went offline (alert emails) and what is
+    // brand new (change-history events). (Declared before the try so
+    // the post-run alert pass can read them.)
+    preState = {};
+    locMeta = {};
+    try {
+      for (const locId of [...new Set(Object.values(locationBySite))]) {
+        const { results: rows } = await env.DB.prepare(
+          "SELECT source, external_id, mac, name, type, status FROM equipment WHERE location_id = ?").bind(locId).all();
+        const m = new Map();
+        for (const r of rows || []) { const k = r.external_id || r.mac; if (k) m.set(k, r); }
+        preState[locId] = m;
+        const meta = await env.DB.prepare(
+          "SELECT l.name AS loc_name, c.name AS cust_name FROM locations l JOIN customers c ON c.id = l.customer_id WHERE l.id = ?").bind(locId).first();
+        if (meta) locMeta[locId] = meta;
+      }
+    } catch { /* alerts are an enhancement; the sync proceeds without */ }
 
     // Topology parents (migration 0010) are written only when the
     // column exists, so this sync keeps working before it is applied.
@@ -638,6 +677,24 @@ export async function runUnifiSync(env) {
                 writes.push(["changes", { events: [...events.map((text) => ({ at: nowIso, text })), ...oldEvents].slice(0, 60) }]);
                 summary.changesLogged = (summary.changesLogged || 0) + events.length;
               }
+              // Internet history: one entry per day (the rolling
+              // 24-hour aggregate at capture time), kept 31 days, so
+              // the WiFi & Internet page can chart a month of uptime.
+              if (newByKind.internet && newByKind.internet.isp) {
+                const ispH = newByKind.internet.isp;
+                const days = ((prev.internet_history || {}).days || []).filter((d) => d && d.date);
+                const today = new Date().toISOString().slice(0, 10);
+                const entry = {
+                  date: today,
+                  uptimePct: ispH.uptimePct != null ? ispH.uptimePct : null,
+                  downtimeMin: ispH.downtimeSec != null ? Math.round(ispH.downtimeSec / 60) : null,
+                  downMbps: ispH.downMbps != null ? Math.round(ispH.downMbps) : null,
+                  upMbps: ispH.upMbps != null ? Math.round(ispH.upMbps) : null,
+                };
+                const merged = [...days.filter((d) => d.date !== today), entry]
+                  .sort((a, b) => String(a.date).localeCompare(String(b.date))).slice(-31);
+                writes.push(["internet_history", { days: merged }]);
+              }
             } catch { /* change logging never breaks the sync */ }
           }
           for (const [kind, payload] of writes) {
@@ -657,5 +714,78 @@ export async function runUnifiSync(env) {
   } catch (err) {
     summary.message = String(err && err.message || err);
   }
+  // Offline alert emails + new-device change events, from the
+  // pre-run/post-run equipment diff. Best-effort throughout: alerting
+  // must never break or fail the sync itself, and only runs after a
+  // sync that completed cleanly.
+  if (summary.ok) { try {
+    const muted = await alertsMuted(env);
+    const recipients = muted ? [] : await alertRecipients(env);
+    let alertsSent = 0, newDevices = 0;
+    const isKeyDevice = (r) => r.source === "unifi" || /server|firewall|gateway/i.test(`${r.type || ""} ${r.name || ""}`);
+    for (const locId of Object.keys(preState)) {
+      const pre = preState[locId];
+      const { results: postRows } = await env.DB.prepare(
+        "SELECT source, external_id, mac, name, type, status FROM equipment WHERE location_id = ?").bind(Number(locId)).all();
+      const post = new Map();
+      for (const r of postRows || []) { const k = r.external_id || r.mac; if (k) post.set(k, r); }
+      let snapOk = true;
+      try { await env.DB.prepare("SELECT id FROM network_snapshots LIMIT 1").all(); } catch { snapOk = false; }
+      if (snapOk && pre.size) {
+        const fresh = [];
+        for (const [k, r] of post) if (!pre.has(k)) fresh.push(r.name || r.type || "Device");
+        if (fresh.length) {
+          newDevices += fresh.length;
+          try {
+            const snap = await env.DB.prepare(
+              "SELECT payload FROM network_snapshots WHERE location_id = ? AND kind = 'changes'").bind(Number(locId)).first();
+            const old = snap && snap.payload ? (JSON.parse(snap.payload).events || []) : [];
+            const nowIso = new Date().toISOString();
+            const evs = fresh.slice(0, 5).map((n) => ({ at: nowIso, text: `New device joined the network: ${n}` }));
+            await env.DB.prepare(
+              `INSERT INTO network_snapshots (location_id, kind, payload, captured_at) VALUES (?, 'changes', ?, datetime('now'))
+               ON CONFLICT(location_id, kind) DO UPDATE SET payload = excluded.payload, captured_at = datetime('now')`)
+              .bind(Number(locId), JSON.stringify({ events: [...evs, ...old].slice(0, 60) })).run();
+          } catch { /* event logging is best-effort */ }
+        }
+      }
+      const wentOffline = [];
+      let preOnline = 0;
+      for (const [k, r] of pre) {
+        if (r.status === "offline") continue;
+        preOnline++;
+        const now = post.get(k);
+        if (now && now.status === "offline") wentOffline.push(now);
+      }
+      if (!wentOffline.length || muted || !recipients.length) continue;
+      const meta = locMeta[locId] || {};
+      const locName = meta.loc_name || "An office";
+      const where = meta.cust_name ? `${locName} (${meta.cust_name})` : locName;
+      const siteDown = preOnline >= 3 && wentOffline.length === preOnline;
+      const mails = [];
+      if (siteDown) {
+        mails.push({
+          subject: `Portal alert: ${locName} appears to be down`,
+          text: `Every device at ${where} went offline in the latest check (${preOnline} devices). This usually means the internet connection or power is out at the office. The portal keeps checking every hour.`,
+        });
+      } else {
+        for (const d of wentOffline.filter(isKeyDevice).slice(0, 3)) {
+          mails.push({
+            subject: `Portal alert: ${d.name || d.type || "A device"} is offline at ${locName}`,
+            text: `${d.name || d.type || "A device"} at ${where} was online and is now offline as of the latest check. The portal keeps checking every hour.`,
+          });
+        }
+      }
+      for (const mail of mails) {
+        const html = wrap(mail.subject, `<p>${mail.text}</p><p style="color:#5A6B82">Sent by FlossByte Portal device monitoring. You can pause these alerts from the Device sync page.</p>`);
+        for (const to of recipients) {
+          await sendEmail(env, { to, template: "device_alert", subject: mail.subject, html, text: mail.text });
+          alertsSent++;
+        }
+      }
+    }
+    if (alertsSent) summary.alertsSent = alertsSent;
+    if (newDevices) summary.newDevices = newDevices;
+  } catch { /* alerting never breaks the sync */ } }
   return finish();
 }

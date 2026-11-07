@@ -3,7 +3,7 @@
 import { page, redirect, esc, icon, fmtDateUS, withStatus } from "./layout.js";
 import { createAuthToken, revokeAllSessions, verifyPassword, normalizePhone, splitName, joinName } from "./auth.js";
 import { audit, isSuperAdmin, grantUserAccess, findCustomerByContactEmail, isValidEmail } from "./access.js";
-import { sendEmail, inviteEmail, newCustomerNoticeEmail, ownershipTransferEmail, quoteSentEmail } from "./email.js";
+import { sendEmail, wrap, inviteEmail, newCustomerNoticeEmail, ownershipTransferEmail, quoteSentEmail } from "./email.js";
 import { resendInviteEmail } from "./pages-public.js";
 import { runUnifiSync, lastUnifiSync } from "./unifi.js";
 import { runSophosSync, lastSophosSync } from "./sophos.js";
@@ -1340,6 +1340,10 @@ export async function syncPage(env, request, user) {
     siteMappingBlock(env, "unifi", "UniFi sites", "No UniFi sites discovered yet. Once the API key is saved, run a sync and every site on the account will appear here, ready to map to a location."),
     siteMappingBlock(env, "sophos", "Sophos tenants", "No Sophos tenants discovered yet. Once the API credentials are saved, run a sync and every tenant will appear here, ready to map to a location."),
   ]);
+  const mutedRow = await env.DB.prepare("SELECT value FROM system_state WHERE key = 'alerts_muted_until'").first().catch(() => null);
+  const mutedUntil = mutedRow && mutedRow.value && new Date(mutedRow.value).getTime() > Date.now() ? mutedRow.value : "";
+  const lastReportRow = await env.DB.prepare("SELECT value FROM system_state WHERE key = 'last_monthly_report'").first().catch(() => null);
+  const lastReport = lastReportRow ? lastReportRow.value : "";
   const body = `${adminNav("sync")}<h1>Device sync</h1>
     <div class="card"><h3>UniFi</h3>
       <p class="muted">${env.UNIFI_API_KEY
@@ -1355,8 +1359,119 @@ export async function syncPage(env, request, user) {
       ${lastRunHtml(lastSophos, "Tenants")}</div>
     <div class="card"><h3>Which site is which office?</h3>
       <p class="muted">Devices are imported only after you map a site or tenant to a location. Devices from unmapped ones are counted in the sync summaries but never added.</p>
-      ${unifiMap}${sophosMap}</div>`;
+      ${unifiMap}${sophosMap}</div>
+    <div class="card"><h3>Alerts &amp; monthly report</h3>
+      <p class="muted">When a key device (gateway, server, firewall) goes offline, or a whole office goes dark, the portal emails the FlossByte admins right after that check. ${mutedUntil
+        ? `<b>Alerts are paused until ${esc(mutedUntil.slice(0, 16).replace("T", " "))} UTC.</b>`
+        : "Alerts are on."}</p>
+      <form method="post" action="/admin/sync/mute" class="row" style="gap:8px">
+        <button class="btn small secondary" type="submit" name="hours" value="2">Pause alerts 2 hours</button>
+        <button class="btn small secondary" type="submit" name="hours" value="24">Pause alerts 24 hours</button>
+        ${mutedUntil ? `<button class="btn small" type="submit" name="hours" value="0">Resume alerts</button>` : ""}
+      </form>
+      <p class="muted" style="margin-top:16px">On the 1st of each month, every practice's main admin gets an Office IT report by email: internet uptime, what changed, tickets opened and closed, and what expires next.${lastReport ? ` Last sent for ${esc(lastReport)}.` : ""}</p>
+      <form method="post" action="/admin/sync/report"><button class="btn small" type="submit">Send the report to all practices now</button></form>
+    </div>`;
   return page({ title: "Device sync", user, body, flash: q(request).get("msg") || undefined });
+}
+
+export async function syncMutePost(env, request, user) {
+  const f = await request.formData();
+  const hours = Number(f.get("hours") || 0);
+  if (hours > 0) {
+    const until = new Date(Date.now() + hours * 3600 * 1000).toISOString();
+    await env.DB.prepare("INSERT INTO system_state (key, value) VALUES ('alerts_muted_until', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind(until).run();
+    await audit(env.DB, user.id, "alerts_mute", "sync", null, `${hours}h`);
+    return redirect("/admin/sync?msg=" + encodeURIComponent(`Device alerts paused for ${hours} hours.`));
+  }
+  await env.DB.prepare("DELETE FROM system_state WHERE key = 'alerts_muted_until'").run();
+  await audit(env.DB, user.id, "alerts_unmute", "sync", null, "");
+  return redirect("/admin/sync?msg=" + encodeURIComponent("Device alerts are on."));
+}
+
+export async function syncReportPost(env, request, user) {
+  const r = await sendMonthlyReports(env, true);
+  await audit(env.DB, user.id, "monthly_report_send", "sync", null, `sent ${r.sent}`);
+  return redirect("/admin/sync?msg=" + encodeURIComponent(`Monthly Office IT report sent to ${r.sent} practice inbox${r.sent === 1 ? "" : "es"}.`));
+}
+
+// The monthly Office IT report: one email per practice, to its main
+// admins, covering the last 30 days from the portal's own records.
+// Runs on the 1st (cron) or on demand from the Device sync page.
+export async function sendMonthlyReports(env, force) {
+  const now = new Date();
+  const monthKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
+  const markerRow = await env.DB.prepare("SELECT value FROM system_state WHERE key = 'last_monthly_report'").first().catch(() => null);
+  if (!force && markerRow && markerRow.value === monthKey) return { sent: 0, skipped: true };
+  const sinceIso = new Date(now.getTime() - 30 * 864e5).toISOString();
+  const sinceDate = sinceIso.slice(0, 10);
+  const in60 = new Date(now.getTime() + 60 * 864e5).toISOString().slice(0, 10);
+  let sent = 0;
+  const { results: orgs } = await env.DB.prepare("SELECT * FROM customers ORDER BY name").all();
+  for (const org of orgs || []) {
+    const { results: locs } = await env.DB.prepare("SELECT * FROM locations WHERE customer_id = ? ORDER BY name").bind(org.id).all();
+    if (!locs || !locs.length) continue;
+    const { results: admins } = await env.DB.prepare(
+      `SELECT DISTINCT u.email FROM users u JOIN user_access ua ON ua.user_id = u.id
+       WHERE ua.customer_id = ? AND u.role = 'customer_admin' AND u.status = 'active' AND u.email IS NOT NULL`).bind(org.id).all();
+    const recipients = (admins || []).map((r) => r.email).filter(Boolean);
+    if (!recipients.length) continue;
+    const sections = [];
+    const textParts = [];
+    for (const loc of locs) {
+      let uptimeLine = "";
+      try {
+        const snap = await env.DB.prepare("SELECT payload FROM network_snapshots WHERE location_id = ? AND kind = 'internet_history'").bind(loc.id).first();
+        const days = snap && snap.payload ? (JSON.parse(snap.payload).days || []).filter((d) => d && d.date >= sinceDate) : [];
+        const ups = days.map((d) => d.uptimePct).filter((v) => v != null);
+        if (ups.length) {
+          const avg = ups.reduce((a, b) => a + b, 0) / ups.length;
+          const downMin = days.reduce((a, d) => a + (d.downtimeMin || 0), 0);
+          uptimeLine = `Internet uptime ${Math.round(avg * 10) / 10}% over the last ${days.length} days${downMin ? `, about ${downMin} minutes down in total` : ", no downtime recorded"}.`;
+        }
+      } catch { /* history is optional */ }
+      const eq = await env.DB.prepare("SELECT COUNT(*) AS n, SUM(CASE WHEN status = 'online' THEN 1 ELSE 0 END) AS onn FROM equipment WHERE location_id = ?").bind(loc.id).first().catch(() => null);
+      let changeCount = 0;
+      try {
+        const snap = await env.DB.prepare("SELECT payload FROM network_snapshots WHERE location_id = ? AND kind = 'changes'").bind(loc.id).first();
+        const evs = snap && snap.payload ? (JSON.parse(snap.payload).events || []) : [];
+        changeCount = evs.filter((e) => e && e.at && e.at >= sinceIso).length;
+      } catch { /* changes are optional */ }
+      const exp = await env.DB.prepare(
+        `SELECT name, model, type, license_expires, warranty_expires FROM equipment WHERE location_id = ?
+         AND ((license_expires IS NOT NULL AND license_expires BETWEEN ? AND ?) OR (warranty_expires IS NOT NULL AND warranty_expires BETWEEN ? AND ?))`)
+        .bind(loc.id, sinceDate, in60, sinceDate, in60).all().catch(() => ({ results: [] }));
+      const expLines = (exp.results || []).map((e) => {
+        const d = [e.license_expires, e.warranty_expires].filter((x) => x && x >= sinceDate && x <= in60).sort()[0];
+        return `${e.name || e.model || e.type || "Equipment"}: ${d === e.license_expires ? "license" : "warranty"} expires ${fmtDateUS(d)}`;
+      });
+      const lines = [
+        uptimeLine,
+        eq && eq.n ? `${eq.onn || 0} of ${eq.n} devices online right now.` : "",
+        changeCount ? `${changeCount} change${changeCount === 1 ? "" : "s"} recorded on the network this month.` : "No network changes recorded this month.",
+        ...expLines.map((x) => `Coming up: ${x}.`),
+      ].filter(Boolean);
+      sections.push(`<h3 style="margin:18px 0 6px">${esc(loc.name)}</h3><ul style="margin:0;padding-left:18px">${lines.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>`);
+      textParts.push(`${loc.name}\n${lines.map((x) => `- ${x}`).join("\n")}`);
+    }
+    const tickets = await env.DB.prepare(
+      `SELECT SUM(CASE WHEN t.created_at >= ? THEN 1 ELSE 0 END) AS opened,
+              SUM(CASE WHEN t.status = 'closed' AND t.updated_at >= ? THEN 1 ELSE 0 END) AS closed
+       FROM tickets t JOIN locations l ON l.id = t.location_id WHERE l.customer_id = ?`)
+      .bind(sinceIso, sinceIso, org.id).first().catch(() => null);
+    const ticketLine = tickets && (tickets.opened || tickets.closed)
+      ? `<p>Support tickets this month: ${tickets.opened || 0} opened, ${tickets.closed || 0} closed.</p>`
+      : `<p>No support tickets this month.</p>`;
+    const subject = `Your Office IT report — ${org.name}`;
+    const html = wrap(subject, `<p>Here is your office technology summary for the last 30 days, from your FlossByte portal records.</p>${sections.join("")}${ticketLine}<p style="color:#5A6B82">Questions about anything here? Reply to this email or call FlossByte at (669) 237-2264.</p>`);
+    const text = `Your Office IT report — ${org.name}\n\n${textParts.join("\n\n")}\n\n${tickets && (tickets.opened || tickets.closed) ? `Support tickets this month: ${tickets.opened || 0} opened, ${tickets.closed || 0} closed.` : "No support tickets this month."}`;
+    for (const to of recipients) {
+      await sendEmail(env, { to, template: "monthly_report", subject, html, text });
+      sent++;
+    }
+  }
+  await env.DB.prepare("INSERT INTO system_state (key, value) VALUES ('last_monthly_report', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind(monthKey).run();
+  return { sent, skipped: false };
 }
 
 export async function syncMapPost(env, request, user) {

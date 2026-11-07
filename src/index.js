@@ -27,7 +27,11 @@ export default {
   // Hourly device sync (cron in wrangler.toml). Each sync records its own
   // outcome for the Device sync page and never throws past this handler.
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(Promise.allSettled([runUnifiSync(env), runSophosSync(env)]));
+    const jobs = [runUnifiSync(env), runSophosSync(env)];
+    // Monthly Office IT report on the 1st; the sender itself records
+    // the month marker, so extra hourly runs in between are no-ops.
+    if (new Date().getUTCDate() === 1) jobs.push(admin.sendMonthlyReports(env, false));
+    ctx.waitUntil(Promise.allSettled(jobs));
   },
 };
 
@@ -94,6 +98,8 @@ async function route(request, env) {
     if (path === "/admin/sync/map" && method === "POST") return admin.syncMapPost(env, request, user);
     if (path === "/admin/sync/run" && method === "POST") return admin.syncRunPost(env, request, user);
     if (path === "/admin/sync/run-sophos" && method === "POST") return admin.syncRunSophosPost(env, request, user);
+    if (path === "/admin/sync/mute" && method === "POST") return admin.syncMutePost(env, request, user);
+    if (path === "/admin/sync/report" && method === "POST") return admin.syncReportPost(env, request, user);
     m = path.match(/^\/admin\/transfer\/(\d+)$/);
     if (m && method === "GET") return admin.transferPage(env, request, user, Number(m[1]));
     if (m && method === "POST") return admin.transferPost(env, request, user, Number(m[1]));

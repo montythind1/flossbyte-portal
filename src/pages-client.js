@@ -286,6 +286,7 @@ export async function locationOverview(env, request, user, locationId) {
           const days = daysUntil(date);
           return `<li>${esc(e.vendor || "")} ${esc(e.model || e.type || "Equipment")}: ${kind.toLowerCase()} expires ${esc(fmtDateUS(date))} (${days < 0 ? "expired" : days + " days"})</li>`;
         }).join("")}</ul></div>` : "";
+  const health = await officeHealth(env.DB, locationId);
   const quickLinks = [
     `<a href="/app/billing">Billing</a>${billing && billing.sent_quotes ? ` (${billing.sent_quotes} quote${billing.sent_quotes > 1 ? "s" : ""} waiting for you)` : ""}${billing && billing.unpaid_invoices ? ` (${billing.unpaid_invoices} unpaid invoice${billing.unpaid_invoices > 1 ? "s" : ""})` : ""}`,
     user.role === "customer_admin" ? `<a href="/app/services">Services</a>` : "",
@@ -294,6 +295,7 @@ export async function locationOverview(env, request, user, locationId) {
   const body = `${locNav(loc, "overview")}<h1>${esc(loc.name)}</h1>
     <p class="muted" style="margin:-6px 0 16px">${quickLinks}</p>
     ${expiringHtml}
+    ${healthCard(health)}
     <div class="grid">
       <a class="tile" href="/app/locations/${locationId}/equipment"><span class="tile-n">${counts.equipment}</span><span class="d">Equipment on record</span></a>
       <a class="tile" href="/app/locations/${locationId}/tickets"><span class="tile-n">${counts.open_tickets}</span><span class="d">Open tickets</span></a>
@@ -437,6 +439,48 @@ export async function productPage(env, request, user, locationId, productKey) {
 }
 
 // ---------- Equipment ----------
+// Office health score, Atera-style: start at 100 and deduct for what
+// is actually wrong, with the reasons shown next to the number so it
+// never reads as a black box. Computed only from the office's own
+// records (offline devices, expiring items, measured internet uptime).
+async function officeHealth(db, locationId) {
+  try {
+    const { results } = await db.prepare("SELECT * FROM equipment WHERE location_id = ?").bind(locationId).all();
+    const rows = results || [];
+    if (!rows.length) return null;
+    let score = 100;
+    const reasons = [];
+    const isKey = (e) => e.source === "unifi" || /server|firewall|gateway/i.test(`${e.type || ""} ${e.name || ""}`);
+    const keyOff = rows.filter((e) => e.status === "offline" && isKey(e));
+    const otherOff = rows.filter((e) => e.status === "offline" && !isKey(e));
+    if (keyOff.length) { score -= Math.min(50, keyOff.length * 25); reasons.push(`${keyOff.length === 1 ? "A key device is" : keyOff.length + " key devices are"} offline`); }
+    if (otherOff.length) { score -= Math.min(20, otherOff.length * 5); reasons.push(`${otherOff.length} other ${otherOff.length === 1 ? "device is" : "devices are"} offline`); }
+    const nextExp = (e) => [e.license_expires, e.warranty_expires].filter(Boolean).sort()[0];
+    const expired = rows.filter((e) => { const x = nextExp(e); return x && daysUntil(x) < 0; });
+    const expSoon = rows.filter((e) => { const x = nextExp(e); return x && daysUntil(x) >= 0 && daysUntil(x) <= 30; });
+    if (expired.length) { score -= 15; reasons.push(`${expired.length} ${expired.length === 1 ? "item has" : "items have"} expired`); }
+    else if (expSoon.length) { score -= 10; reasons.push(`${expSoon.length} ${expSoon.length === 1 ? "item expires" : "items expire"} within 30 days`); }
+    try {
+      const snap = await db.prepare("SELECT payload FROM network_snapshots WHERE location_id = ? AND kind = 'internet'").bind(locationId).first();
+      const isp = snap && snap.payload ? (JSON.parse(snap.payload).isp || {}) : {};
+      if (isp.uptimePct != null && isp.uptimePct < 99) {
+        score -= isp.uptimePct < 95 ? 20 : 10;
+        reasons.push(`Internet uptime is ${Math.round(isp.uptimePct * 10) / 10}% over the last day`);
+      }
+    } catch { /* the internet section is optional */ }
+    score = Math.max(0, score);
+    return { score, label: score >= 85 ? "Good" : score >= 60 ? "Fair" : "Needs attention", reasons };
+  } catch { return null; }
+}
+function healthCard(h) {
+  if (!h) return "";
+  const color = h.score >= 85 ? "#0A7C6E" : h.score >= 60 ? "#b45309" : "#b91c1c";
+  return `<div class="card"><div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">
+    <div><span style="font-size:34px;font-weight:800;color:${color}">${h.score}</span><span class="muted"> / 100</span></div>
+    <div style="flex:1;min-width:200px"><b>Office health: ${h.label}</b>
+    <br><span class="muted">${h.reasons.length ? esc(h.reasons.slice(0, 3).join(" · ")) : "Everything is online and up to date."}</span></div></div></div>`;
+}
+
 export async function equipmentPage(env, request, user, locationId) {
   const { loc, error } = await guard(env, user, locationId);
   if (error) return denied(user, error);
@@ -615,7 +659,8 @@ export async function equipmentDetailPage(env, request, user, locationId, equipm
       <div>${statusPill}</div></div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px;margin-top:18px">${fields}</div>
       ${row.notes ? `<p style="margin:16px 0 0"><span class="muted">Notes</span><br>${esc(row.notes)}</p>` : ""}
-      ${canEdit ? `<p style="margin:18px 0 0"><a class="btn small" href="/app/locations/${locationId}/equipment/${row.id}/edit">Edit this device</a></p>` : ""}
+      <p style="margin:18px 0 0"><a class="btn small secondary" href="/app/locations/${locationId}/tickets?device=${encodeURIComponent(title + (row.ip_address ? " (" + row.ip_address + ")" : ""))}">Report a problem with this device</a>
+      ${canEdit ? ` <a class="btn small" href="/app/locations/${locationId}/equipment/${row.id}/edit">Edit this device</a>` : ""}</p>
     </div>${health}${kids}`;
   return page({ title: title, user, body });
 }
@@ -891,14 +936,27 @@ function wpCopy(b){var c=b.parentElement.querySelector('.wp');if(!c||!navigator.
   }
   const techCard = tech.length ? `<details class="card"><summary style="cursor:pointer;font-weight:600">Technical details</summary><div style="margin-top:10px">${tech.join("")}</div></details>` : "";
 
-  const sections = [wifiCard, internetCard, camerasCard, changesCard, techCard].filter(Boolean);
+  const histDays = ((snaps.internet_history || {}).days || []).filter((d) => d && d.date);
+  let historyCard = "";
+  if (histDays.length >= 2) {
+    const bars = histDays.map((d) => {
+      const u = d.uptimePct != null ? d.uptimePct : 100;
+      const col = u >= 99.5 ? "#00BFA5" : u >= 98 ? "#f59e0b" : "#dc2626";
+      return `<div title="${esc(d.date)}: ${esc(String(u))}% uptime${d.downtimeMin ? `, ${esc(String(d.downtimeMin))} min down` : ""}" style="flex:1;background:${col};height:${Math.max(8, Math.round(u))}%;border-radius:3px 3px 0 0;min-width:6px"></div>`;
+    }).join("");
+    historyCard = `<div class="card"><h2 style="margin-top:0">Internet, last ${histDays.length} days</h2>
+      <div style="display:flex;gap:3px;align-items:flex-end;height:90px">${bars}</div>
+      <p class="muted" style="margin-bottom:0">Each bar is one day's internet uptime, ending today. Green means 99.5% or better. Hover a bar for the day's numbers.</p></div>`;
+  }
+  const sections = [wifiCard, internetCard, historyCard, camerasCard, changesCard, techCard].filter(Boolean);
   if (!Object.keys(snaps).length && !isFb) {
     const body = `${locNav(loc, "network")}<h1>WiFi &amp; Internet</h1>${locTabs(loc, "network")}
       <div class="card"><p class="muted" style="margin:0">Nothing here yet. Once FlossByte connects this office, this page shows its WiFi names and passwords, internet health, and cameras, all kept up to date automatically.</p></div>`;
     return page({ title: "WiFi & Internet", user, body });
   }
   const capLine = captured ? `<p class="muted" style="margin-top:0">Last checked ${esc(relTime(captured))} (${esc(fmtDateUS(captured.slice(0, 10)))}). This page only reads the office's setup; nothing here can change it.</p>` : "";
-  const body = `${locNav(loc, "network")}<h1>WiFi &amp; Internet</h1>${locTabs(loc, "network")}${capLine}${sections.join("")}${anyPass ? wifiScript : ""}`;
+  const health = await officeHealth(env.DB, locationId);
+  const body = `${locNav(loc, "network")}<h1>WiFi &amp; Internet</h1>${locTabs(loc, "network")}${capLine}${healthCard(health)}${sections.join("")}${anyPass ? wifiScript : ""}`;
   return page({ title: "WiFi & Internet", user, body });
 }
 
@@ -1097,6 +1155,7 @@ export async function ticketsPage(env, request, user, locationId) {
   const { loc, error } = await guard(env, user, locationId);
   if (error) return denied(user, error);
   if (!(await laneOn(env.DB, loc.customer_id, locationId))) return lockedTile(user, loc, "Tickets", "managed_it");
+  const device = (new URL(request.url).searchParams.get("device") || "").trim().slice(0, 120);
   const { results } = await env.DB.prepare(
     "SELECT * FROM tickets WHERE location_id = ? ORDER BY (status = 'closed'), updated_at DESC").bind(locationId).all();
   const rows = (results || []).map((t) => `<tr><td><a href="/app/locations/${locationId}/tickets/${t.id}">${esc(t.title)}</a></td>
@@ -1106,8 +1165,8 @@ export async function ticketsPage(env, request, user, locationId) {
     <tbody>${rows || `<tr><td colspan="4" class="muted">No tickets yet.</td></tr>`}</tbody></table></div></div>
     <div class="card"><h3>Open a ticket</h3>
       <form method="post" action="/app/locations/${locationId}/tickets">
-        <label>What is going on? <span class="req">*</span></label><input name="title" required>
-        <label>Details</label><textarea name="body"></textarea>
+        <label>What is going on? <span class="req">*</span></label><input name="title" required value="${device ? esc(`Problem with ${device}`) : ""}">
+        <label>Details</label><textarea name="body">${device ? esc(`Device: ${device}\nWhat is happening: `) : ""}</textarea>
         <label>Priority</label><select name="priority"><option>low</option><option selected>normal</option><option>high</option><option>urgent</option></select>
         <p style="margin-top:14px"><button class="btn" type="submit">Open ticket</button></p></form></div>`;
   return page({ title: "Tickets", user, body });

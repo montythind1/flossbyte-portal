@@ -23,7 +23,7 @@ function linkFallback(href) {
     <a href="${href}" style="color:#0B7568;word-break:break-all">${href}</a></p>`;
 }
 
-function wrap(title, bodyHtml) {
+export function wrap(title, bodyHtml) {
   return `<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
