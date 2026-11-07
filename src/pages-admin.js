@@ -828,7 +828,7 @@ export async function customerPage(env, request, user, customerId) {
     <script src="/assets/phone-format.js"></script>
     <div class="card tab-panel${tab === "products" ? " active" : ""}" data-panel="products">
       <div class="tscroll"><table class="stack"><thead><tr><th>Product</th><th>State</th><th>Change</th></tr></thead><tbody>${prodRows}</tbody></table></div>
-      <p class="muted">Switches are enforced on the server. Off means the client sees a locked tile and their data requests for that service are refused.</p></div>
+      <p class="muted">Changes apply right away. When a service is off, the client sees it as locked on their side, and their only option there is a button to ask you to turn it on.</p></div>
     <div class="card tab-panel${tab === "users" ? " active" : ""}" data-panel="users">
       <div class="tscroll"><table class="stack"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th></th></tr></thead><tbody>${memberRows || `<tr><td colspan="5" class="muted">No logins yet.</td></tr>`}</tbody></table></div>
       <p style="margin-top:14px"><a class="btn small secondary" href="/admin/customers/${customerId}/users/new">+ Add user</a></p>
@@ -1991,7 +1991,7 @@ export async function chatsPage(env, request, user) {
   }
   const body = `${adminNav("chats")}<h1>Live chat</h1>
   <div class="card"><h3 style="margin-top:0">Active chats</h3>
-  ${active.length ? `<div class="tscroll"><table class="stack"><thead><tr><th>Customer</th><th>Status</th><th>Last message</th><th>When</th></tr></thead><tbody>${active.map(row).join("")}</tbody></table></div>` : `<p class="muted">No live chats right now. New chats appear here the moment a customer starts one, and the starter gets an email alert too.</p>`}</div>
+  ${active.length ? `<div class="tscroll"><table class="stack"><thead><tr><th>Person</th><th>Status</th><th>Last message</th><th>When</th></tr></thead><tbody>${active.map(row).join("")}</tbody></table></div>` : `<p class="muted">No live chats right now. New chats appear here the moment a client starts one, and you get an email alert too.</p>`}</div>
   <div class="card"><h3 style="margin-top:0">Archive</h3>
   ${ended.length ? archiveHtml : `<p class="muted">No ended chats yet. Ended chats are kept here, grouped by practice and office.</p>`}</div>`;
   return page({ title: "Live chat", user, body });

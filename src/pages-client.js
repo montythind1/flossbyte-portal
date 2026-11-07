@@ -400,7 +400,7 @@ export async function evidencePage(env, request, user) {
     const { results: docs } = await db.prepare("SELECT name, created_at FROM documents WHERE location_id = ? ORDER BY created_at").bind(loc.id).all();
     const exp = await expiringItems(db, loc.id, 90);
     const inv = rows.length
-      ? `<table style="width:100%;border-collapse:collapse;font-size:13.5px">${thead(["Device", "Type", "Model", "Serial", "Status"])}${rows.map((e) => trow([esc(displayName(e, renames)), esc(e.type || ""), esc([e.vendor, e.model].filter(Boolean).join(" ")), esc(e.serial || "—"), e.status === "online" ? "Online" : "Offline"])).join("")}</table>`
+      ? `<table style="width:100%;border-collapse:collapse;font-size:13.5px;overflow-wrap:anywhere">${thead(["Device", "Type", "Model", "Serial", "Status"])}${rows.map((e) => trow([esc(displayName(e, renames)), esc(e.type || ""), esc([e.vendor, e.model].filter(Boolean).join(" ")), esc(e.serial || "—"), e.status === "online" ? "Online" : "Offline"])).join("")}</table>`
       : `<p class="muted">No equipment recorded yet.</p>`;
     sections.push(`<div class="card"><h2 style="margin-top:0">${esc(loc.name)}</h2>
       <p class="muted" style="margin-top:0">${rows.length} devices on record · ${online} online · Internet: ${inetLine} Backup: ${backupLine}</p>
