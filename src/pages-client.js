@@ -152,6 +152,7 @@ function locNav(loc, active) {
   const item = (key, href, label, ic) =>
     `<a class="rail-item${active === key ? " active" : ""}" href="${href}">${icon(ic)}${label}</a>`;
   return `<div class="shell"><aside class="rail">
+    <a href="/app" style="display:block;padding:0 10px 9px;margin-bottom:9px;border-bottom:1px solid #EEF2F7;color:#5A6B82;text-decoration:none;font-size:13px;font-weight:600">&larr; Your practices</a>
     <div class="rail-context"><div class="rc-t">${esc(loc.name)}</div><div class="rc-s">${esc(loc.customer_name)}</div></div>
     ${item("overview", base, "Overview", "grid")}
     <a class="rail-item${["network", "equipment", "topology"].includes(active) ? " active" : ""}" href="${base}/network">${icon("topology")}Office IT</a>
@@ -321,13 +322,16 @@ export async function locationOverview(env, request, user, locationId) {
           return `<li>${esc(e.vendor || "")} ${esc(e.model || e.type || "Equipment")}: ${kind.toLowerCase()} expires ${esc(fmtDateUS(date))} (${days < 0 ? "expired" : days + " days"})</li>`;
         }).join("")}</ul></div>` : "";
   const health = await officeHealth(env.DB, locationId);
-  const quickLinks = [
-    `<a href="/app/billing">Billing</a>${billing && billing.sent_quotes ? ` (${billing.sent_quotes} quote${billing.sent_quotes > 1 ? "s" : ""} waiting for you)` : ""}${billing && billing.unpaid_invoices ? ` (${billing.unpaid_invoices} unpaid invoice${billing.unpaid_invoices > 1 ? "s" : ""})` : ""}`,
-    user.role === "customer_admin" ? `<a href="/app/services">Services</a>` : "",
-    user.role === "customer_admin" ? `<a href="/app/team">Manage your team</a>` : "",
-  ].filter(Boolean).join(" &nbsp;·&nbsp; ");
-  const body = `${locNav(loc, "overview")}<h1>${esc(loc.name)}</h1>
-    <p class="muted" style="margin:-6px 0 16px">${quickLinks}</p>
+  const billingBadge = billing && (billing.sent_quotes + billing.unpaid_invoices) > 0
+    ? ` <span class="pill warn">${billing.sent_quotes + billing.unpaid_invoices}</span>` : "";
+  const headerActions = [
+    `<a class="btn small secondary" href="/app/billing">Billing${billingBadge}</a>`,
+    user.role === "customer_admin" ? `<a class="btn small secondary" href="/app/services">Services</a>` : "",
+    user.role === "customer_admin" ? `<a class="btn small secondary" href="/app/team">Team</a>` : "",
+  ].filter(Boolean).join("\n      ");
+  const body = `${locNav(loc, "overview")}<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:16px">
+    <h1 style="margin:0">${esc(loc.name)}</h1>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">${headerActions}</div></div>
     ${expiringHtml}
     ${healthCard(health)}
     <div class="grid">
@@ -487,32 +491,64 @@ async function officeHealth(db, locationId) {
     const isKey = (e) => e.source === "unifi" || /server|firewall|gateway/i.test(`${e.type || ""} ${e.name || ""}`);
     const keyOff = rows.filter((e) => e.status === "offline" && isKey(e));
     const otherOff = rows.filter((e) => e.status === "offline" && !isKey(e));
-    if (keyOff.length) { score -= Math.min(50, keyOff.length * 25); reasons.push(`${keyOff.length === 1 ? "A key device is" : keyOff.length + " key devices are"} offline`); }
-    if (otherOff.length) { score -= Math.min(20, otherOff.length * 5); reasons.push(`${otherOff.length} other ${otherOff.length === 1 ? "device is" : "devices are"} offline`); }
+    // details mirrors reasons, but names the devices and carries the
+    // exact points each problem cost, so "Why is it 60?" can be
+    // answered line by line. The two always add up to 100 - score.
+    const details = [];
+    const nameList = (list) => {
+      const names = list.slice(0, 4).map((e) => autoName(e));
+      return names.join(", ") + (list.length > 4 ? `, and ${list.length - 4} more` : "");
+    };
+    if (keyOff.length) {
+      const pts = Math.min(50, keyOff.length * 25);
+      score -= pts;
+      reasons.push(`${keyOff.length === 1 ? "A key device is" : keyOff.length + " key devices are"} offline`);
+      details.push({ text: `Key device offline: ${nameList(keyOff)}${keyOff.length * 25 > 50 ? " (deduction capped)" : ""}`, pts });
+    }
+    if (otherOff.length) {
+      const pts = Math.min(20, otherOff.length * 5);
+      score -= pts;
+      reasons.push(`${otherOff.length} other ${otherOff.length === 1 ? "device is" : "devices are"} offline`);
+      details.push({ text: `${otherOff.length} other ${otherOff.length === 1 ? "device" : "devices"} offline: ${nameList(otherOff)}${otherOff.length * 5 > 20 ? " (deduction capped)" : ""}`, pts });
+    }
     const nextExp = (e) => [e.license_expires, e.warranty_expires].filter(Boolean).sort()[0];
     const expired = rows.filter((e) => { const x = nextExp(e); return x && daysUntil(x) < 0; });
     const expSoon = rows.filter((e) => { const x = nextExp(e); return x && daysUntil(x) >= 0 && daysUntil(x) <= 30; });
-    if (expired.length) { score -= 15; reasons.push(`${expired.length} ${expired.length === 1 ? "item has" : "items have"} expired`); }
-    else if (expSoon.length) { score -= 10; reasons.push(`${expSoon.length} ${expSoon.length === 1 ? "item expires" : "items expire"} within 30 days`); }
+    if (expired.length) {
+      score -= 15;
+      reasons.push(`${expired.length} ${expired.length === 1 ? "item has" : "items have"} expired`);
+      details.push({ text: `Expired license or warranty: ${nameList(expired)}`, pts: 15 });
+    } else if (expSoon.length) {
+      score -= 10;
+      reasons.push(`${expSoon.length} ${expSoon.length === 1 ? "item expires" : "items expire"} within 30 days`);
+      details.push({ text: `Expires within 30 days: ${nameList(expSoon)}`, pts: 10 });
+    }
     try {
       const snap = await db.prepare("SELECT payload FROM network_snapshots WHERE location_id = ? AND kind = 'internet'").bind(locationId).first();
       const isp = snap && snap.payload ? (JSON.parse(snap.payload).isp || {}) : {};
       if (isp.uptimePct != null && isp.uptimePct < 99) {
-        score -= isp.uptimePct < 95 ? 20 : 10;
+        const pts = isp.uptimePct < 95 ? 20 : 10;
+        score -= pts;
         reasons.push(`Internet uptime is ${Math.round(isp.uptimePct * 10) / 10}% over the last day`);
+        details.push({ text: `Internet uptime was ${Math.round(isp.uptimePct * 10) / 10}% over the last 24 hours`, pts });
       }
     } catch { /* the internet section is optional */ }
     score = Math.max(0, score);
-    return { score, label: score >= 85 ? "Good" : score >= 60 ? "Fair" : "Needs attention", reasons };
+    return { score, label: score >= 85 ? "Good" : score >= 60 ? "Fair" : "Needs attention", reasons, details };
   } catch { return null; }
 }
 function healthCard(h) {
   if (!h) return "";
   const color = h.score >= 85 ? "#0A7C6E" : h.score >= 60 ? "#b45309" : "#b91c1c";
+  const det = (h.details || []).map((d) =>
+    `<div style="display:flex;justify-content:space-between;gap:14px;padding:7px 0;border-bottom:1px solid #EEF2F7"><span>${esc(d.text)}</span><b style="color:#b91c1c;white-space:nowrap">&minus;${d.pts}</b></div>`).join("");
+  const why = det ? `<details style="margin-top:12px"><summary style="cursor:pointer;color:#0A7C6E;font-weight:700">Why is it ${h.score}?</summary>
+    <div style="margin-top:6px">${det}
+    <p class="muted" style="margin:8px 0 0">The score starts at 100 and loses the points above. Fixing an item raises the score at the next hourly check.</p></div></details>` : "";
   return `<div class="card"><div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">
     <div><span style="font-size:34px;font-weight:800;color:${color}">${h.score}</span><span class="muted"> / 100</span></div>
     <div style="flex:1;min-width:200px"><b>Office health: ${h.label}</b>
-    <br><span class="muted">${h.reasons.length ? esc(h.reasons.slice(0, 3).join(" · ")) : "Everything is online and up to date."}</span></div></div></div>`;
+    <br><span class="muted">${h.reasons.length ? esc(h.reasons.slice(0, 3).join(" · ")) : "Everything is online and up to date."}</span></div></div>${why}</div>`;
 }
 
 export async function equipmentPage(env, request, user, locationId) {

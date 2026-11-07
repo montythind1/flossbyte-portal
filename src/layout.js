@@ -112,8 +112,8 @@ textarea{min-height:90px}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:16px}
 .tile{border:1px solid var(--line);border-radius:12px;padding:18px;background:#fff;text-decoration:none;color:var(--ink);display:block}
 .tile:hover{border-color:var(--teal)}
-.tile .t{font-family:'Plus Jakarta Sans';font-weight:700;font-size:17px}
-.tile .d{color:var(--muted);font-size:13px;margin-top:6px}
+.tile .t{display:block;font-family:'Plus Jakarta Sans';font-weight:700;font-size:17px}
+.tile .d{display:block;color:var(--muted);font-size:13px;margin-top:6px}
 table{width:100%;border-collapse:collapse;font-size:14px}
 th,td{text-align:left;padding:9px 8px;border-bottom:1px solid var(--line);vertical-align:top}
 th{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.5px}
