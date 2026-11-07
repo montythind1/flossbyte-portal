@@ -286,13 +286,12 @@ export async function appHome(env, request, user) {
       <div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start">
         <div><div style="font-size:18px;font-weight:800">${esc(loc.name)}</div>
         ${loc.city ? `<div class="muted">${esc(loc.city)}</div>` : ""}</div>
-        <div>${pill}</div></div>
+        <div style="display:flex;align-items:center;gap:8px">${pill}<span aria-hidden="true" style="color:#98A6B8;font-size:24px;font-weight:700;line-height:1">›</span></div></div>
       <div style="margin-top:8px">
       ${srow("Internet", isp ? `${isp.uptimePct != null && isp.uptimePct >= 99 ? "Working" : "Check connection"}${isp.ispName ? " · " + esc(isp.ispName) : ""}` : "—")}
       ${srow("Devices online", c.total ? `${c.online || 0} of ${c.total}` : "None recorded")}
       ${srow("Open tickets", t.n ? String(t.n) : "No open tickets")}
-      </div>
-      <p style="margin:12px 0 0;color:#0A7C6E;font-weight:700">Open practice ›</p></a>`);
+      </div></a>`);
   }
   const billing = locs.length ? await db.prepare(
     `SELECT (SELECT COUNT(*) FROM invoices WHERE customer_id = ? AND status = 'unpaid') AS unpaid,
