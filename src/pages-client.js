@@ -2248,19 +2248,36 @@ export async function askAnswer(db, locationId, question) {
   return parts.join("\n") + "\n(Answered from your own portal records only.)";
 }
 
+// Genius chats are private per login (the Atera/Zendesk/Notion
+// pattern Montek picked on 2026-11-07): a regular login sees only its
+// own conversations; a customer admin sees everyone's at the office,
+// and so does FlossByte.
+async function geniusSeeAll(env, user, loc) {
+  if (user.kind === "flossbyte") return true;
+  const scope = await locationScope(env.DB, user, loc.id);
+  return scope === "admin";
+}
+
 export async function askPage(env, request, user, locationId) {
   const { loc, error } = await guard(env, user, locationId);
   if (error) return denied(user, error);
   const canEscalate = await laneOn(env.DB, loc.customer_id, locationId);
-  const { results } = await env.DB.prepare(
-    "SELECT * FROM ask_messages WHERE location_id = ? ORDER BY created_at DESC LIMIT 10").bind(locationId).all();
-  const history = (results || []).reverse().map((m) => `<div class="msg q">${esc(m.question)}</div>
+  const seeAll = await geniusSeeAll(env, user, loc);
+  const { results } = seeAll
+    ? await env.DB.prepare(
+      `SELECT m.*, u.name AS asker_name FROM ask_messages m LEFT JOIN users u ON u.id = m.user_id
+       WHERE m.location_id = ? ORDER BY m.created_at DESC LIMIT 10`).bind(locationId).all()
+    : await env.DB.prepare(
+      "SELECT * FROM ask_messages WHERE location_id = ? AND user_id = ? ORDER BY created_at DESC LIMIT 10").bind(locationId, user.id).all();
+  const history = (results || []).reverse().map((m) => `${seeAll && m.user_id !== user.id ? `<div class="muted" style="font-size:12.5px;margin-top:6px">${esc(m.asker_name || "Team member")}</div>` : ""}
+    <div class="msg q">${esc(m.question)}</div>
     <div class="msg a">${esc(m.answer)}</div>${canEscalate ? `<form method="post" action="/app/locations/${locationId}/ask/escalate" style="margin:2px 0 8px">
       <input type="hidden" name="message_id" value="${m.id}">
       <button class="btn small secondary" type="submit">Send this to FlossByte</button></form>` : ""}`).join("");
   const starter = (q) => `<form method="post" action="/app/locations/${locationId}/ask" style="margin:0"><input type="hidden" name="question" value="${esc(q)}"><button class="btn small secondary" type="submit">${esc(q)}</button></form>`;
   const body = `${locNav(loc, "ask")}<h1>Genius</h1>
     <div class="card"><p class="muted">Genius explains your internet, WiFi, equipment, cameras, expiry dates, tickets, documents, and recent changes in plain language. Facts come only from what is recorded for this office. When the records do not cover a problem, Genius may add a general tip, always marked as one.</p>
+    <p class="muted">${seeAll ? "You are seeing everyone's Genius conversations at this office, because your login is an admin login." : "Your Genius conversations are private to your login. Admin logins at this office can see them."}</p>
     <p class="muted" style="margin-bottom:6px">Try one of these:</p>
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px">${starter("Is our internet OK?")}${starter("What's the WiFi password?")}${starter("Which devices are offline?")}${starter("Why is a computer offline?")}</div>
     <form method="post" action="/app/locations/${locationId}/ask">
@@ -2309,6 +2326,9 @@ export async function askEscalatePost(env, request, user, locationId) {
   const msg = await env.DB.prepare(
     "SELECT * FROM ask_messages WHERE id = ? AND location_id = ?").bind(messageId, locationId).first();
   if (!msg) return denied(user, 404);
+  // Chats are private per login: a regular login can only send its own
+  // conversations to FlossByte; admins can send any at the office.
+  if (msg.user_id !== user.id && !(await geniusSeeAll(env, user, loc))) return denied(user, 404);
   const title = `Genius help: ${String(msg.question || "Support request").slice(0, 90)}`;
   const res = await env.DB.prepare(
     "INSERT INTO tickets (location_id, title, priority, created_by) VALUES (?, ?, ?, ?)")
