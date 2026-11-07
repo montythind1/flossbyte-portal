@@ -322,13 +322,17 @@ export async function locationOverview(env, request, user, locationId) {
           return `<li>${esc(e.vendor || "")} ${esc(e.model || e.type || "Equipment")}: ${kind.toLowerCase()} expires ${esc(fmtDateUS(date))} (${days < 0 ? "expired" : days + " days"})</li>`;
         }).join("")}</ul></div>` : "";
   const health = await officeHealth(env.DB, locationId);
-  const billingBadge = billing && (billing.sent_quotes + billing.unpaid_invoices) > 0
-    ? ` <span class="pill warn">${billing.sent_quotes + billing.unpaid_invoices}</span>` : "";
+  // Billing is not repeated here: the rail already carries it. The
+  // header keeps only the two organization actions the location rail
+  // does not have (Services, Team, for the client admin).
   const headerActions = [
-    `<a class="btn small secondary" href="/app/billing">Billing${billingBadge}</a>`,
     user.role === "customer_admin" ? `<a class="btn small secondary" href="/app/services">Services</a>` : "",
     user.role === "customer_admin" ? `<a class="btn small secondary" href="/app/team">Team</a>` : "",
   ].filter(Boolean).join("\n      ");
+  const netSnap = await db.prepare(
+    "SELECT payload FROM network_snapshots WHERE location_id = ? AND kind = 'internet'").bind(locationId).first().catch(() => null);
+  let ispTile = null;
+  if (netSnap) { try { ispTile = JSON.parse(netSnap.payload || "{}").isp || null; } catch { ispTile = null; } }
   const body = `${locNav(loc, "overview")}<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:16px">
     <h1 style="margin:0">${esc(loc.name)}</h1>
     <div style="display:flex;gap:8px;flex-wrap:wrap">${headerActions}</div></div>
@@ -338,7 +342,7 @@ export async function locationOverview(env, request, user, locationId) {
       <a class="tile" href="/app/locations/${locationId}/equipment"><span class="tile-n">${counts.equipment}</span><span class="d">Equipment on record</span></a>
       <a class="tile" href="/app/locations/${locationId}/tickets"><span class="tile-n">${counts.open_tickets}</span><span class="d">Open tickets</span></a>
       <a class="tile" href="/app/locations/${locationId}/documents"><span class="tile-n">${counts.documents}</span><span class="d">Documents</span></a>
-      <a class="tile" href="${REMOTE_URL}" target="_blank" rel="noopener"><span class="t">Remote Support</span><span class="d">Start a session: download the app, then read us the 9-digit code it shows.</span></a>
+      <a class="tile" href="/app/locations/${locationId}/network"><span class="tile-n">${ispTile ? (ispTile.uptimePct != null && ispTile.uptimePct >= 99 ? "Working" : ispTile.uptimePct >= 95 ? "Unstable" : "Down") : "&mdash;"}</span><span class="d">Internet${ispTile && ispTile.ispName ? " · " + esc(ispTile.ispName) : ""}${ispTile && ispTile.downMbps != null ? " · " + Math.round(ispTile.downMbps) + " Mbps" : ""}</span></a>
     </div>`;
   const msg = new URL(request.url).searchParams.get("msg");
   return page({ title: loc.name, user, body, flash: msg || undefined });
@@ -1078,7 +1082,7 @@ function wpCopy(b){var c=b.parentElement.querySelector('.wp');if(!c||!navigator.
     const pct = promised && measured != null ? Math.min(100, Math.round((measured / promised) * 100)) : null;
     const cDays = svc.contractEnd ? daysUntil(svc.contractEnd) : null;
     const srow = (label, val) => val ? `<div style="display:flex;justify-content:space-between;gap:16px;padding:8px 0;border-bottom:1px solid #EEF2F7"><span class="muted">${label}</span><span style="text-align:right;font-weight:600">${val}</span></div>` : "";
-    ispCard = `<div class="card"><h2 style="margin-top:0">Internet service</h2>
+    ispCard = `<div class="card"><h2 style="margin-top:0">Internet plan</h2>
       ${srow("Provider", esc(svc.provider || ""))}
       ${srow("Plan", esc(svc.plan || ""))}
       ${srow("Promised speed", svc.down || svc.up ? `${svc.down ? esc(String(svc.down)) + " down" : ""}${svc.down && svc.up ? " · " : ""}${svc.up ? esc(String(svc.up)) + " up" : ""} Mbps` : "")}
@@ -1089,7 +1093,7 @@ function wpCopy(b){var c=b.parentElement.querySelector('.wp');if(!c||!navigator.
       ${isFb ? `<details style="margin-top:12px"><summary class="muted" style="cursor:pointer">Update plan details</summary><div style="margin-top:10px">${svcForm(svc)}</div></details>` : ""}
     </div>`;
   } else if (isFb) {
-    ispCard = `<div class="card"><h2 style="margin-top:0">Internet service</h2>
+    ispCard = `<div class="card"><h2 style="margin-top:0">Internet plan</h2>
       <p class="muted">Add the plan details from the office's internet bill once, and this page compares what they pay for with what they actually get.${ispNow && ispNow.ispName ? ` The connection itself already reports ${esc(ispNow.ispName)}.` : ""}</p>
       ${svcForm({})}</div>`;
   }

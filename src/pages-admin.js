@@ -155,21 +155,78 @@ export async function ticketsInboxPage(env, request, user) {
 const ACTION_LABEL = {
   ticket_create: "Opened a ticket", ticket_status: "Changed a ticket status", equipment_add: "Added equipment",
   equipment_edit: "Edited equipment", equipment_delete: "Deleted equipment", document_upload: "Uploaded a document",
-  quote_accept: "Accepted a quote", product_request: "Requested a service", user_remove: "Removed a user",
-  customer_delete: "Deleted a client", sync_map: "Mapped a sync site",
-  password_change: "Changed their password", mfa_disabled: "Turned off two-step verification",
-  customer_create: "Created a client", customer_update: "Updated client details",
-  signout_others: "Signed out other sessions", mfa_enabled: "Turned on two-step verification",
-  profile_update: "Updated their profile", user_update: "Updated a login's name",
+  quote_accept: "Accepted a quote", quote_create: "Created a quote", quote_send: "Sent a quote",
+  quote_decline: "Declined a quote", quote_delete: "Deleted a quote",
+  invoice_create: "Created an invoice", invoice_paid: "Marked an invoice paid", invoice_void: "Voided an invoice",
+  product_request: "Requested a service", product_on: "Turned a product on", product_off: "Turned a product off",
+  user_remove: "Removed a user", user_invite: "Invited a user", user_connect: "Connected a login to a client",
+  user_update: "Updated a login's name",
+  invite_accepted: "Accepted an invite", invite_resent_admin: "Resent an admin invite", invite_resent_public: "Resent an invite",
+  customer_create: "Created a client", customer_update: "Updated client details", customer_delete: "Deleted a client",
+  location_create: "Added a location", sync_site_map: "Mapped a sync site", sync_map: "Mapped a sync site",
+  admin_create: "Created an admin", admin_disable: "Disabled an admin", admin_enable: "Enabled an admin",
+  admin_remove: "Removed an admin", setup_super_admin: "Set up the Super Admin",
+  super_admin_transfer_out: "Transferred the Super Admin role", super_admin_transfer_in: "Became Super Admin (transfer)",
+  password_change: "Changed their password", password_reset: "Reset a password",
+  mfa_enabled: "Turned on two-step verification", mfa_disabled: "Turned off two-step verification",
+  mfa_setup_skipped: "Skipped two-step setup for now",
+  signout_others: "Signed out other sessions", profile_update: "Updated their profile",
+  alerts_mute: "Paused device alerts", alerts_unmute: "Resumed device alerts",
+  monthly_report_send: "Sent the monthly Office IT report", isp_service_update: "Updated internet plan details",
+  wifi_save: "Saved a WiFi network", wifi_remove: "Removed a WiFi network",
 };
 export async function activityPage(env, request, user) {
   const { results } = await env.DB.prepare(
     `SELECT a.*, u.name AS actor_name, u.email AS actor_email FROM audit_log a
      LEFT JOIN users u ON u.id = a.actor_user_id ORDER BY a.id DESC LIMIT 200`).all();
-  const rows = (results || []).map((a) => `<tr><td>${esc(fmtDateUS(a.created_at))} <span class="muted">${esc(String(a.created_at).slice(11, 16))}</span></td>
+  const acts = results || [];
+  // Resolve the On column to real names (a client, a location, a
+  // person) instead of raw IDs; the ID format stays only as a
+  // fallback for records that no longer exist.
+  const nameMaps = {};
+  const loadNames = async (entity, sql) => {
+    const ids = [...new Set(acts.filter((a) => a.entity === entity && a.entity_id).map((a) => a.entity_id))];
+    if (!ids.length) return;
+    try {
+      const { results: rs } = await env.DB.prepare(sql.replace("?", ids.map(() => "?").join(","))).bind(...ids).all();
+      nameMaps[entity] = new Map((rs || []).map((r) => [r.id, r.label]));
+    } catch { /* fall back to the ID form */ }
+  };
+  await loadNames("customer", "SELECT id, name AS label FROM customers WHERE id IN (?)");
+  await loadNames("location", "SELECT id, name AS label FROM locations WHERE id IN (?)");
+  await loadNames("user", "SELECT id, name AS label FROM users WHERE id IN (?)");
+  await loadNames("quote", "SELECT id, title AS label FROM quotes WHERE id IN (?)");
+  await loadNames("ticket", "SELECT id, title AS label FROM tickets WHERE id IN (?)");
+  await loadNames("invoice", "SELECT id, ('Invoice INV-' || (1000 + id)) AS label FROM invoices WHERE id IN (?)");
+  const prodRows = await env.DB.prepare("SELECT key, name FROM products").all().catch(() => null);
+  const prodName = new Map(((prodRows && prodRows.results) || []).map((p) => [p.key, p.name]));
+  const ENTITY_WORD = { customer: "Client", location: "Location", user: "User", quote: "Quote", invoice: "Invoice", ticket: "Ticket", document: "Document", sync: "Sync", equipment: "Equipment" };
+  const onLabel = (a) => {
+    if (!a.entity) return "";
+    const name = nameMaps[a.entity] && a.entity_id ? nameMaps[a.entity].get(a.entity_id) : null;
+    if (name) return esc(name);
+    const word = ENTITY_WORD[a.entity] || (a.entity.charAt(0).toUpperCase() + a.entity.slice(1));
+    return esc(word) + (a.entity_id ? " #" + a.entity_id : "");
+  };
+  const detailLabel = (a) => {
+    const d = a.detail || "";
+    if (!d) return "";
+    if (prodName.has(d)) return esc(prodName.get(d));
+    if (d.startsWith("unifi:")) return "UniFi site";
+    if (d.startsWith("sophos:")) return "Sophos tenant";
+    return esc(d);
+  };
+  const dateFmt = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "America/Los_Angeles" });
+  const timeFmt = new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit", timeZone: "America/Los_Angeles" });
+  const whenLabel = (ts) => {
+    const dt = new Date(String(ts).replace(" ", "T") + "Z");
+    if (isNaN(dt.getTime())) return esc(fmtDateUS(ts));
+    return `${esc(dateFmt.format(dt))}<br><span class="muted">${esc(timeFmt.format(dt))}</span>`;
+  };
+  const rows = acts.map((a) => `<tr><td style="white-space:nowrap">${whenLabel(a.created_at)}</td>
     <td>${esc(a.actor_name || a.actor_email || "System")}</td>
     <td>${esc(ACTION_LABEL[a.action] || a.action.replace(/_/g, " "))}</td>
-    <td>${esc(a.entity === "customer" ? "client" : (a.entity || ""))}${a.entity_id ? " #" + a.entity_id : ""}</td><td>${esc(a.detail || "")}</td></tr>`).join("");
+    <td>${onLabel(a)}</td><td>${detailLabel(a)}</td></tr>`).join("");
   const body = `${adminNav("activity")}<h1>Activity</h1>
     <p class="muted">The last 200 recorded actions across the portal: who did what, and when.</p>
     <div class="card" style="padding:8px 14px"><div class="tscroll"><table class="stack"><thead><tr><th>When</th><th>Who</th><th>Action</th><th>On</th><th>Detail</th></tr></thead>
@@ -1331,7 +1388,42 @@ async function siteMappingBlock(env, provider, heading, emptyNote) {
 
 function lastRunHtml(last, unitLabel) {
   if (!last) return `<p class="muted" style="margin-top:12px">No sync has run yet.</p>`;
-  return `<p class="muted" style="margin-top:12px">Last sync: ${esc(fmtDateUS(String(last.at).slice(0, 10)))} at ${esc(String(last.at).slice(11, 16))} UTC. ${esc(last.message)}${last.ok ? ` ${unitLabel}: ${last.sites != null ? last.sites : last.tenants}. Devices seen: ${last.devices}. Added: ${last.inserted}. Updated: ${last.updated}. Marked offline: ${last.offlined}. Not imported (not mapped): ${last.unmappedDevices}.${last.clientsSeen != null ? ` Connected devices: ${last.clientsSeen} seen, ${last.clientsAdded || 0} added, ${last.clientsUpdated || 0} updated, ${last.clientsOfflined || 0} marked offline.` : ""}${last.clientsError ? ` Connected devices: ${esc(last.clientsError)}` : ""}${last.snapshots != null ? ` Network snapshots updated: ${last.snapshots}.` : ""}${last.snapshotError ? ` Snapshots: ${esc(last.snapshotError)}` : ""}${last.changesLogged ? ` Changes logged: ${last.changesLogged}.` : ""}${last.sectionChecks ? ` Section checks: ${esc(Object.entries(last.sectionChecks).map(([k, v]) => `${k} ${v}`).join(", "))}.` : ""}` : ""}</p>`;
+  const srow = (label, val) => val != null && val !== ""
+    ? `<div style="display:flex;justify-content:space-between;gap:14px;padding:6px 0;border-bottom:1px solid #EEF2F7"><span class="muted">${label}</span><span style="text-align:right;font-weight:600">${val}</span></div>` : "";
+  const SECTION_LABEL = {
+    wans: "WAN connections", networks: "Networks", ssids: "WiFi broadcasts", fwPolicies: "Firewall rules",
+    fwZones: "Firewall zones", aclRules: "Access rules", vpnServers: "VPN servers",
+    vpnTunnels: "Site-to-site VPN", radiusProfiles: "RADIUS profiles", clients: "Connected devices", protect: "Cameras",
+  };
+  const checkVal = (v) => {
+    const s = String(v);
+    if (s.startsWith("ok")) { const n = s.slice(2).trim(); return { text: n ? `OK (${n})` : "OK", on: true }; }
+    if (s === "400" || s === "404") return { text: "Not available on this console", on: false };
+    return { text: `Error (${s})`, on: false };
+  };
+  const checks = last.sectionChecks
+    ? `<p class="muted" style="margin:12px 0 6px">What each console answered:</p>
+       <div style="display:flex;gap:6px;flex-wrap:wrap">${Object.entries(last.sectionChecks).map(([k, v]) => {
+         const c = checkVal(v);
+         return `<span class="pill ${c.on ? "on" : ""}">${esc(SECTION_LABEL[k] || k)}: ${esc(c.text)}</span>`;
+       }).join("")}</div>` : "";
+  const errs = [
+    last.clientsError ? `Connected devices: ${esc(last.clientsError)}` : "",
+    last.snapshotError ? `Snapshots: ${esc(last.snapshotError)}` : "",
+    !last.ok && last.message ? esc(last.message) : "",
+  ].filter(Boolean).map((e) => `<p style="color:#b91c1c;margin:8px 0 0">${e}</p>`).join("");
+  return `<div style="margin-top:12px">
+    <p class="muted" style="margin:0 0 4px">Last sync: ${esc(fmtDateUS(String(last.at).slice(0, 10)))} at ${esc(String(last.at).slice(11, 16))} UTC${last.ok && last.message ? ` · ${esc(last.message)}` : ""}</p>
+    ${last.ok ? `${srow(unitLabel + " checked", last.sites != null ? last.sites : last.tenants)}
+    ${srow("Devices seen", last.devices)}
+    ${srow("Added", last.inserted)}
+    ${srow("Updated", last.updated)}
+    ${srow("Marked offline", last.offlined)}
+    ${srow("Not imported (site not mapped)", last.unmappedDevices)}
+    ${last.clientsSeen != null ? srow("Connected devices", `${last.clientsSeen} seen · ${last.clientsAdded || 0} added · ${last.clientsUpdated || 0} updated · ${last.clientsOfflined || 0} offline`) : ""}
+    ${last.snapshots != null ? srow("Network snapshots updated", last.snapshots) : ""}
+    ${last.changesLogged ? srow("Changes logged", last.changesLogged) : ""}` : ""}
+    ${errs}${checks}</div>`;
 }
 
 export async function syncPage(env, request, user) {
