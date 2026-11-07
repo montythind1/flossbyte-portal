@@ -417,6 +417,7 @@ export async function servicesPage(env, request, user) {
   for (const loc of locs || []) locStates.push({ loc, states: await productStates(db, org, loc.id) });
   const products = locStates.length ? locStates[0].states : [];
   const reqChip = (loc, key) => `<form method="post" action="/app/locations/${loc.id}/request-product" style="margin:0"><input type="hidden" name="product" value="${esc(key)}"><button class="btn small" type="submit">Request</button></form>`;
+  const openKey = products.some((p) => p.key === "managed_it") ? "managed_it" : (products[0] ? products[0].key : null);
   const cards = products.map((p, idx) => {
     const n = locStates.length;
     const onCount = locStates.reduce((acc, { states }) => acc + (states.some((s) => s.key === p.key && s.enabled) ? 1 : 0), 0);
@@ -430,7 +431,7 @@ export async function servicesPage(env, request, user) {
         ? `<span class="pill on">${esc(loc.name)} · Included</span>`
         : `<span style="display:inline-flex;align-items:center;gap:6px"><span class="pill off">${esc(loc.name)} · Not included</span>${reqChip(loc, p.key)}</span>`;
     }).join("");
-    return `<details class="card" ${idx === 0 ? "open" : ""}>
+    return `<details class="card" ${p.key === openKey ? "open" : ""}>
       <summary style="cursor:pointer;display:flex;justify-content:space-between;align-items:center;gap:12px">
         <span style="font-weight:700;font-size:16px">${esc(p.name)}</span>
         <span style="display:flex;align-items:center;gap:8px;flex:none"><span style="width:9px;height:9px;border-radius:50%;background:${dotColor};flex:none"></span><span class="muted" style="font-size:13px">${esc(coverage)}</span><span class="chev" aria-hidden="true" style="color:#98A6B8;font-size:20px;font-weight:700;line-height:1">›</span></span>
