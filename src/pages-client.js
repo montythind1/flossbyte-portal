@@ -2391,7 +2391,7 @@ export async function askPage(env, request, user, locationId) {
         <input id="composer-input" name="body" placeholder="Message FlossByte Support..." required autocomplete="off">
         <button class="sendbtn" id="send-btn" type="submit" aria-label="Send message">${SEND_ICON}</button></form>`
     : `<form class="gcomposer" id="composer-form" method="post" action="/app/locations/${locationId}/ask">
-        <input id="composer-input" name="question" placeholder="Ask Genius anything about this office..." required autocomplete="off">
+        <input id="composer-input" name="question" placeholder="Ask Genius about this office..." required autocomplete="off">
         <button class="sendbtn" id="send-btn" type="submit" aria-label="Ask Genius">${SEND_ICON}</button></form>`;
   const underRow = chatOn && !openThread
     ? `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:10px">
@@ -2414,11 +2414,18 @@ export async function askPage(env, request, user, locationId) {
     var lastScroll = 0;
     var frameId = 0;
     el.textContent = '';
+    function scrollAboveBar(){
+      var bar = document.querySelector('.gcomposer');
+      var reserve = bar ? bar.offsetHeight + 30 : 110;
+      var r = el.getBoundingClientRect();
+      var target = window.pageYOffset + r.bottom - (window.innerHeight - reserve);
+      if (target > window.pageYOffset) window.scrollTo(0, target);
+    }
     function finish(){
       if (frameId) cancelAnimationFrame(frameId);
       el.textContent = full;
       el.classList.remove('gtype');
-      el.scrollIntoView({ block: 'end' });
+      scrollAboveBar();
     }
     function frame(now){
       if (!started) started = now;
@@ -2427,7 +2434,7 @@ export async function askPage(env, request, user, locationId) {
       el.textContent = full.slice(0, count);
       if (now - lastScroll > 160) {
         lastScroll = now;
-        el.scrollIntoView({ block: 'end' });
+        scrollAboveBar();
       }
       if (progress < 1) frameId = requestAnimationFrame(frame);
       else finish();
@@ -2445,18 +2452,29 @@ export async function askPage(env, request, user, locationId) {
     var stream = document.getElementById('gstream');
     var LOC = ${locationId}, ESC = ${canEscalate ? "true" : "false"};
     function el(tag, cls, text){ var d = document.createElement(tag); if (cls) d.className = cls; if (text != null) d.textContent = text; return d; }
-    function typeInto(node, full){
-      if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) { node.textContent = full; return; }
+    function scrollAboveBar(node){
+      // Keep the growing answer's tail ABOVE the sticky composer bar
+      // instead of letting scrollIntoView bury it underneath.
+      var bar = document.querySelector('.gcomposer');
+      var reserve = bar ? bar.offsetHeight + 30 : 110;
+      var r = node.getBoundingClientRect();
+      var target = window.pageYOffset + r.bottom - (window.innerHeight - reserve);
+      if (target > window.pageYOffset) window.scrollTo(0, target);
+    }
+    function typeInto(node, full, onDone){
+      if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) { node.textContent = full; if (onDone) onDone(); return; }
       node.classList.add('gtype');
       var duration = Math.min(4600, Math.max(850, full.length * 6));
       var started = null;
       var lastScroll = 0;
       var frameId = 0;
+      var doneCalled = false;
       function finish(){
         if (frameId) cancelAnimationFrame(frameId);
         node.textContent = full;
         node.classList.remove('gtype');
-        node.scrollIntoView({ block: 'end' });
+        scrollAboveBar(node);
+        if (onDone && !doneCalled) { doneCalled = true; onDone(); }
       }
       function frame(now){
         if (!started) started = now;
@@ -2465,7 +2483,7 @@ export async function askPage(env, request, user, locationId) {
         node.textContent = full.slice(0, count);
         if (now - lastScroll > 160) {
           lastScroll = now;
-          node.scrollIntoView({ block: 'end' });
+          scrollAboveBar(node);
         }
         if (progress < 1) frameId = requestAnimationFrame(frame);
         else finish();
@@ -2499,7 +2517,7 @@ export async function askPage(env, request, user, locationId) {
       ans.innerHTML = '<span class="gdot"></span><span class="gdot"></span><span class="gdot"></span>';
       wrap.appendChild(ans);
       stream.appendChild(wrap);
-      ans.scrollIntoView({ block: 'end' });
+      scrollAboveBar(ans);
       input.value = '';
       input.disabled = true; btn.disabled = true;
       var fd = new FormData();
@@ -2509,8 +2527,7 @@ export async function askPage(env, request, user, locationId) {
         .then(function(d){
           input.disabled = false; btn.disabled = false; input.focus();
           if (!d || !d.ok) { ans.textContent = 'Something went wrong on our side. Please try again.'; return; }
-          typeInto(ans, d.answer);
-          addEscalate(wrap, d.id);
+          typeInto(ans, d.answer, function(){ addEscalate(wrap, d.id); scrollAboveBar(wrap); });
         })
         .catch(function(){
           input.disabled = false; btn.disabled = false;
@@ -2535,6 +2552,13 @@ export async function askPage(env, request, user, locationId) {
   const pollScript = openThread ? `<script>
   (function(){
     var last = ${lastChatId}, loc = ${locationId}, box = document.getElementById('chat-msgs');
+    function sAbove(node){
+      var bar = document.querySelector('.gcomposer');
+      var reserve = bar ? bar.offsetHeight + 30 : 110;
+      var r = node.getBoundingClientRect();
+      var target = window.pageYOffset + r.bottom - (window.innerHeight - reserve);
+      if (target > window.pageYOffset) window.scrollTo(0, target);
+    }
     var cform = document.getElementById('composer-form');
     if (cform) {
       cform.addEventListener('submit', function(ev){
@@ -2554,7 +2578,7 @@ export async function askPage(env, request, user, locationId) {
               div.className = 'msg q';
               div.textContent = body;
               box.appendChild(div);
-              div.scrollIntoView({ block: 'end' });
+              sAbove(div);
             } else { location.reload(); }
           })
           .catch(function(){ location.reload(); });
@@ -2572,7 +2596,7 @@ export async function askPage(env, request, user, locationId) {
             if (m.kind === 'system') { div.className = 'muted'; div.style.cssText = 'text-align:center;font-size:12.5px;margin:10px 0'; div.textContent = '— ' + m.body + ' —'; }
             else { div.className = 'msg ' + (m.kind === 'customer' ? 'q' : 'a'); div.textContent = m.body; }
             box.appendChild(div);
-            div.scrollIntoView({ block: 'end' });
+            sAbove(div);
           });
           if (d.status === 'active') { var st = document.getElementById('chat-status'); if (st && st.textContent.indexOf('Waiting') === 0) st.textContent = "You're chatting with a person at FlossByte."; }
         }).catch(function(){});
@@ -2594,7 +2618,7 @@ export async function askPage(env, request, user, locationId) {
   ${typeScript}
   ${askScript}
   <script>
-  (function(){ var el = document.getElementById('latest') || document.getElementById('chat-msgs'); if (el) { el.scrollIntoView({ block: 'end' }); } })();
+  (function(){ var el = document.getElementById('latest') || document.getElementById('chat-msgs'); if (!el) return; var bar = document.querySelector('.gcomposer'); var reserve = bar ? bar.offsetHeight + 30 : 110; var r = el.getBoundingClientRect(); var y = window.pageYOffset + r.bottom - (window.innerHeight - reserve); if (y > 0) window.scrollTo(0, y); })();
   </script>`;
   return page({ title: openThread ? "Live chat" : "Genius", user, body });
 }

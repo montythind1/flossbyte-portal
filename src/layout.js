@@ -213,8 +213,9 @@ td.num,th.num{text-align:right}
 .gdot:nth-child(2){animation-delay:.15s}
 .gdot:nth-child(3){animation-delay:.3s}
 @keyframes gpulse{0%,60%,100%{opacity:.35}30%{opacity:1}}
-.gcomposer{position:sticky;bottom:14px;z-index:5;display:flex;gap:8px;align-items:center;background:#fff;border:1px solid var(--line);border-radius:14px;padding:10px;box-shadow:0 8px 28px rgba(10,22,40,.10);margin-top:14px}
-.gcomposer input{flex:1;font-size:16px;border:none;outline:none;background:transparent;padding:10px 6px;font-family:inherit;color:var(--ink);min-width:0}
+.gcomposer{position:sticky;bottom:14px;z-index:5;display:flex;gap:8px;align-items:center;background:#fff;border:1px solid var(--line);border-radius:14px;padding:8px;box-shadow:0 8px 28px rgba(10,22,40,.10);margin-top:14px}
+.gcomposer input{flex:1;font-size:16px;border:none;outline:none;background:transparent;padding:8px 6px;font-family:inherit;color:var(--ink);min-width:0}
+html{scroll-padding-top:84px;scroll-padding-bottom:120px}
 .gcomposer .btn{border-radius:10px;flex:0 0 auto}
 .gempty{text-align:center;padding:26px 8px 8px}
 .gmark{display:inline-flex;align-items:center;justify-content:center;width:46px;height:46px;border-radius:50%;background:var(--navy,#0A1628);color:#fff;font-family:'Plus Jakarta Sans',Inter,sans-serif;font-weight:800;font-size:20px}
