@@ -448,16 +448,25 @@ export async function teamPage(env, request, user) {
   if (org === null) return denied(user, 403);
   const cust = await env.DB.prepare("SELECT name FROM customers WHERE id = ?").bind(org).first();
   const members = await orgMembers(env.DB, org);
+  // Editing happens inline: ?edit=<id> expands that member's form
+  // inside the table instead of sending the admin to another page.
+  const editId = Number(new URL(request.url).searchParams.get("edit") || 0);
+  const editTarget = editId ? await teamTarget(env.DB, org, editId) : null;
   const rows = members.map((m) => {
     const isSelf = m.id === user.id;
+    const isOpen = editTarget && editTarget.id === m.id;
     const action = m.status === "disabled"
       ? `<span class="muted">Removed</span>`
-      : `<a class="btn small secondary" href="/app/team/${m.id}/edit">Edit</a>${isSelf ? "" : ` <a class="btn small danger" href="/app/team/${m.id}/remove">Remove</a>`}`;
-    return `<tr><td>${esc(m.name)}</td><td>${esc(m.email)}</td>
+      : isOpen
+        ? `<a class="btn small secondary" href="/app/team">Close</a>`
+        : `<a class="btn small secondary" href="/app/team?edit=${m.id}#edit-${m.id}">Edit</a>${isSelf ? "" : ` <a class="btn small danger" href="/app/team/${m.id}/remove">Remove</a>`}`;
+    const main = `<tr><td>${esc(m.name)}</td><td>${esc(m.email)}</td>
       <td>${m.role === "customer_admin" ? "Admin" : "User"}</td>
       <td>${esc(m.locations_label || "")}</td>
       <td><span class="pill ${m.status === "disabled" ? "off" : "on"}">${esc(m.status)}</span></td>
       <td>${action}</td></tr>`;
+    if (!isOpen) return main;
+    return main + `<tr id="edit-${m.id}"><td colspan="6" style="background:#F8FAFC">${teamEditFormHtml(editTarget, user)}</td></tr>`;
   }).join("");
   const rail = await railLocs(env, user);
   const body = `${orgRail(user, "team", cust ? cust.name : "My Portal", rail)}<h1>Team</h1>
@@ -516,16 +525,12 @@ async function teamTarget(db, org, targetId) {
   };
 }
 
-export async function teamEditPage(env, request, user, targetId) {
-  const org = await customerAdminOrg(env.DB, user);
-  if (org === null) return denied(user, 403);
-  const target = await teamTarget(env.DB, org, targetId);
-  if (!target) return denied(user, 404);
+// The full team edit form, rendered inline in the Team table. The
+// separate edit page was retired at Montek's direction (2026-11-06):
+// editing happens in place, the POST target is unchanged.
+function teamEditFormHtml(target, user) {
   const np = splitName(target.name);
   const isSelf = target.id === user.id;
-  // Role and location access stay locked for your own login (so you
-  // can't lock yourself out) and for the main admin (the org's anchor
-  // login; changing who that is stays a deliberate separate step).
   const lockReason = target.is_main_admin
     ? "This is the main admin login for the organization, so its role and access can't be changed here."
     : isSelf ? "You can't change your own role or access. Another admin can change them for you." : "";
@@ -540,8 +545,7 @@ export async function teamEditPage(env, request, user, targetId) {
        <label style="display:flex;gap:8px;align-items:center;font-weight:400;margin:0 0 6px"><input type="checkbox" name="all_locations" value="1" style="width:auto" ${target.all_locations ? "checked" : ""}> All locations</label>
        ${target.org_locations.map((l) => `<label style="display:flex;gap:8px;align-items:center;font-weight:400;margin:0 0 6px"><input type="checkbox" name="loc" value="${l.id}" style="width:auto" ${target.location_ids.includes(l.id) ? "checked" : ""}> ${esc(l.name)}</label>`).join("")}
        <p class="muted" style="margin:0 0 14px">Tick All locations, or tick the individual locations this login may see.</p>`;
-  const body = `<div class="card narrow"><h1>Edit ${esc(target.name)}</h1>
-    <form method="post" action="/app/team/${target.id}/edit">
+  return `<form method="post" action="/app/team/${target.id}/edit" style="padding:6px 2px">
       <div class="row"><span style="flex:1"><label>First name <span class="req">*</span></label><input name="first_name" value="${esc(np.first)}" required></span>
       <span style="flex:1"><label>Middle name</label><input name="middle_name" value="${esc(np.middle)}"></span>
       <span style="flex:1"><label>Last name <span class="req">*</span></label><input name="last_name" value="${esc(np.last)}" required></span></div>
@@ -549,10 +553,15 @@ export async function teamEditPage(env, request, user, targetId) {
       <label>Email</label><input value="${esc(target.email)}" disabled>
       <p class="muted" style="margin:4px 0 14px">The email is their login and can't be changed.</p>
       ${roleSection}
-      <p style="margin-top:16px"><button class="btn" type="submit">Save changes</button>
+      <p style="margin-top:8px"><button class="btn" type="submit">Save changes</button>
       <a class="btn secondary" href="/app/team">Cancel</a></p>
-    </form></div>`;
-  return page({ title: "Edit team member", user, body, error: new URL(request.url).searchParams.get("err") || undefined });
+    </form>`;
+}
+
+export async function teamEditPage(env, request, user, targetId) {
+  // Retired as a page: the edit form now lives inline in the Team
+  // table. Old links land on the table with the editor open.
+  return redirect(`/app/team?edit=${Number(targetId) || ""}#edit-${Number(targetId) || ""}`);
 }
 
 export async function teamEditPost(env, request, user, targetId) {
@@ -560,7 +569,7 @@ export async function teamEditPost(env, request, user, targetId) {
   if (org === null) return denied(user, 403);
   const target = await teamTarget(env.DB, org, targetId);
   if (!target) return denied(user, 404);
-  const back = (err) => redirect(`/app/team/${target.id}/edit?err=` + encodeURIComponent(err));
+  const back = (err) => redirect(`/app/team?err=` + encodeURIComponent(err) + `&edit=${target.id}#edit-${target.id}`);
   const f = await request.formData();
   const first = String(f.get("first_name") || "").trim();
   const middle = String(f.get("middle_name") || "").trim();
