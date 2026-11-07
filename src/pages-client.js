@@ -267,9 +267,10 @@ export async function locationOverview(env, request, user, locationId) {
   const db = env.DB;
   const counts = await db.prepare(
     `SELECT (SELECT COUNT(*) FROM equipment WHERE location_id = ?) AS equipment,
+            (SELECT COUNT(*) FROM equipment WHERE location_id = ? AND status = 'online') AS devices_online,
             (SELECT COUNT(*) FROM tickets WHERE location_id = ? AND status != 'closed') AS open_tickets,
             (SELECT COUNT(*) FROM documents WHERE location_id = ?) AS documents`)
-    .bind(locationId, locationId, locationId).first();
+    .bind(locationId, locationId, locationId, locationId).first();
   const managedOn = await laneOn(db, loc.customer_id, locationId);
   const expiring = managedOn ? await expiringItems(db, locationId, 90) : [];
   // Billing counts are best-effort: before migration 0008 the tables do
@@ -278,29 +279,85 @@ export async function locationOverview(env, request, user, locationId) {
     `SELECT (SELECT COUNT(*) FROM quotes WHERE customer_id = ? AND status = 'sent') AS sent_quotes,
             (SELECT COUNT(*) FROM invoices WHERE customer_id = ? AND status = 'unpaid') AS unpaid_invoices`)
     .bind(loc.customer_id, loc.customer_id).first().catch(() => null);
-  const expiringHtml = expiring.length
-    ? `<div class="notice"><strong>Needs attention, next 90 days</strong><ul style="margin:8px 0 0;padding-left:18px">
-        ${expiring.map((e) => {
-          const kind = e.license_expires && (!e.warranty_expires || e.license_expires <= e.warranty_expires) ? "License" : "Warranty";
-          const date = kind === "License" ? e.license_expires : e.warranty_expires;
-          const days = daysUntil(date);
-          return `<li>${esc(e.vendor || "")} ${esc(e.model || e.type || "Equipment")}: ${kind.toLowerCase()} expires ${esc(fmtDateUS(date))} (${days < 0 ? "expired" : days + " days"})</li>`;
-        }).join("")}</ul></div>` : "";
-  const health = await officeHealth(env.DB, locationId);
-  const quickLinks = [
-    `<a href="/app/billing">Billing</a>${billing && billing.sent_quotes ? ` (${billing.sent_quotes} quote${billing.sent_quotes > 1 ? "s" : ""} waiting for you)` : ""}${billing && billing.unpaid_invoices ? ` (${billing.unpaid_invoices} unpaid invoice${billing.unpaid_invoices > 1 ? "s" : ""})` : ""}`,
-    user.role === "customer_admin" ? `<a href="/app/services">Services</a>` : "",
-    user.role === "customer_admin" ? `<a href="/app/team">Manage your team</a>` : "",
-  ].filter(Boolean).join(" &nbsp;·&nbsp; ");
-  const body = `${locNav(loc, "overview")}<h1>${esc(loc.name)}</h1>
-    <p class="muted" style="margin:-6px 0 16px">${quickLinks}</p>
-    ${expiringHtml}
-    ${healthCard(health)}
-    <div class="grid">
-      <a class="tile" href="/app/locations/${locationId}/equipment"><span class="tile-n">${counts.equipment}</span><span class="d">Equipment on record</span></a>
-      <a class="tile" href="/app/locations/${locationId}/tickets"><span class="tile-n">${counts.open_tickets}</span><span class="d">Open tickets</span></a>
-      <a class="tile" href="/app/locations/${locationId}/documents"><span class="tile-n">${counts.documents}</span><span class="d">Documents</span></a>
-      <a class="tile" href="${REMOTE_URL}" target="_blank" rel="noopener"><span class="t">Remote Support</span><span class="d">Start a session: download the app, then read us the 9-digit code it shows.</span></a>
+  const health = await officeHealth(db, locationId);
+  const renames = await loadRenames(db, locationId);
+  const offline = managedOn ? (await db.prepare(
+    "SELECT id, name, type, vendor, model, mac, external_id FROM equipment WHERE location_id = ? AND status = 'offline' ORDER BY name LIMIT 5")
+    .bind(locationId).all()).results : [];
+  const recentTickets = (await db.prepare(
+    "SELECT id, title, status, created_at FROM tickets WHERE location_id = ? ORDER BY id DESC LIMIT 4")
+    .bind(locationId).all()).results;
+  const snapRows = (await db.prepare(
+    "SELECT kind, payload FROM network_snapshots WHERE location_id = ? AND kind IN ('internet', 'changes')")
+    .bind(locationId).all()).results;
+  const snaps = {};
+  for (const r of snapRows) { try { snaps[r.kind] = JSON.parse(r.payload || "{}"); } catch { snaps[r.kind] = {}; } }
+  const isp = (snaps.internet || {}).isp || null;
+  const changes = snaps.changes && Array.isArray(snaps.changes.events) ? snaps.changes.events : [];
+
+  // --- Header: office name, health as a pill.
+  const addrLine = [loc.address, loc.city, loc.state].filter(Boolean).join(", ");
+  const healthPill = health && health.ok !== false && typeof health.score === "number"
+    ? `<span class="pill ${health.score >= 85 ? "on" : health.score < 60 ? "off" : "warn"}" style="font-size:13px;padding:6px 12px">Office health: ${health.label} · ${health.score}/100</span>` : "";
+  const header = `<div style="display:flex;justify-content:space-between;align-items:flex-end;gap:12px;flex-wrap:wrap;margin-bottom:16px">
+    <div><h1 style="margin:0">${esc(loc.name)}</h1>
+    ${addrLine ? `<p class="muted" style="margin:4px 0 0">${esc(addrLine)}</p>` : ""}</div>
+    <div>${healthPill}</div></div>`;
+
+  // --- Status strip: the four answers, same tile style as the other pages.
+  const tile = (href, value, label) =>
+    `<a class="stat" href="${href}" style="text-decoration:none;color:inherit"><b>${value}</b><span>${label}</span></a>`;
+  const strip = `<div class="statgrid">
+    ${tile(`/app/locations/${locationId}/network`, isp ? (isp.uptimePct != null && isp.uptimePct >= 99 ? "Working" : "Check connection") : "—", isp ? `Internet · ${esc(isp.ispName || "provider")}` : "Internet")}
+    ${tile(`/app/locations/${locationId}/equipment`, counts.equipment ? `${counts.devices_online} of ${counts.equipment}` : "0", "Devices online")}
+    ${tile(`/app/locations/${locationId}/tickets`, String(counts.open_tickets), counts.open_tickets === 1 ? "Open ticket" : "Open tickets")}
+    ${tile(`/app/locations/${locationId}/documents`, String(counts.documents), counts.documents === 1 ? "Document" : "Documents")}
+  </div>`;
+
+  // --- Needs attention: concrete items, or a calm all-clear.
+  const arow = (html) => `<div style="padding:9px 0;border-bottom:1px solid #EEF2F7">${html}</div>`;
+  const attentionItems = [
+    ...offline.map((e) => arow(`<a href="/app/locations/${locationId}/equipment/${e.id}" style="font-weight:600;color:inherit;text-decoration:none">${esc(displayName(e, renames))}</a> <span class="pill off">offline</span>`)),
+    ...expiring.map((e) => {
+      const kind = e.license_expires && (!e.warranty_expires || e.license_expires <= e.warranty_expires) ? "License" : "Warranty";
+      const date = kind === "License" ? e.license_expires : e.warranty_expires;
+      const days = daysUntil(date);
+      return arow(`${esc(e.vendor || "")} ${esc(e.model || e.type || "Equipment")} <span class="muted">${kind.toLowerCase()} expires ${esc(fmtDateUS(date))}${days < 0 ? " (expired)" : ` (${days} days)`}</span>`);
+    }),
+  ];
+  const attentionCard = `<div class="card"><h3 style="margin-top:0">Needs attention</h3>
+    ${attentionItems.length ? attentionItems.join("") : `<p style="margin:0"><span class="pill on">All clear</span> <span class="muted">Nothing needs attention right now.</span></p>`}
+    </div>`;
+
+  // --- Recent changes (from the hourly checks).
+  const changesCard = changes.length ? `<div class="card"><h3 style="margin-top:0">Recent changes</h3>
+    ${changes.slice(0, 4).map((ev) => arow(`${esc(ev.text || "")} <span class="muted">${esc(relTime(ev.at))}</span>`)).join("")}
+    <p style="margin:10px 0 0"><a href="/app/locations/${locationId}/network">See full history</a></p></div>` : "";
+
+  // --- Latest tickets.
+  const ticketsCard = `<div class="card"><h3 style="margin-top:0">Latest tickets</h3>
+    ${recentTickets.length ? recentTickets.map((t) => arow(`<a href="/app/locations/${locationId}/tickets/${t.id}" style="font-weight:600;color:inherit;text-decoration:none">${esc(t.title)}</a> <span class="pill ${t.status === "closed" ? "" : t.status === "open" ? "warn" : "on"}">${esc(t.status.replace("_", " "))}</span> <span class="muted">${esc(relTime(t.created_at))}</span>`)).join("")
+      : `<p class="muted" style="margin:0">No tickets yet.</p>`}
+    <p style="margin:10px 0 0"><a href="/app/locations/${locationId}/tickets">All tickets</a> · <a href="/app/locations/${locationId}/tickets">New ticket</a></p></div>`;
+
+  // --- Quick actions: one tidy list, counts inline.
+  const qa = (href, label, hint, external) =>
+    `<a href="${href}" ${external ? 'target="_blank" rel="noopener"' : ""} style="display:flex;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:1px solid #EEF2F7;color:inherit;text-decoration:none"><span style="font-weight:600">${label}</span><span class="muted">${hint || ""} ›</span></a>`;
+  const billingHint = billing ? [billing.sent_quotes ? `${billing.sent_quotes} quote${billing.sent_quotes > 1 ? "s" : ""} waiting` : "", billing.unpaid_invoices ? `${billing.unpaid_invoices} unpaid` : ""].filter(Boolean).join(" · ") : "";
+  const actionsCard = `<div class="card"><h3 style="margin-top:0">Quick actions</h3>
+    ${qa(`/app/locations/${locationId}/network`, "WiFi & Internet", isp && isp.downMbps != null ? `${Math.round(isp.downMbps)} Mbps now` : "")}
+    ${qa(`/app/locations/${locationId}/equipment`, "Equipment", counts.equipment ? `${counts.equipment} on record` : "")}
+    ${qa("/app/billing", "Billing", billingHint)}
+    ${qa(REMOTE_URL, "Remote Support", "Start a session", true)}
+    ${qa(`/app/locations/${locationId}/ask`, "Ask", "Answers from your records")}
+    ${user.role === "customer_admin" ? qa("/app/services", "Services", "") : ""}
+    ${user.role === "customer_admin" ? qa("/app/team", "Manage your team", "") : ""}
+    </div>`;
+
+  const body = `${locNav(loc, "overview")}${header}${strip}
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px;align-items:start">
+      <div style="display:grid;gap:16px">${attentionCard}${changesCard}</div>
+      <div style="display:grid;gap:16px">${ticketsCard}${actionsCard}</div>
     </div>`;
   const msg = new URL(request.url).searchParams.get("msg");
   return page({ title: loc.name, user, body, flash: msg || undefined });
