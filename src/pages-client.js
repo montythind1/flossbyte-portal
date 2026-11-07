@@ -958,14 +958,14 @@ export async function topologyPage(env, request, user, locationId) {
     if (seenJson.has(e.id) || depth > 10) return null;
     seenJson.add(e.id);
     const kidsArr = (kids.get(e.id) || []).map((c) => toNode(c, depth + 1)).filter(Boolean);
-    return { id: e.id, name: label(e), meta: [deviceKind(e), e.ip_address].filter(Boolean).join(" · "), off: e.status === "offline", root: depth === 0,
+    return { id: e.id, name: label(e), meta: [deviceKind(e), e.ip_address].filter(Boolean).join(" · "), off: e.status === "offline", root: depth === 0 && (e.type === "Gateway" || e.type === "Firewall"),
       leaf: kidsArr.length === 0, gear: GEAR.has(e.type) || kidsArr.length > 0, children: kidsArr };
   };
   const forest = roots.map((e) => toNode(e, 0)).filter(Boolean);
   for (const e of all) {
     if (!seenJson.has(e.id)) {
       seenJson.add(e.id);
-      forest.push({ id: e.id, name: label(e), meta: [deviceKind(e), e.ip_address].filter(Boolean).join(" · "), off: e.status === "offline", root: true, leaf: true, gear: GEAR.has(e.type), children: [] });
+      forest.push({ id: e.id, name: label(e), meta: [deviceKind(e), e.ip_address].filter(Boolean).join(" · "), off: e.status === "offline", root: e.type === "Gateway" || e.type === "Firewall", leaf: true, gear: GEAR.has(e.type), children: [] });
     }
   }
   const topoData = JSON.stringify(forest).replace(/</g, "\\u003c");
@@ -1102,14 +1102,16 @@ export async function topologyPage(env, request, user, locationId) {
       document.getElementById('tzOut').addEventListener('click', function () { var r = svg.getBoundingClientRect(); zoomAt(0.77, r.width / 2, r.height / 2); });
       document.getElementById('tzFit').addEventListener('click', fit);
       svg.addEventListener('wheel', function (e) { e.preventDefault(); var r = svg.getBoundingClientRect(); zoomAt(e.deltaY < 0 ? 1.12 : 0.89, e.clientX - r.left, e.clientY - r.top); }, { passive: false });
-      var drag = null, moved = 0;
-      svg.addEventListener('pointerdown', function (e) { drag = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y }; moved = 0; svg.setPointerCapture(e.pointerId); svg.style.cursor = 'grabbing'; });
+      var drag = null, moved = 0, dragTarget = null;
+      svg.addEventListener('pointerdown', function (e) { drag = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y }; moved = 0; dragTarget = e.target; svg.setPointerCapture(e.pointerId); svg.style.cursor = 'grabbing'; });
       svg.addEventListener('pointermove', function (e) { if (!drag) return; var dx = e.clientX - drag.x, dy = e.clientY - drag.y; moved = Math.max(moved, Math.abs(dx) + Math.abs(dy)); view.x = drag.vx + dx; view.y = drag.vy + dy; apply(); });
       svg.addEventListener('pointerup', function (e) {
         svg.style.cursor = 'grab';
-        var wasDrag = moved > 6; drag = null;
+        var wasDrag = moved > 10; drag = null;
         if (wasDrag) return;
-        var t = e.target;
+        // Pointer capture retargets the up event to the svg itself,
+        // so the hit element must come from the pointerdown.
+        var t = dragTarget; dragTarget = null;
         while (t && !(t.getAttribute && t.getAttribute('data-id'))) t = t.parentNode;
         if (!t) return;
         var did = t.getAttribute('data-id');
