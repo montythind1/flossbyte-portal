@@ -272,7 +272,7 @@ export async function appHome(env, request, user) {
       "SELECT COUNT(*) AS n FROM tickets WHERE location_id = ? AND status != 'closed'").bind(loc.id).first();
     const health = await officeHealth(db, loc.id);
     if (health && typeof health.score === "number" && (!worst || health.score < worst.score)) {
-      worst = { name: loc.name, score: health.score, label: health.label, reasons: health.reasons || [] };
+      worst = { id: loc.id, name: loc.name, score: health.score, label: health.label, reasons: health.reasons || [] };
     }
     const snap = await db.prepare(
       "SELECT payload FROM network_snapshots WHERE location_id = ? AND kind = 'internet'").bind(loc.id).first();
@@ -281,7 +281,7 @@ export async function appHome(env, request, user) {
     totDevices += c.total || 0; totOnline += c.online || 0; totTickets += t.n || 0;
     const pill = health && typeof health.score === "number"
       ? `<span class="pill ${health.score >= 85 ? "on" : health.score < 60 ? "off" : "warn"}">Health: ${esc(health.label)}</span>` : "";
-    cards.push(`<a class="card" href="/app/locations/${loc.id}" style="text-decoration:none;color:inherit;display:block">
+    cards.push({ score: health && typeof health.score === "number" ? health.score : 101, html: `<a class="card" href="/app/locations/${loc.id}" style="text-decoration:none;color:inherit;display:block">
       <div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start">
         <div><div style="font-size:18px;font-weight:800">${esc(loc.name)}</div>
         ${loc.city ? `<div class="muted">${esc(loc.city)}</div>` : ""}</div>
@@ -290,8 +290,12 @@ export async function appHome(env, request, user) {
       ${srow("Internet", isp ? `${isp.uptimePct != null && isp.uptimePct >= 99 ? "Working" : "Check connection"}${isp.ispName ? " · " + esc(isp.ispName) : ""}` : "—")}
       ${srow("Devices online", c.total ? `${c.online || 0} of ${c.total}` : "None recorded")}
       ${srow("Open tickets", t.n ? String(t.n) : "No open tickets")}
-      </div></a>`);
+      </div></a>` });
   }
+  // Worst health first: the office that needs attention is always
+  // the first card, at 2 offices or 20. Offices with no health data
+  // (score 101) sort last.
+  cards.sort((a, b) => a.score - b.score);
   const billing = locs.length ? await db.prepare(
     `SELECT (SELECT COUNT(*) FROM invoices WHERE customer_id = ? AND status = 'unpaid') AS unpaid,
             (SELECT COUNT(*) FROM quotes WHERE customer_id = ? AND status = 'sent') AS quotes_waiting`)
@@ -306,9 +310,10 @@ export async function appHome(env, request, user) {
   // with a single semantic color wherever the status is.
   const dot = (c) => `<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${c};flex:none"></span>`;
   let bandDot, bandMainHtml;
+  const worstLink = worst ? `<a href="/app/locations/${worst.id}" style="color:inherit;text-decoration:underline;text-underline-offset:3px">${esc(worst.name)}</a>` : "";
   if (!worst || worst.score >= 85) { bandDot = dot("#0A7C6E"); bandMainHtml = "Everything is running"; }
-  else if (worst.score >= 60) { bandDot = dot("#b45309"); bandMainHtml = `${esc(worst.name)} is running <span style="color:#b45309">fair</span>`; }
-  else { bandDot = dot("#b91c1c"); bandMainHtml = `${esc(worst.name)} <span style="color:#b91c1c">needs attention</span>`; }
+  else if (worst.score >= 60) { bandDot = dot("#b45309"); bandMainHtml = `${worstLink} is running <span style="color:#b45309">fair</span>`; }
+  else { bandDot = dot("#b91c1c"); bandMainHtml = `${worstLink} <span style="color:#b91c1c">needs attention</span>`; }
   const lastCheck = locs.length ? await db.prepare(
     "SELECT MAX(captured_at) AS last FROM network_snapshots WHERE location_id IN (SELECT id FROM locations WHERE customer_id = ?)")
     .bind(locs[0].customer_id).first().catch(() => null) : null;
@@ -340,7 +345,7 @@ export async function appHome(env, request, user) {
   const body = `${orgRail(user, "practices", orgName || "My Portal", locs)}<h1 style="margin-bottom:14px">Overview</h1>
     ${band}
     ${strip}
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px">${cards.join("")}</div>`;
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px">${cards.map((c) => c.html).join("")}</div>`;
   return page({ title: "My Portal", user, body });
 }
 
