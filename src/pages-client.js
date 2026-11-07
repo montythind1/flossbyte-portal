@@ -1985,6 +1985,21 @@ export async function chatMessagePost(env, request, user, locationId) {
   return redirect(`/app/locations/${locationId}/ask#latest`);
 }
 
+// In-place chat send: returns the new message id so the page can
+// append it immediately and the poller does not deliver it twice.
+export async function chatApiPost(env, request, user, locationId) {
+  const json = (obj, status = 200) => new Response(JSON.stringify(obj), { status, headers: { "Content-Type": "application/json" } });
+  const { loc, error } = await guard(env, user, locationId);
+  if (error) return json({ ok: false }, 403);
+  const thread = await getOpenThread(env.DB, locationId, user.id);
+  if (!thread) return json({ ok: false }, 404);
+  const f = await request.formData();
+  const body = String(f.get("body") || "").trim().slice(0, 2000);
+  if (!body) return json({ ok: false }, 400);
+  const id = await addChatMessage(env.DB, thread.id, "customer", user.id, body);
+  return json({ ok: true, id });
+}
+
 export async function chatEndPost(env, request, user, locationId) {
   const { loc, error } = await guard(env, user, locationId);
   if (error) return denied(user, error);
@@ -2352,7 +2367,8 @@ export async function askPage(env, request, user, locationId) {
     <div class="msg a${fresh && i === rows.length - 1 ? " gtype" : ""}">${esc(m.answer)}</div>${canEscalate ? `<form method="post" action="/app/locations/${locationId}/ask/escalate" style="margin:0">
       <input type="hidden" name="message_id" value="${m.id}">
       <button class="btn small secondary" type="submit">Send this to FlossByte</button></form>` : ""}</div>`).join("");
-  const starter = (q) => `<form method="post" action="/app/locations/${locationId}/ask" style="margin:0"><input type="hidden" name="question" value="${esc(q)}"><button class="btn secondary" style="width:100%;text-align:left" type="submit">${esc(q)}</button></form>`;
+  const starter = (q) => `<form class="gchip" method="post" action="/app/locations/${locationId}/ask" style="margin:0"><input type="hidden" name="question" value="${esc(q)}"><button class="btn secondary" style="width:100%;text-align:left" type="submit">${esc(q)}</button></form>`;
+  const SEND_ICON = `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg>`;
   const chatOn = user.kind === "customer" && canEscalate && await chatReady(env.DB);
   const lastChatId = chatMsgs.length ? chatMsgs[chatMsgs.length - 1].id : 0;
   const streamInner = openThread
@@ -2371,12 +2387,12 @@ export async function askPage(env, request, user, locationId) {
       : "You're chatting with a person at FlossByte.")
     : "";
   const composer = openThread
-    ? `<form class="gcomposer" method="post" action="/app/locations/${locationId}/chat/message">
-        <input name="body" placeholder="Message FlossByte Support..." required autocomplete="off">
-        <button class="btn" type="submit">Send</button></form>`
-    : `<form class="gcomposer" method="post" action="/app/locations/${locationId}/ask">
-        <input name="question" placeholder="Ask Genius anything about this office..." required autocomplete="off">
-        <button class="btn" type="submit">Ask</button></form>`;
+    ? `<form class="gcomposer" id="composer-form" method="post" action="/app/locations/${locationId}/chat/message">
+        <input id="composer-input" name="body" placeholder="Message FlossByte Support..." required autocomplete="off">
+        <button class="sendbtn" id="send-btn" type="submit" aria-label="Send message">${SEND_ICON}</button></form>`
+    : `<form class="gcomposer" id="composer-form" method="post" action="/app/locations/${locationId}/ask">
+        <input id="composer-input" name="question" placeholder="Ask Genius anything about this office..." required autocomplete="off">
+        <button class="sendbtn" id="send-btn" type="submit" aria-label="Ask Genius">${SEND_ICON}</button></form>`;
   const underRow = chatOn && !openThread
     ? `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:10px">
         <span class="muted">Need a person instead?</span>
@@ -2405,9 +2421,115 @@ export async function askPage(env, request, user, locationId) {
     el.addEventListener('click', function(){ clearInterval(timer); el.textContent = full; el.classList.remove('gtype'); });
   })();
   </script>` : "";
+  const askScript = !openThread ? `<script>
+  (function(){
+    var form = document.getElementById('composer-form');
+    if (!form) return;
+    var input = document.getElementById('composer-input');
+    var btn = document.getElementById('send-btn');
+    var stream = document.getElementById('gstream');
+    var LOC = ${locationId}, ESC = ${canEscalate ? "true" : "false"};
+    function el(tag, cls, text){ var d = document.createElement(tag); if (cls) d.className = cls; if (text != null) d.textContent = text; return d; }
+    function typeInto(node, full){
+      if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) { node.textContent = full; return; }
+      node.classList.add('gtype');
+      var step = Math.max(2, Math.ceil(full.length / 200));
+      var i = 0;
+      var timer = setInterval(function(){
+        i += step;
+        node.textContent = full.slice(0, i);
+        node.scrollIntoView({ block: 'end' });
+        if (i >= full.length) { clearInterval(timer); node.classList.remove('gtype'); }
+      }, 14);
+      node.addEventListener('click', function(){ clearInterval(timer); node.textContent = full; node.classList.remove('gtype'); });
+    }
+    function addEscalate(wrap, id){
+      if (!ESC || !id) return;
+      var f = document.createElement('form');
+      f.method = 'post';
+      f.action = '/app/locations/' + LOC + '/ask/escalate';
+      f.style.margin = '0';
+      var h = document.createElement('input');
+      h.type = 'hidden'; h.name = 'message_id'; h.value = id;
+      var b = el('button', 'btn small secondary', 'Send this to FlossByte');
+      b.type = 'submit';
+      f.appendChild(h); f.appendChild(b);
+      wrap.appendChild(f);
+    }
+    function ask(q){
+      var empty = document.querySelector('.gempty');
+      if (empty) empty.style.display = 'none';
+      var prev = document.getElementById('latest');
+      if (prev) prev.removeAttribute('id');
+      var wrap = el('div', 'gex');
+      wrap.id = 'latest';
+      wrap.appendChild(el('div', 'msg q', q));
+      wrap.appendChild(el('div', 'glabel', 'Genius'));
+      var ans = el('div', 'msg a');
+      ans.innerHTML = '<span class="gdot"></span><span class="gdot"></span><span class="gdot"></span>';
+      wrap.appendChild(ans);
+      stream.appendChild(wrap);
+      ans.scrollIntoView({ block: 'end' });
+      input.value = '';
+      input.disabled = true; btn.disabled = true;
+      var fd = new FormData();
+      fd.append('question', q);
+      fetch('/app/locations/' + LOC + '/ask/api', { method: 'POST', body: fd, headers: { 'Accept': 'application/json' } })
+        .then(function(r){ return r.json(); })
+        .then(function(d){
+          input.disabled = false; btn.disabled = false; input.focus();
+          if (!d || !d.ok) { ans.textContent = 'Something went wrong on our side. Please try again.'; return; }
+          typeInto(ans, d.answer);
+          addEscalate(wrap, d.id);
+        })
+        .catch(function(){
+          input.disabled = false; btn.disabled = false;
+          ans.textContent = 'Something went wrong on our side. Please try again.';
+        });
+    }
+    form.addEventListener('submit', function(ev){
+      ev.preventDefault();
+      var q = input.value.trim();
+      if (q) ask(q);
+    });
+    var chips = document.querySelectorAll('form.gchip');
+    for (var c = 0; c < chips.length; c++) {
+      chips[c].addEventListener('submit', function(ev){
+        ev.preventDefault();
+        var q = this.querySelector('input[name="question"]').value;
+        if (q) ask(q);
+      });
+    }
+  })();
+  </script>` : "";
   const pollScript = openThread ? `<script>
   (function(){
     var last = ${lastChatId}, loc = ${locationId}, box = document.getElementById('chat-msgs');
+    var cform = document.getElementById('composer-form');
+    if (cform) {
+      cform.addEventListener('submit', function(ev){
+        ev.preventDefault();
+        var inp = document.getElementById('composer-input');
+        var body = inp.value.trim();
+        if (!body) return;
+        inp.value = '';
+        var fd = new FormData();
+        fd.append('body', body);
+        fetch('/app/locations/' + loc + '/chat/api', { method: 'POST', body: fd, headers: { 'Accept': 'application/json' } })
+          .then(function(r){ return r.json(); })
+          .then(function(d){
+            if (d && d.ok) {
+              last = Math.max(last, d.id);
+              var div = document.createElement('div');
+              div.className = 'msg q';
+              div.textContent = body;
+              box.appendChild(div);
+              div.scrollIntoView({ block: 'end' });
+            } else { location.reload(); }
+          })
+          .catch(function(){ location.reload(); });
+      });
+    }
     function tick(){
       fetch('/app/locations/' + loc + '/chat/poll?after=' + last, { headers: { 'Accept': 'application/json' } })
         .then(function(r){ return r.json(); })
@@ -2434,16 +2556,41 @@ export async function askPage(env, request, user, locationId) {
   <p class="muted" ${openThread ? 'id="chat-status"' : ""} style="margin:6px 0 14px">${openThread ? esc(statusLine) : `Answers come only from this office's records. ${seeAll ? "You see everyone's conversations here, because your login is an admin login." : "Your conversations are private to your login; admin logins at this office can see them."}`}</p>
   <div class="card">
     ${emptyState}
-    ${streamInner ? `<div class="chat gstream" id="gstream">${streamInner}</div>` : ""}
+    <div class="chat gstream" id="gstream">${streamInner}</div>
   </div>
   ${composer}
   ${underRow}
   ${pollScript}
   ${typeScript}
+  ${askScript}
   <script>
   (function(){ var el = document.getElementById('latest') || document.getElementById('chat-msgs'); if (el) { el.scrollIntoView({ block: 'end' }); } })();
   </script>`;
   return page({ title: openThread ? "Live chat" : "Genius", user, body });
+}
+
+// Shared Genius pipeline for the form post and the in-place API:
+// records answer first, exact lookups never reach the model, the
+// model answer wins when it returns one, and the exchange is saved.
+async function runGeniusAsk(env, user, loc, question) {
+  const recordsAnswer = await askAnswer(env.DB, loc.id, question);
+  let answer = recordsAnswer;
+  if (!isExactLookupQuestion(question)) {
+    try {
+      const health = await officeHealth(env.DB, loc.id);
+      const built = await buildGeniusContext(env.DB, loc, { health, userId: user.id });
+      const aiAnswer = await geniusAnswer(env, {
+        question,
+        context: built.context,
+        history: built.history,
+        recordsAnswer,
+      });
+      if (aiAnswer) answer = `${aiAnswer}\n${geniusFooter(aiAnswer)}`;
+    } catch { answer = recordsAnswer; }
+  }
+  const r = await env.DB.prepare("INSERT INTO ask_messages (location_id, user_id, question, answer) VALUES (?, ?, ?, ?)")
+    .bind(loc.id, user.id, question, answer).run();
+  return { id: r.meta.last_row_id, answer };
 }
 
 export async function askPost(env, request, user, locationId) {
@@ -2455,29 +2602,22 @@ export async function askPost(env, request, user, locationId) {
   }
   const f = await request.formData();
   const question = String(f.get("question") || "").trim().slice(0, 1200);
-  if (question) {
-    const recordsAnswer = await askAnswer(env.DB, locationId, question);
-    let answer = recordsAnswer;
-    // Passwords and other exact identifiers never go through the
-    // model. Genius handles the conversational questions; the records
-    // answer remains the fallback whenever the model is unavailable.
-    if (!isExactLookupQuestion(question)) {
-      try {
-        const health = await officeHealth(env.DB, locationId);
-        const built = await buildGeniusContext(env.DB, loc, { health, userId: user.id });
-        const aiAnswer = await geniusAnswer(env, {
-          question,
-          context: built.context,
-          history: built.history,
-          recordsAnswer,
-        });
-        if (aiAnswer) answer = `${aiAnswer}\n${geniusFooter(aiAnswer)}`;
-      } catch { answer = recordsAnswer; }
-    }
-    await env.DB.prepare("INSERT INTO ask_messages (location_id, user_id, question, answer) VALUES (?, ?, ?, ?)")
-      .bind(locationId, user.id, question, answer).run();
-  }
+  if (question) await runGeniusAsk(env, user, loc, question);
   return redirect(`/app/locations/${locationId}/ask?fresh=1#latest`);
+}
+
+// In-place ask (the ChatGPT-style flow): the page never reloads; the
+// question and the typing answer appear in the stream directly.
+export async function askApiPost(env, request, user, locationId) {
+  const json = (obj, status = 200) => new Response(JSON.stringify(obj), { status, headers: { "Content-Type": "application/json" } });
+  const { loc, error } = await guard(env, user, locationId);
+  if (error) return json({ ok: false }, 403);
+  if (user.kind === "customer" && await getOpenThread(env.DB, locationId, user.id)) return json({ ok: false, error: "chat_open" }, 409);
+  const f = await request.formData();
+  const question = String(f.get("question") || "").trim().slice(0, 1200);
+  if (!question) return json({ ok: false }, 400);
+  const r = await runGeniusAsk(env, user, loc, question);
+  return json({ ok: true, id: r.id, answer: r.answer });
 }
 
 export async function askEscalatePost(env, request, user, locationId) {

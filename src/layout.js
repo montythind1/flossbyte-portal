@@ -206,6 +206,13 @@ td.num,th.num{text-align:right}
 .glabel{font-size:11px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:#00796b}
 .gtype::after{content:"▌";color:#00796b;font-size:12px;margin-left:1px;animation:gblink 1s steps(1) infinite}
 @keyframes gblink{0%,49%{opacity:1}50%,100%{opacity:0}}
+.sendbtn{width:42px;height:42px;border-radius:50%;background:var(--teal);border:none;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;flex:0 0 auto;padding:0;transition:background .15s ease}
+.sendbtn:hover{background:var(--teal-hover)}
+.sendbtn:disabled{opacity:.45;cursor:default}
+.gdot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#8fa5b8;margin:0 2px;vertical-align:middle;animation:gpulse 1.2s ease-in-out infinite}
+.gdot:nth-child(2){animation-delay:.15s}
+.gdot:nth-child(3){animation-delay:.3s}
+@keyframes gpulse{0%,60%,100%{opacity:.35}30%{opacity:1}}
 .gcomposer{position:sticky;bottom:14px;z-index:5;display:flex;gap:8px;align-items:center;background:#fff;border:1px solid var(--line);border-radius:14px;padding:10px;box-shadow:0 8px 28px rgba(10,22,40,.10);margin-top:14px}
 .gcomposer input{flex:1;font-size:16px;border:none;outline:none;background:transparent;padding:10px 6px;font-family:inherit;color:var(--ink);min-width:0}
 .gcomposer .btn{border-radius:10px;flex:0 0 auto}

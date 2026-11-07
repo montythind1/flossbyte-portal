@@ -249,6 +249,10 @@ async function route(request, env) {
   if (m && method === "POST") return client.chatStartPost(env, request, user, Number(m[1]));
   m = path.match(/^\/app\/locations\/(\d+)\/chat\/message$/);
   if (m && method === "POST") return client.chatMessagePost(env, request, user, Number(m[1]));
+  m = path.match(/^\/app\/locations\/(\d+)\/chat\/api$/);
+  if (m && method === "POST") return client.chatApiPost(env, request, user, Number(m[1]));
+  m = path.match(/^\/app\/locations\/(\d+)\/ask\/api$/);
+  if (m && method === "POST") return client.askApiPost(env, request, user, Number(m[1]));
   m = path.match(/^\/app\/locations\/(\d+)\/chat\/end$/);
   if (m && method === "POST") return client.chatEndPost(env, request, user, Number(m[1]));
   m = path.match(/^\/app\/locations\/(\d+)\/chat\/poll$/);
