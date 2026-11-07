@@ -2368,7 +2368,7 @@ export async function askPage(env, request, user, locationId) {
     ${seeAll && m.user_id !== user.id ? `<div class="muted" style="font-size:12.5px">${esc(m.asker_name || "Team member")}</div>` : ""}
     <div class="msg q">${esc(m.question)}</div>
     <div class="glabel">Genius</div>
-    <div class="msg a${fresh && i === rows.length - 1 ? " gtype" : ""}">${esc(m.answer)}</div>${canEscalate ? `<form method="post" action="/app/locations/${locationId}/ask/escalate" style="margin:0">
+    <div class="msg a${fresh && i === rows.length - 1 ? " gtype" : ""}">${esc(m.answer)}</div>${canEscalate && !openThread && i === rows.length - 1 ? `<form method="post" action="/app/locations/${locationId}/ask/escalate" style="margin:0">
       <input type="hidden" name="message_id" value="${m.id}">
       <button class="btn small secondary" type="submit">Send this to FlossByte</button></form>` : ""}${lastWantsChat && i === rows.length - 1 ? `<form method="post" action="/app/locations/${locationId}/chat/start" style="margin:8px 0 0">
       <button class="btn" type="submit">Start live chat with FlossByte</button></form>` : ""}</div>`).join("");
@@ -2402,8 +2402,7 @@ export async function askPage(env, request, user, locationId) {
     ? `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:10px">
         <span class="muted">Need a person instead?</span>
         <form method="post" action="/app/locations/${locationId}/chat/start" style="margin:0">
-          <button class="btn small secondary" type="submit">Chat with FlossByte</button></form>
-        <span class="muted">Weekdays 8 to 6. FlossByte sees what you asked Genius, so you never repeat yourself.</span></div>`
+          <button class="btn small secondary" type="submit">Chat with FlossByte</button></form></div>`
     : "";
   const endBtn = openThread
     ? `<form method="post" action="/app/locations/${locationId}/chat/end" style="margin:0" onsubmit="return confirm('End this chat? The conversation is saved, and Genius becomes available again.')">
@@ -2511,6 +2510,11 @@ export async function askPage(env, request, user, locationId) {
     }
     function addEscalate(wrap, id){
       if (!ESC || !id) return;
+      // Only the newest answer carries this button.
+      var olds = stream.querySelectorAll('form');
+      for (var k = 0; k < olds.length; k++) {
+        if ((olds[k].getAttribute('action') || '').indexOf('/ask/escalate') >= 0) olds[k].remove();
+      }
       var f = document.createElement('form');
       f.method = 'post';
       f.action = '/app/locations/' + LOC + '/ask/escalate';
