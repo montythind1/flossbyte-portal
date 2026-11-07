@@ -2415,9 +2415,12 @@ export async function askPage(env, request, user, locationId) {
     var frameId = 0;
     el.textContent = '';
     function scrollAboveBar(){
+      // Scroll the whole latest exchange (answer + its action button),
+      // not just the answer bubble, so the button stays clear of the bar.
+      var wrap = document.getElementById('latest') || el;
       var bar = document.querySelector('.gcomposer');
       var reserve = bar ? bar.offsetHeight + 30 : 110;
-      var r = el.getBoundingClientRect();
+      var r = wrap.getBoundingClientRect();
       var target = window.pageYOffset + r.bottom - (window.innerHeight - reserve);
       if (target > window.pageYOffset) window.scrollTo(0, target);
     }
