@@ -126,6 +126,13 @@ async function saveRenames(db, locationId, names) {
   await db.prepare("INSERT INTO network_snapshots (location_id, kind, payload) VALUES (?, 'device_names', ?) ON CONFLICT(location_id, kind) DO UPDATE SET payload = excluded.payload, captured_at = datetime('now')")
     .bind(locationId, JSON.stringify({ names })).run();
 }
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+function fmtDay(iso) {
+  const m = String(iso || "").match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return "";
+  return `${MONTHS[Number(m[2]) - 1]} ${Number(m[3])}, ${m[1]}`;
+}
+
 function relTime(iso) {
   if (!iso) return "";
   const s = String(iso).replace(" ", "T");
@@ -943,6 +950,8 @@ export async function equipmentDetailPage(env, request, user, locationId, equipm
       ? `${agentDetail.patches.count} waiting <span class="pill warn">needs updates</span>`
       : `Up to date`) : ""}
     ${agentDetail.patches && agentDetail.patches.titles && agentDetail.patches.titles.length ? `<p class="muted" style="margin:8px 0 0;font-size:12.5px">Waiting: ${agentDetail.patches.titles.slice(0, 3).map((t) => esc(t)).join(" · ")}${agentDetail.patches.count > 3 ? ` · and ${agentDetail.patches.count - 3} more` : ""}</p>` : ""}
+    ${agentDetail.patches && agentDetail.patches.installed && agentDetail.patches.installed.count ? drow("Updates installed", `${agentDetail.patches.installed.count} installed`) : ""}
+    ${agentDetail.patches && agentDetail.patches.installed && agentDetail.patches.installed.recent && agentDetail.patches.installed.recent.length ? `<p class="muted" style="margin:8px 0 0;font-size:12.5px">Recently installed: ${agentDetail.patches.installed.recent.slice(0, 4).map((r) => esc(r.t) + (r.d ? ` (${esc(fmtDay(r.d))})` : "")).join(" · ")}${agentDetail.patches.installed.count > 4 ? ` · and ${agentDetail.patches.installed.count - 4} more` : ""}</p>` : ""}
     ${agentAlerts.length ? `<p style="margin:12px 0 4px"><b>Atera alerts</b></p>${agentAlerts.slice(0, 4).map((al) => `<p class="muted" style="margin:0 0 4px">${esc(al.title)}${al.severity ? ` (${esc(al.severity)})` : ""}</p>`).join("")}` : ""}
     <p class="muted" style="margin:10px 0 0;font-size:12.5px">Computer details from Atera${agentDetail.lastSeen ? ` · checked ${esc(relTime(agentDetail.lastSeen))}` : ""}. Software installed on this computer arrives by Atera's scheduled report.</p></div>` : "";
   const kids = children.length ? `<div class="card"><h3 style="margin-top:0">Plugged into this device</h3>
@@ -1951,6 +1960,10 @@ export async function askAnswer(db, locationId, question) {
         parts.push("Windows updates waiting (from Atera):\n" + behind.map((d) => `• ${nameOf.get(d.equipmentId) || "Computer"}: ${d.patches.count} update${d.patches.count === 1 ? "" : "s"} waiting`).join("\n"));
       } else if (agentEntries.some((d) => d.patches)) {
         parts.push("Every computer Atera watches here is up to date on Windows updates.");
+      }
+      const withInstalled = agentEntries.filter((d) => d.patches && d.patches.installed && d.patches.installed.recent && d.patches.installed.recent.length);
+      if (withInstalled.length) {
+        parts.push("Recently installed updates (from Atera):\n" + withInstalled.slice(0, 6).map((d) => { const r = d.patches.installed.recent[0]; return `• ${nameOf.get(d.equipmentId) || "Computer"}: ${r.t}${r.d ? ` (${fmtDay(r.d)})` : ""} · ${d.patches.installed.count} installed in total`; }).join("\n"));
       }
     }
     if (agentEntries.length && /operating system|what os|windows version|which windows/.test(q)) {

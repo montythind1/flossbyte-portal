@@ -258,6 +258,17 @@ export async function runAteraSync(env) {
             titles: list.slice(0, 8).map((p) => String(pick(p, "Title", "Name", "KB", "Description") || "Update")).filter(Boolean),
             at: new Date().toISOString(),
           };
+          // Installed patch history rides the same hourly pass; its
+          // own failure must not lose the waiting list above.
+          try {
+            const done = await listAll(env, `/api/v3/agents/${encodeURIComponent(a.guid)}/installed-patches`);
+            const recent = done.map((p) => ({
+              t: String(pick(p, "Title", "Name", "KB", "Description") || "Update"),
+              d: (isoDate(pick(p, "InstalledOn", "InstallDate", "DateInstalled", "InstalledDate", "CreatedDate")) || "").slice(0, 10) || null,
+            })).filter((x) => x.t)
+              .sort((x, y) => String(y.d || "").localeCompare(String(x.d || "")));
+            patches.installed = { count: done.length, recent: recent.slice(0, 8) };
+          } catch { /* installed history is best-effort */ }
           patchCache[String(a.agentId)] = patches;
           patchCacheDirty = true;
           summary.patchAgents++;
