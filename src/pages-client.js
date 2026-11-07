@@ -179,14 +179,11 @@ function orgRail(user, active, orgName, locs) {
   const account = user.role === "customer_admin"
     ? `<div class="rail-label">Account</div>${item("services", "/app/services", "Services", "shield")}${item("team", "/app/team", "Team", "users")}`
     : "";
-  // Direct shortcuts into each practice, so from any organization
-  // page (Billing included) a practice is one click away. This is the
-  // "way back" from organization scope into a practice. Hidden on the
-  // practices page itself, where the practice cards already list them
-  // (the same two names twice on one screen read as repetition).
-  const practiceLinks = locs && locs.length && active !== "practices"
-    ? `<div class="rail-label">Go to a practice</div>${locs.map((l) => `<a class="rail-item" href="/app/locations/${l.id}">${icon("pin")}${esc(l.name)}</a>`).join("")}`
-    : "";
+  // No practice shortcut group in the rail (Montek: it repeated the
+  // office names on every org page). Getting into an office from an
+  // org page is Overview, then the office card - two clicks, and
+  // nothing is listed twice anywhere.
+  const practiceLinks = "";
   return `<div class="shell"><aside class="rail">
     <div class="rail-context"><div class="rc-t">${esc(orgName || "My Portal")}</div></div>
     ${item("practices", "/app", "Overview", "home")}${item("billing", "/app/billing", "Billing", "receipt")}
