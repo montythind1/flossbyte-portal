@@ -9,7 +9,7 @@ APP_ORIGIN = "https://portal.flossbyte.com"
 # Hourly device sync (UniFi today). The handler lives in src/index.js and
 # records each run's outcome for the admin Device sync page.
 [triggers]
-crons = ["0 * * * *"]
+crons = ["*/15 * * * *"]
 
 # Static files in ./public (the FlossByte logo) are served at their paths,
 # for example /assets/logo-icon.png.
