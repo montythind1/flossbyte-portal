@@ -303,20 +303,26 @@ export async function appHome(env, request, user) {
   // actionable numbers (quotes waiting, unpaid invoices, open
   // tickets). The per-practice counts live on the cards, not repeated
   // here as tiles.
-  const bandMain = !worst || worst.score >= 85 ? "Everything is running"
-    : worst.score >= 60 ? `${worst.name} is running fair` : `${worst.name} needs attention`;
+  // One status accent only: a colored dot and the status word in the
+  // same color, on a plain white card. The palette stays navy + teal,
+  // with a single semantic color wherever the status is.
+  const dot = (c) => `<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${c};flex:none"></span>`;
+  let bandDot, bandMainHtml;
+  if (!worst || worst.score >= 85) { bandDot = dot("#0A7C6E"); bandMainHtml = "Everything is running"; }
+  else if (worst.score >= 60) { bandDot = dot("#b45309"); bandMainHtml = `${esc(worst.name)} is running <span style="color:#b45309">fair</span>`; }
+  else { bandDot = dot("#b91c1c"); bandMainHtml = `${esc(worst.name)} <span style="color:#b91c1c">needs attention</span>`; }
   const bandSub = !worst || worst.score >= 85 ? "Nothing needs attention at any practice."
     : (worst.reasons.slice(0, 2).join(" · ") || "See its practice card for details.");
-  const chip = "background:rgba(255,255,255,.13);color:#fff;border-radius:99px;padding:6px 12px;font-weight:600;font-size:13px;text-decoration:none;white-space:nowrap";
+  const chip = "background:#F2F6FA;border:1px solid #DDE5EE;color:#0A1628;border-radius:99px;padding:6px 12px;font-weight:600;font-size:13px;text-decoration:none;white-space:nowrap";
   const chips = [
     billing && billing.quotes_waiting ? `<a href="/app/billing" style="${chip}">${billing.quotes_waiting} quote${billing.quotes_waiting > 1 ? "s" : ""} waiting</a>` : "",
     billing && billing.unpaid ? `<a href="/app/billing" style="${chip}">${billing.unpaid} unpaid invoice${billing.unpaid > 1 ? "s" : ""}</a>` : "",
     totTickets ? `<span style="${chip}">${totTickets} open ticket${totTickets > 1 ? "s" : ""}</span>` : "",
   ].filter(Boolean).join("");
-  const band = `<div class="card" style="padding:0;overflow:hidden;margin-bottom:16px">
-    <div style="background:linear-gradient(135deg,#0A1628 0%,#14335F 100%);color:#fff;padding:18px 22px;display:flex;justify-content:space-between;gap:14px;flex-wrap:wrap;align-items:center">
-      <div><div style="font-size:18px;font-weight:800">${esc(bandMain)}</div>
-      <div style="color:#B9C7DC;margin-top:3px">${esc(bandSub)}</div></div>
+  const band = `<div class="card" style="margin-bottom:16px">
+    <div style="display:flex;justify-content:space-between;gap:14px;flex-wrap:wrap;align-items:center">
+      <div><div style="display:flex;align-items:center;gap:9px;font-size:17px;font-weight:800">${bandDot}<span>${bandMainHtml}</span></div>
+      <div class="muted" style="margin-top:4px;margin-left:19px">${esc(bandSub)}</div></div>
       ${chips ? `<div style="display:flex;gap:8px;flex-wrap:wrap">${chips}</div>` : ""}
     </div></div>`;
   const orgName = locs.length ? locs[0].customer_name : "";
