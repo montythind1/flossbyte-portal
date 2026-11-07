@@ -340,7 +340,7 @@ export async function appHome(env, request, user) {
     <div class="stat"><b>${billing ? billing.unpaid || 0 : 0}</b><span>Unpaid invoices</span></div>
   </div>`;
   const orgName = locs.length ? locs[0].customer_name : "";
-  const body = `${orgRail(user, "practices", orgName || "My Portal", locs)}<h1 style="margin-bottom:14px">${esc(orgName || "Your practices")}</h1>
+  const body = `${orgRail(user, "practices", orgName || "My Portal", locs)}<h1 style="margin-bottom:14px">Your practices</h1>
     ${band}
     ${strip}
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px">${cards.join("")}</div>`;
