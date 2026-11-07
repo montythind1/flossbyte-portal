@@ -7,6 +7,7 @@ import { sendEmail, wrap, inviteEmail, newCustomerNoticeEmail, ownershipTransfer
 import { resendInviteEmail } from "./pages-public.js";
 import { runUnifiSync, lastUnifiSync } from "./unifi.js";
 import { runSophosSync, lastSophosSync } from "./sophos.js";
+import { runAteraSync, lastAteraSync } from "./atera.js";
 
 function origin(env) { return env.APP_ORIGIN || "https://portal.flossbyte.com"; }
 function q(request) { return new URL(request.url).searchParams; }
@@ -214,6 +215,7 @@ export async function activityPage(env, request, user) {
     if (prodName.has(d)) return esc(prodName.get(d));
     if (d.startsWith("unifi:")) return "UniFi site";
     if (d.startsWith("sophos:")) return "Sophos tenant";
+    if (d.startsWith("atera:")) return "Atera customer";
     return esc(d);
   };
   const dateFmt = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "America/Los_Angeles" });
@@ -1380,7 +1382,7 @@ async function siteMappingBlock(env, provider, heading, emptyNote) {
         <select name="location_id">${locOptions(s.location_id)}</select>
         <button class="btn small" type="submit">Save</button></form></td></tr>`).join("");
     return `<h3 style="margin-top:22px">${heading}</h3>
-      <div class="tscroll"><table class="stack"><thead><tr><th>${provider === "unifi" ? "UniFi site" : "Sophos tenant"}</th><th>Portal location</th></tr></thead><tbody>${siteRows}</tbody></table></div>`;
+      <div class="tscroll"><table class="stack"><thead><tr><th>${provider === "unifi" ? "UniFi site" : provider === "atera" ? "Atera customer" : "Sophos tenant"}</th><th>Portal location</th></tr></thead><tbody>${siteRows}</tbody></table></div>`;
   } catch {
     return `<h3 style="margin-top:22px">${heading}</h3><p class="muted">The database update for device sync (migration 0007) has not been applied yet, so sites cannot be listed.</p>`;
   }
@@ -1422,15 +1424,18 @@ function lastRunHtml(last, unitLabel) {
     ${srow("Not imported (site not mapped)", last.unmappedDevices)}
     ${last.clientsSeen != null ? srow("Connected devices", `${last.clientsSeen} seen · ${last.clientsAdded || 0} added · ${last.clientsUpdated || 0} updated · ${last.clientsOfflined || 0} offline`) : ""}
     ${last.snapshots != null ? srow("Network snapshots updated", last.snapshots) : ""}
+    ${last.patchAgents != null ? srow("Computers with patch state", last.patchAgents) : ""}
+    ${last.alerts != null ? srow("Open alerts mirrored", last.alerts) : ""}
     ${last.changesLogged ? srow("Changes logged", last.changesLogged) : ""}` : ""}
     ${errs}${checks}</div>`;
 }
 
 export async function syncPage(env, request, user) {
-  const [lastUnifi, lastSophos, unifiMap, sophosMap] = await Promise.all([
-    lastUnifiSync(env), lastSophosSync(env),
+  const [lastUnifi, lastSophos, lastAtera, unifiMap, sophosMap, ateraMap] = await Promise.all([
+    lastUnifiSync(env), lastSophosSync(env), lastAteraSync(env),
     siteMappingBlock(env, "unifi", "UniFi sites", "No UniFi sites discovered yet. Once the API key is saved, run a sync and every site on the account will appear here, ready to map to a location."),
     siteMappingBlock(env, "sophos", "Sophos tenants", "No Sophos tenants discovered yet. Once the API credentials are saved, run a sync and every tenant will appear here, ready to map to a location."),
+    siteMappingBlock(env, "atera", "Atera customers", "No Atera customers discovered yet. Once the API key is saved, run a sync and every customer (split by site, when Atera names sites) will appear here, ready to map to a location."),
   ]);
   const mutedRow = await env.DB.prepare("SELECT value FROM system_state WHERE key = 'alerts_muted_until'").first().catch(() => null);
   const mutedUntil = mutedRow && mutedRow.value && new Date(mutedRow.value).getTime() > Date.now() ? mutedRow.value : "";
@@ -1449,9 +1454,15 @@ export async function syncPage(env, request, user) {
         : "Not connected yet. Create an API credential in Sophos Central (partner or tenant admin, API credentials), then save the two values in Cloudflare as the secrets SOPHOS_CLIENT_ID and SOPHOS_CLIENT_SECRET. After that the portal polls Sophos Central every hour on its own."}</p>
       <form method="post" action="/admin/sync/run-sophos"><button class="btn" type="submit">Sync now</button></form>
       ${lastRunHtml(lastSophos, "Tenants")}</div>
+    <div class="card"><h3>Atera</h3>
+      <p class="muted">${env.ATERA_API_KEY
+        ? "An API key is saved, so the portal polls Atera on the same cycle and keeps each mapped location's computer records current: operating system, hardware, serial numbers, signed-in user, last reboot, waiting Windows patches (refreshed hourly), and open Atera alerts. Software lists are not in the Atera API; they arrive by the scheduled script instead."
+        : "Not connected yet. In Atera, open Admin, then Data management, then API, and copy the API key. Save it in Cloudflare as the secret ATERA_API_KEY. After that the portal polls Atera on its own; you map each Atera customer to a location below."}</p>
+      <form method="post" action="/admin/sync/run-atera"><button class="btn" type="submit">Sync now</button></form>
+      ${lastRunHtml(lastAtera, "Customers")}</div>
     <div class="card"><h3>Which site is which office?</h3>
       <p class="muted">Devices are imported only after you map a site or tenant to a location. Devices from unmapped ones are counted in the sync summaries but never added.</p>
-      ${unifiMap}${sophosMap}</div>
+      ${unifiMap}${sophosMap}${ateraMap}</div>
     <div class="card"><h3>Alerts &amp; monthly report</h3>
       <p class="muted">When a key device (gateway, server, firewall) goes offline, or a whole office goes dark, the portal emails the FlossByte admins right after that check. ${mutedUntil
         ? `<b>Alerts are paused until ${esc(mutedUntil.slice(0, 16).replace("T", " "))} UTC.</b>`
@@ -1568,7 +1579,7 @@ export async function sendMonthlyReports(env, force) {
 
 export async function syncMapPost(env, request, user) {
   const f = await request.formData();
-  const provider = String(f.get("provider") || "unifi") === "sophos" ? "sophos" : "unifi";
+  const provider = ["sophos", "atera"].includes(String(f.get("provider") || "")) ? String(f.get("provider")) : "unifi";
   const siteId = String(f.get("site_id") || "");
   const locRaw = String(f.get("location_id") || "");
   if (siteId) {
@@ -1594,6 +1605,14 @@ export async function syncRunSophosPost(env, request, user) {
   const text = s.ok
     ? `Sophos sync done. ${s.inserted} added, ${s.updated} updated, ${s.offlined} marked offline, ${s.unmappedDevices} not imported (tenant not mapped).`
     : `Sophos sync did not run: ${s.message}`;
+  return redirect("/admin/sync?msg=" + encodeURIComponent(text));
+}
+
+export async function syncRunAteraPost(env, request, user) {
+  const s = await runAteraSync(env);
+  const text = s.ok
+    ? `Atera sync done. ${s.inserted} added, ${s.updated} updated, ${s.offlined} marked offline, ${s.unmappedDevices} not imported (customer not mapped).`
+    : `Atera sync did not run: ${s.message}`;
   return redirect("/admin/sync?msg=" + encodeURIComponent(text));
 }
 

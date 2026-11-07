@@ -863,12 +863,27 @@ export async function equipmentDetailPage(env, request, user, locationId, equipm
       stats = devs.find((d) => d.mac && d.mac.toLowerCase() === String(row.mac).toLowerCase()) || null;
     } catch { stats = null; }
   }
+  // Atera computer detail (OS, hardware, patches, alerts) rides in
+  // snapshots keyed by agent; the entry names its equipment row.
+  let agentDetail = null;
+  let agentAlerts = [];
+  try {
+    const asnap = await env.DB.prepare("SELECT payload FROM network_snapshots WHERE location_id = ? AND kind = 'atera_agent'").bind(locationId).first();
+    const byAgent = asnap && asnap.payload ? (JSON.parse(asnap.payload).byAgent || {}) : {};
+    agentDetail = Object.values(byAgent).find((d) => d && d.equipmentId === row.id) || null;
+    if (agentDetail) {
+      const alsnap = await env.DB.prepare("SELECT payload FROM network_snapshots WHERE location_id = ? AND kind = 'atera_alerts'").bind(locationId).first();
+      const allAlerts = alsnap && alsnap.payload ? (JSON.parse(alsnap.payload).alerts || []) : [];
+      const nm = String(row.name || "").toLowerCase();
+      agentAlerts = allAlerts.filter((al) => al.device && nm && (nm.includes(String(al.device).toLowerCase()) || String(al.device).toLowerCase().includes(nm)));
+    }
+  } catch { agentDetail = null; agentAlerts = []; }
   const statusPill = row.status === "online" ? `<span class="pill on">Online</span>`
     : row.status === "offline" ? `<span class="pill off">Offline</span>` : `<span class="pill">${esc(row.status)}</span>`;
   const upFmt = (sec) => { if (typeof sec !== "number") return ""; const d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600); return d ? `${d}d ${h}h` : `${h}h`; };
   const bn = baseName(row);
   const renamed = (row.external_id && renames[row.external_id]) || (row.mac && renames[row.mac]);
-  const recordLabel = row.source === "unifi" || row.source === "unifi-client" ? "Synced from UniFi" : row.source === "sophos" ? "Synced from Sophos" : "Added by FlossByte";
+  const recordLabel = row.source === "unifi" || row.source === "unifi-client" ? "Synced from UniFi" : row.source === "sophos" ? "Synced from Sophos" : row.source === "atera" ? "Synced from Atera" : "Added by FlossByte";
   // Header band: navy, with the handful of facts people actually come
   // for (IP, uptime, last seen) as quiet highlights.
   const quick = [
@@ -917,6 +932,18 @@ export async function equipmentDetailPage(env, request, user, locationId, equipm
     ${typeof stats.mem === "number" ? drow("Memory", `${Math.round(stats.mem)}% used`) : ""}
     ${typeof stats.uptimeSec === "number" ? drow("Uptime", upFmt(stats.uptimeSec)) : ""}
     </div>` : "";
+  const computerCard = agentDetail ? `<div class="card"><h3 style="margin-top:0">Computer</h3>
+    ${agentDetail.os ? drow("Operating system", esc(agentDetail.os)) : ""}
+    ${agentDetail.cpu ? drow("Processor", esc(agentDetail.cpu)) : ""}
+    ${agentDetail.memoryGb ? drow("Memory", `${agentDetail.memoryGb} GB`) : ""}
+    ${agentDetail.user ? drow("Signed in as", esc(agentDetail.user)) : ""}
+    ${agentDetail.lastReboot ? drow("Last restarted", esc(relTime(agentDetail.lastReboot))) : ""}
+    ${agentDetail.patches ? drow("Windows updates", agentDetail.patches.count > 0
+      ? `${agentDetail.patches.count} waiting <span class="pill warn">needs updates</span>`
+      : `Up to date`) : ""}
+    ${agentDetail.patches && agentDetail.patches.titles && agentDetail.patches.titles.length ? `<p class="muted" style="margin:8px 0 0;font-size:12.5px">Waiting: ${agentDetail.patches.titles.slice(0, 3).map((t) => esc(t)).join(" · ")}${agentDetail.patches.count > 3 ? ` · and ${agentDetail.patches.count - 3} more` : ""}</p>` : ""}
+    ${agentAlerts.length ? `<p style="margin:12px 0 4px"><b>Atera alerts</b></p>${agentAlerts.slice(0, 4).map((al) => `<p class="muted" style="margin:0 0 4px">${esc(al.title)}${al.severity ? ` (${esc(al.severity)})` : ""}</p>`).join("")}` : ""}
+    <p class="muted" style="margin:10px 0 0;font-size:12.5px">Computer details from Atera${agentDetail.lastSeen ? ` · checked ${esc(relTime(agentDetail.lastSeen))}` : ""}. Software installed on this computer arrives by Atera's scheduled report.</p></div>` : "";
   const kids = children.length ? `<div class="card"><h3 style="margin-top:0">Plugged into this device</h3>
     ${children.slice(0, 15).map((c) => `<div style="display:flex;justify-content:space-between;gap:12px;padding:8px 0;border-bottom:1px solid #EEF2F7"><a href="/app/locations/${locationId}/equipment/${c.id}" style="font-weight:600;color:inherit;text-decoration:none">${esc(displayName(c, renames))}</a><span class="muted">${esc(deviceKind(c))}${c.ip_address ? " · " + esc(c.ip_address) : ""}</span></div>`).join("")}
     ${children.length > 15 ? `<p class="muted" style="margin-bottom:0">and ${children.length - 15} more</p>` : ""}</div>` : "";
@@ -925,7 +952,7 @@ export async function equipmentDetailPage(env, request, user, locationId, equipm
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px;align-items:start">
       <div class="card"><h3 style="margin-top:0">Details</h3>${detailRows || '<p class="muted">Nothing else on file for this device.</p>'}
       ${row.notes ? `<p style="margin:14px 0 0"><span class="muted">Notes</span><br>${esc(row.notes)}</p>` : ""}</div>
-      <div style="display:grid;gap:16px">${parentCard}${health}${kids}</div>
+      <div style="display:grid;gap:16px">${parentCard}${computerCard}${health}${kids}</div>
     </div>`;
   return page({ title: title, user, body });
 }
@@ -1912,6 +1939,26 @@ export async function askAnswer(db, locationId, question) {
     }
     if (/device health|cpu|memory|health of/.test(q) && ((snaps.device_stats || {}).devices || []).length) {
       parts.push("Device health:\n" + snaps.device_stats.devices.slice(0, 10).map((d) => `• ${d.name || d.mac}: CPU ${d.cpu != null ? Math.round(d.cpu) + "%" : "n/a"}, memory ${d.mem != null ? Math.round(d.mem) + "%" : "n/a"}`).join("\n"));
+    }
+    // Atera computer facts: patch state and operating systems.
+    const agentEntries = Object.values((snaps.atera_agent || {}).byAgent || {}).filter((d) => d && d.equipmentId);
+    if (agentEntries.length && /patch|windows update|updates? (waiting|pending|needed)|need updates|up to date/.test(q)) {
+      const { results: eqrows } = await db.prepare("SELECT id, name FROM equipment WHERE location_id = ?").bind(locationId).all();
+      const nameOf = new Map((eqrows || []).map((r) => [r.id, r.name]));
+      const behind = agentEntries.filter((d) => d.patches && d.patches.count > 0);
+      if (behind.length) {
+        parts.push("Windows updates waiting (from Atera):\n" + behind.map((d) => `• ${nameOf.get(d.equipmentId) || "Computer"}: ${d.patches.count} update${d.patches.count === 1 ? "" : "s"} waiting`).join("\n"));
+      } else if (agentEntries.some((d) => d.patches)) {
+        parts.push("Every computer Atera watches here is up to date on Windows updates.");
+      }
+    }
+    if (agentEntries.length && /operating system|what os|windows version|which windows/.test(q)) {
+      const { results: eqrows } = await db.prepare("SELECT id, name FROM equipment WHERE location_id = ?").bind(locationId).all();
+      const nameOf = new Map((eqrows || []).map((r) => [r.id, r.name]));
+      const withOs = agentEntries.filter((d) => d.os);
+      if (withOs.length) {
+        parts.push("Operating systems (from Atera):\n" + withOs.map((d) => `• ${nameOf.get(d.equipmentId) || "Computer"}: ${d.os}`).join("\n"));
+      }
     }
   }
   // "What is X connected to?" answered from the topology parents.
