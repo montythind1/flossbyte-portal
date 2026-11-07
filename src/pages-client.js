@@ -186,7 +186,7 @@ function orgRail(user, active, orgName, locs) {
     ? `<div class="rail-label">Go to a practice</div>${locs.map((l) => `<a class="rail-item" href="/app/locations/${l.id}">${icon("pin")}${esc(l.name)}</a>`).join("")}`
     : "";
   return `<div class="shell"><aside class="rail">
-    <div class="rail-context"><div class="rc-t">${esc(orgName || "My Portal")}</div><div class="rc-s">Client portal</div></div>
+    <div class="rail-context"><div class="rc-t">${esc(orgName || "My Portal")}</div></div>
     ${item("practices", "/app", "Your practices", "home")}${item("billing", "/app/billing", "Billing", "receipt")}
     ${practiceLinks}${account}</aside><div class="shell-main">`;
 }
