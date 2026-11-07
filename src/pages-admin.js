@@ -1389,7 +1389,7 @@ async function siteMappingBlock(env, provider, heading, emptyNote) {
 function lastRunHtml(last, unitLabel) {
   if (!last) return `<p class="muted" style="margin-top:12px">No sync has run yet.</p>`;
   const srow = (label, val) => val != null && val !== ""
-    ? `<div style="display:flex;justify-content:space-between;gap:14px;padding:6px 0;border-bottom:1px solid #EEF2F7"><span class="muted">${label}</span><span style="text-align:right;font-weight:600">${val}</span></div>` : "";
+    ? `<div style="display:flex;justify-content:space-between;gap:14px;padding:6px 0;border-bottom:1px solid #EEF2F7"><span style="color:#45566E;font-weight:600">${label}</span><span style="text-align:right;font-weight:600">${val}</span></div>` : "";
   const SECTION_LABEL = {
     wans: "WAN connections", networks: "Networks", ssids: "WiFi broadcasts", fwPolicies: "Firewall rules",
     fwZones: "Firewall zones", aclRules: "Access rules", vpnServers: "VPN servers",

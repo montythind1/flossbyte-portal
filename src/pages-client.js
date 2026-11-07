@@ -261,7 +261,7 @@ export async function appHome(env, request, user) {
   // The rail already carries Billing, Services, and Team, so this page
   // is only about the practices: an organization summary strip, then
   // one status card per practice. No link is repeated.
-  const srow = (label, val) => `<div style="display:flex;justify-content:space-between;gap:14px;padding:8px 0;border-bottom:1px solid #EEF2F7"><span class="muted">${label}</span><span style="text-align:right;font-weight:600">${val}</span></div>`;
+  const srow = (label, val) => `<div style="display:flex;justify-content:space-between;gap:14px;padding:8px 0;border-bottom:1px solid #EEF2F7"><span style="color:#45566E;font-weight:600">${label}</span><span style="text-align:right;font-weight:600">${val}</span></div>`;
   let totOnline = 0, totDevices = 0, totTickets = 0;
   const cards = [];
   for (const loc of locs) {
@@ -723,7 +723,7 @@ export async function equipmentDetailPage(env, request, user, locationId, equipm
     </div></div>`;
   // Details as a quiet divider list, not boxes.
   const drow = (label, valueHtml) =>
-    `<div style="display:flex;justify-content:space-between;gap:16px;padding:10px 0;border-bottom:1px solid #EEF2F7"><span class="muted">${label}</span><span style="text-align:right;font-weight:600">${valueHtml}</span></div>`;
+    `<div style="display:flex;justify-content:space-between;gap:16px;padding:10px 0;border-bottom:1px solid #EEF2F7"><span style="color:#45566E;font-weight:600">${label}</span><span style="text-align:right;font-weight:600">${valueHtml}</span></div>`;
   const expRow = (label, d) => {
     if (!d) return "";
     const days = daysUntil(d);
@@ -1082,7 +1082,7 @@ function wpCopy(b){var c=b.parentElement.querySelector('.wp');if(!c||!navigator.
     const measured = ispNow && ispNow.downMbps != null ? Math.round(ispNow.downMbps) : null;
     const pct = promised && measured != null ? Math.min(100, Math.round((measured / promised) * 100)) : null;
     const cDays = svc.contractEnd ? daysUntil(svc.contractEnd) : null;
-    const srow = (label, val) => val ? `<div style="display:flex;justify-content:space-between;gap:16px;padding:8px 0;border-bottom:1px solid #EEF2F7"><span class="muted">${label}</span><span style="text-align:right;font-weight:600">${val}</span></div>` : "";
+    const srow = (label, val) => val ? `<div style="display:flex;justify-content:space-between;gap:16px;padding:8px 0;border-bottom:1px solid #EEF2F7"><span style="color:#45566E;font-weight:600">${label}</span><span style="text-align:right;font-weight:600">${val}</span></div>` : "";
     ispCard = `<div class="card"><h2 style="margin-top:0">Internet plan</h2>
       ${srow("Provider", esc(svc.provider || ""))}
       ${srow("Plan", esc(svc.plan || ""))}
