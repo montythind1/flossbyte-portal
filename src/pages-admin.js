@@ -1697,32 +1697,70 @@ function dupPairHtml(p) {
   const rec = (r, other) => `<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:8px 0;border-bottom:1px solid #EEF2F7">
       <div style="flex:1;min-width:220px"><a href="/app/locations/${r.location_id}/equipment/${r.id}" style="font-weight:700;color:inherit;text-decoration:none">${esc(r.name)}</a>
       <div class="muted" style="font-size:12.5px">${esc(sourceLabel(r.source))} · ${esc(r.type || "Device")}${r.mac ? ` · MAC ${esc(r.mac)}` : ""}${r.serial ? ` · Serial ${esc(r.serial)}` : ""}${r.ip_address ? ` · ${esc(r.ip_address)}` : ""} · ${esc(r.status)}</div></div>
-      <form method="post" action="/admin/sync/merge"><input type="hidden" name="keep" value="${r.id}"><input type="hidden" name="drop" value="${other.id}"><button class="btn small secondary" type="submit">Keep this record</button></form></div>`;
-  return `<div style="border:1px solid #E3EAF2;border-radius:10px;padding:6px 14px 10px;margin:0 0 12px">
+      <form method="post" action="/admin/sync/merge" class="dup-act"><input type="hidden" name="keep" value="${r.id}"><input type="hidden" name="drop" value="${other.id}"><button class="btn small secondary" type="submit">Keep this record</button></form></div>`;
+  return `<div class="duppair" style="border:1px solid #E3EAF2;border-radius:10px;padding:6px 14px 10px;margin:0 0 12px">
     <p style="margin:8px 0 2px"><b>${esc(p.a.cust_name)}: ${esc(p.a.loc_name)}</b> ${p.reasons.map((r) => `<span class="pill warn">${esc(r)}</span>`).join(" ")}</p>
     ${rec(p.a, p.b)}${rec(p.b, p.a)}
-    <form method="post" action="/admin/sync/dup-dismiss" style="margin-top:8px"><input type="hidden" name="a" value="${p.a.id}"><input type="hidden" name="b" value="${p.b.id}"><button class="btn small secondary" type="submit">Not the same device</button></form></div>`;
+    <form method="post" action="/admin/sync/dup-dismiss" class="dup-act" style="margin-top:8px"><input type="hidden" name="a" value="${p.a.id}"><input type="hidden" name="b" value="${p.b.id}"><button class="btn small secondary" type="submit">Not the same device</button></form></div>`;
 }
 async function dupCardHtml(env) {
   try {
     const pairs = await findDuplicatePairs(env);
     return `<div class="card"><h3>Possible duplicates</h3>
       <p class="muted">Different systems sometimes report the same device in ways that cannot be matched automatically, a laptop on its dock versus on WiFi, for example. Keep one record and the other merges into it (best details from both, links and computer details re-pointed), or mark the pair as two different devices and it will not be flagged again.</p>
-      ${pairs.length ? pairs.map(dupPairHtml).join("") : `<p class="muted">No possible duplicates right now.</p>`}</div>`;
+      ${pairs.length ? `<div id="dup-list">${pairs.map(dupPairHtml).join("")}</div>
+  <script>
+  (function(){
+    var list = document.getElementById('dup-list');
+    if (!list) return;
+    list.addEventListener('submit', function(ev){
+      var form = ev.target;
+      if (!form.classList || !form.classList.contains('dup-act')) return;
+      ev.preventDefault();
+      var pair = form.closest ? form.closest('.duppair') : null;
+      var btns = form.querySelectorAll('button');
+      for (var i = 0; i < btns.length; i++) btns[i].disabled = true;
+      fetch(form.action, { method: 'POST', body: new FormData(form), headers: { 'Accept': 'application/json' } })
+        .then(function(r){ return r.json(); })
+        .then(function(d){
+          if (d && d.ok) {
+            if (pair) {
+              pair.style.transition = 'opacity .25s';
+              pair.style.opacity = '0';
+              setTimeout(function(){
+                pair.remove();
+                if (!list.querySelector('.duppair')) {
+                  var p = document.createElement('p');
+                  p.className = 'muted';
+                  p.textContent = 'No possible duplicates right now.';
+                  list.appendChild(p);
+                }
+              }, 260);
+            }
+          } else { form.submit(); }
+        })
+        .catch(function(){ form.submit(); });
+    });
+  })();
+  </script>` : `<p class="muted">No possible duplicates right now.</p>`}</div>`;
   } catch {
     return `<div class="card"><h3>Possible duplicates</h3><p class="muted">The duplicate check could not run on this database yet.</p></div>`;
   }
 }
 
 export async function syncMergePost(env, request, user) {
+  const wantsJson = (request.headers.get("Accept") || "").includes("application/json");
   const f = await request.formData();
   const keepId = Number(f.get("keep") || 0);
   const dropId = Number(f.get("drop") || 0);
   const back = (msg) => redirect("/admin/sync?msg=" + encodeURIComponent(msg));
-  if (!keepId || !dropId || keepId === dropId) return back("Those two records could not be merged.");
+  const done = (ok, msg) => wantsJson
+    ? new Response(JSON.stringify({ ok, msg }), { status: ok ? 200 : 400, headers: { "Content-Type": "application/json" } })
+    : back(msg);
+  if (!keepId || !dropId || keepId === dropId) return done(false, "Those two records could not be merged.");
   const keep = await env.DB.prepare("SELECT * FROM equipment WHERE id = ?").bind(keepId).first();
   const drop = await env.DB.prepare("SELECT * FROM equipment WHERE id = ?").bind(dropId).first();
-  if (!keep || !drop || keep.location_id !== drop.location_id) return back("Those two records could not be merged.");
+  if (!keep || !drop || keep.location_id !== drop.location_id) return done(false, "Those two records could not be merged.");
   const take = (k, d) => (k !== null && k !== undefined && k !== "" ? k : d);
   // Ownership: a hand-added keeper adopts the synced record's identity,
   // so that sync keeps maintaining the merged row instead of the two
@@ -1785,10 +1823,11 @@ export async function syncMergePost(env, request, user) {
   } catch { /* detail re-points on the next sync anyway */ }
   await env.DB.prepare("DELETE FROM equipment WHERE id = ?").bind(drop.id).run();
   await audit(env.DB, user.id, "equipment_merge", "location", keep.location_id, `Kept #${keep.id} (${keep.name}); merged in #${drop.id} (${drop.name})`);
-  return back(`Merged. "${drop.name}" is now part of "${keep.name}", one record with the best details from both.`);
+  return done(true, `Merged. "${drop.name}" is now part of "${keep.name}", one record with the best details from both.`);
 }
 
 export async function syncDupDismissPost(env, request, user) {
+  const wantsJson = (request.headers.get("Accept") || "").includes("application/json");
   const f = await request.formData();
   const a = Number(f.get("a") || 0), b = Number(f.get("b") || 0);
   if (a && b) {
@@ -1799,6 +1838,7 @@ export async function syncDupDismissPost(env, request, user) {
       "INSERT INTO system_state (key, value) VALUES ('dup_dismissed', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
       .bind(JSON.stringify([...set])).run();
   }
+  if (wantsJson) return new Response(JSON.stringify({ ok: !!(a && b) }), { status: a && b ? 200 : 400, headers: { "Content-Type": "application/json" } });
   return redirect("/admin/sync?msg=" + encodeURIComponent("Marked as two different devices. That pair will not be flagged again."));
 }
 
