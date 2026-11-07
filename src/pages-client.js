@@ -242,21 +242,55 @@ export async function appHome(env, request, user) {
     return page({ title: "Waiting", user, body });
   }
   if (ids.size === 1) return redirect(`/app/locations/${[...ids][0]}`);
+  const db = env.DB;
+  const locs = [];
+  for (const id of ids) { const loc = await getLocation(db, id); if (loc) locs.push(loc); }
+  // The rail already carries Billing, Services, and Team, so this page
+  // is only about the practices: an organization summary strip, then
+  // one status card per practice. No link is repeated.
+  const srow = (label, val) => `<div style="display:flex;justify-content:space-between;gap:14px;padding:8px 0;border-bottom:1px solid #EEF2F7"><span class="muted">${label}</span><span style="text-align:right;font-weight:600">${val}</span></div>`;
+  let totOnline = 0, totDevices = 0, totTickets = 0;
   const cards = [];
-  for (const id of ids) {
-    const loc = await getLocation(env.DB, id);
-    if (loc) cards.push(`<a class="tile" href="/app/locations/${id}"><span class="t">${esc(loc.name)}</span>
-      <span class="d">${esc(loc.customer_name)}${loc.city ? ", " + esc(loc.city) : ""}</span></a>`);
+  for (const loc of locs) {
+    const c = await db.prepare(
+      "SELECT COUNT(*) AS total, SUM(CASE WHEN status = 'online' THEN 1 ELSE 0 END) AS online FROM equipment WHERE location_id = ?")
+      .bind(loc.id).first();
+    const t = await db.prepare(
+      "SELECT COUNT(*) AS n FROM tickets WHERE location_id = ? AND status != 'closed'").bind(loc.id).first();
+    const health = await officeHealth(db, loc.id);
+    const snap = await db.prepare(
+      "SELECT payload FROM network_snapshots WHERE location_id = ? AND kind = 'internet'").bind(loc.id).first();
+    let isp = null;
+    if (snap) { try { isp = JSON.parse(snap.payload || "{}").isp || null; } catch { isp = null; } }
+    totDevices += c.total || 0; totOnline += c.online || 0; totTickets += t.n || 0;
+    const pill = health && typeof health.score === "number"
+      ? `<span class="pill ${health.score >= 85 ? "on" : health.score < 60 ? "off" : "warn"}">Health: ${esc(health.label)} ${health.score}</span>` : "";
+    cards.push(`<a class="card" href="/app/locations/${loc.id}" style="text-decoration:none;color:inherit;display:block">
+      <div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start">
+        <div><div style="font-size:18px;font-weight:800">${esc(loc.name)}</div>
+        <div class="muted">${esc(loc.customer_name)}${loc.city ? " · " + esc(loc.city) : ""}</div></div>
+        <div>${pill}</div></div>
+      <div style="margin-top:8px">
+      ${srow("Internet", isp ? `${isp.uptimePct != null && isp.uptimePct >= 99 ? "Working" : "Check connection"}${isp.ispName ? " · " + esc(isp.ispName) : ""}` : "—")}
+      ${srow("Devices online", c.total ? `${c.online || 0} of ${c.total}` : "None recorded")}
+      ${srow("Open tickets", String(t.n || 0))}
+      </div>
+      <p style="margin:12px 0 0;color:#0A7C6E;font-weight:700">Open practice ›</p></a>`);
   }
-  if (user.role === "customer_admin") {
-    cards.push(`<a class="tile" href="/app/services"><span class="t">Services</span>
-      <span class="d">What each practice has with FlossByte, and requesting a service you do not have yet.</span></a>`);
-    cards.push(`<a class="tile" href="/app/team"><span class="t">Team</span>
-      <span class="d">People with a login for your organization, and removing people who left.</span></a>`);
-  }
-  cards.push(`<a class="tile" href="/app/billing"><span class="t">Billing</span>
-    <span class="d">Quotes waiting for your review, and invoices with payment status.</span></a>`);
-  const body = `${orgRail(user, "practices", "My Portal")}<h1>Your practices</h1><div class="grid">${cards.join("")}</div>`;
+  const billing = locs.length ? await db.prepare(
+    "SELECT COUNT(*) AS unpaid FROM invoices WHERE customer_id = ? AND status = 'unpaid'")
+    .bind(locs[0].customer_id).first().catch(() => null) : null;
+  const strip = `<div class="statgrid">
+    <div class="stat"><b>${locs.length}</b><span>${locs.length === 1 ? "Practice" : "Practices"}</span></div>
+    <div class="stat"><b>${totDevices ? `${totOnline} of ${totDevices}` : "0"}</b><span>Devices online</span></div>
+    <div class="stat"><b>${totTickets}</b><span>Open tickets</span></div>
+    <div class="stat"><b>${billing ? billing.unpaid || 0 : 0}</b><span>Unpaid invoices</span></div>
+  </div>`;
+  const orgName = locs.length ? locs[0].customer_name : "";
+  const body = `${orgRail(user, "practices", "My Portal")}<h1 style="margin-bottom:2px">Your practices</h1>
+    ${orgName ? `<p class="muted" style="margin:0 0 14px">${esc(orgName)}</p>` : ""}
+    ${strip}
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px">${cards.join("")}</div>`;
   return page({ title: "My Portal", user, body });
 }
 
