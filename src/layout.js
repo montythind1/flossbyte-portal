@@ -221,6 +221,14 @@ html{scroll-padding-top:84px;scroll-padding-bottom:120px}
 .gpage .gstream{flex:1 1 auto;overflow-y:auto;min-height:0;overscroll-behavior:contain}
 .gpage .gcomposer{position:static}
 @media (max-width:900px){.gpage{height:calc(100vh - 300px);height:calc(100dvh - 300px)}}
+.app-main{max-width:none;margin:0;padding:0}
+.gapp{height:100vh;height:100dvh;display:flex;flex-direction:column;background:var(--bg)}
+.gbar{min-height:54px;display:flex;align-items:center;gap:14px;padding:6px 16px;background:#fff;border-bottom:1px solid var(--line)}
+.gbar .gback{font-weight:700;color:var(--ink);text-decoration:none;white-space:nowrap}
+.gbar .gtitle{font-family:"Plus Jakarta Sans",Inter,sans-serif;font-weight:800;font-size:17px}
+.gbar .gsp{flex:1}
+.gapp .gpage{flex:1 1 auto;height:auto;min-height:0;width:min(920px,100%);margin:0 auto;padding:12px 16px 12px;box-sizing:border-box}
+.gapp .gpage>.card{border:none;background:transparent;box-shadow:none;padding:0;border-radius:0}
 .gcomposer .btn{border-radius:10px;flex:0 0 auto}
 .gempty{text-align:center;padding:26px 8px 8px}
 .gmark{display:inline-flex;align-items:center;justify-content:center;width:46px;height:46px;border-radius:50%;background:var(--navy,#0A1628);color:#fff;font-family:'Plus Jakarta Sans',Inter,sans-serif;font-weight:800;font-size:20px}
@@ -286,7 +294,7 @@ a{color:#000;text-decoration:none}
 }
 `;
 
-export function page({ title, user, body, flash, error, auth, bare }) {
+export function page({ title, user, body, flash, error, auth, bare, app }) {
   const head = `<head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(title)} | FlossByte Portal</title>
@@ -372,14 +380,14 @@ document.addEventListener("keydown",function(e){if(e.key==="Escape")close();});}
   // them explicitly here so every page's markup is balanced.
   const shellClose = body.includes('<div class="shell">') ? "</div></div>" : "";
   const html = `<!DOCTYPE html><html lang="en">${head}<body>
-<header class="site"><div class="header-in">
+${app ? "" : `<header class="site"><div class="header-in">
   <a class="brand" href="/">
     <img src="/assets/logo-icon.png" alt="FlossByte" width="27" height="40">
     <span><span class="brand-name">FlossByte</span><br><span class="brand-sub">Client Portal</span></span>
   </a>
   <nav class="top">${nav}</nav>
-</div></header>
-<main>
+</div></header>`}
+<main${app ? ' class="app-main"' : ""}>
 ${alerts}
 ${body}${shellClose}
 </main>

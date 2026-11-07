@@ -2634,17 +2634,17 @@ export async function askPage(env, request, user, locationId) {
     setInterval(tick, 4000);
   })();
   </script>` : "";
-  const body = `${locNav(loc, "ask")}
+  const body = `<div class="gapp">
+  <div class="gbar"><a class="gback" href="/app/locations/${locationId}">← ${esc(loc.name)}</a><span class="gtitle">${openThread ? "FlossByte Support" : "Genius"}</span><span class="gsp"></span>${endBtn}</div>
   <div class="gpage">
-  <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
-    <h1 style="margin:0">${openThread ? "FlossByte Support" : "Genius"}</h1>${endBtn}</div>
-  <p class="muted" ${openThread ? 'id="chat-status"' : ""} style="margin:6px 0 14px">${openThread ? esc(statusLine) : `From this office's records only. ${seeAll ? "You see everyone's conversations (admin login)." : "Private to your login; office admins can see them."}`}</p>
+  <p class="muted" ${openThread ? 'id="chat-status"' : ""} style="margin:2px 0 12px">${openThread ? esc(statusLine) : `From this office's records only. ${seeAll ? "You see everyone's conversations (admin login)." : "Private to your login; office admins can see them."}`}</p>
   <div class="card">
     ${emptyState}
     <div class="chat gstream" id="gstream">${streamInner}</div>
   </div>
   ${composer}
   ${underRow}
+  </div>
   </div>
   ${pollScript}
   ${typeScript}
@@ -2666,7 +2666,7 @@ export async function askPage(env, request, user, locationId) {
     requestAnimationFrame(function(){ fit(); toBottom(); });
   })();
   </script>`;
-  return page({ title: openThread ? "Live chat" : "Genius", user, body, bare: true });
+  return page({ title: openThread ? "Live chat" : "Genius", user, body, bare: true, app: true });
 }
 
 // Shared Genius pipeline for the form post and the in-place API:
