@@ -156,6 +156,10 @@ main:has(.shell){max-width:1300px}
 .rail-item{display:flex;align-items:center;gap:8px;width:100%;padding:9px 10px;border-radius:8px;color:var(--ink);text-decoration:none;font-size:14px;font-weight:600;background:none;border:none;border-left:3px solid transparent;cursor:pointer;font-family:inherit;text-align:left}
 a.rail-item:hover,button.rail-item:hover{background:#f0f4f8;color:var(--ink)}
 .rail-item.active{background:#e6f7f3;color:#00796b}
+details.card>summary{list-style:none}
+details.card>summary::-webkit-details-marker{display:none}
+.chev{display:inline-block;transition:transform .15s ease}
+details[open]>summary .chev{transform:rotate(90deg)}
 .rail .tab-btn{border-bottom:none;margin-bottom:0}
 .rail .tab-btn.active{color:#00796b;border-bottom-color:transparent}
 .rail-sep{border-top:1px solid var(--line);margin:10px 4px}

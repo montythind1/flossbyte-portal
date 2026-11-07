@@ -417,16 +417,27 @@ export async function servicesPage(env, request, user) {
   for (const loc of locs || []) locStates.push({ loc, states: await productStates(db, org, loc.id) });
   const products = locStates.length ? locStates[0].states : [];
   const reqChip = (loc, key) => `<form method="post" action="/app/locations/${loc.id}/request-product" style="margin:0"><input type="hidden" name="product" value="${esc(key)}"><button class="btn small" type="submit">Request</button></form>`;
-  const cards = products.map((p) => {
+  const cards = products.map((p, idx) => {
+    const n = locStates.length;
+    const onCount = locStates.reduce((acc, { states }) => acc + (states.some((s) => s.key === p.key && s.enabled) ? 1 : 0), 0);
+    const coverage = n === 0 ? "" : onCount === n ? (n === 1 ? "Included" : `Included at all ${n} offices`)
+      : onCount === 0 ? (n === 1 ? "Not included" : "Not included at any office")
+      : `Included at ${onCount} of ${n} offices`;
+    const dotColor = n > 0 && onCount === n ? "#0A7C6E" : onCount === 0 ? "#98A6B8" : "#b45309";
     const chips = locStates.map(({ loc, states }) => {
       const st = states.find((s) => s.key === p.key);
       return st && st.enabled
         ? `<span class="pill on">${esc(loc.name)} · Included</span>`
         : `<span style="display:inline-flex;align-items:center;gap:6px"><span class="pill off">${esc(loc.name)} · Not included</span>${reqChip(loc, p.key)}</span>`;
     }).join("");
-    return `<div class="card"><div style="font-weight:700;font-size:16px">${esc(p.name)}</div>
-      <div class="muted" style="margin-top:2px">${esc(PRODUCT_PLAIN[p.key] || p.description || "")}</div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;align-items:center">${chips}</div></div>`;
+    return `<details class="card" ${idx === 0 ? "open" : ""}>
+      <summary style="cursor:pointer;display:flex;justify-content:space-between;align-items:center;gap:12px">
+        <span style="font-weight:700;font-size:16px">${esc(p.name)}</span>
+        <span style="display:flex;align-items:center;gap:8px;flex:none"><span style="width:9px;height:9px;border-radius:50%;background:${dotColor};flex:none"></span><span class="muted" style="font-size:13px">${esc(coverage)}</span><span class="chev" aria-hidden="true" style="color:#98A6B8;font-size:20px;font-weight:700;line-height:1">›</span></span>
+      </summary>
+      <div class="muted" style="margin-top:8px">${esc(PRODUCT_PLAIN[p.key] || p.description || "")}</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;align-items:center">${chips}</div>
+    </details>`;
   });
   const rail = await railLocs(env, user);
   const body = `${orgRail(user, "services", cust ? cust.name : "My Portal", rail)}<h1>Services</h1>
