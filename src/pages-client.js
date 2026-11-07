@@ -9,6 +9,7 @@ import {
 import { sendEmail, quoteAcceptedNoticeEmail, ticketCreatedNoticeEmail, ticketReplyNoticeEmail, productRequestEmail } from "./email.js";
 import { splitName, joinName, normalizePhone } from "./auth.js";
 import { issueCollectorToken, collectorTokenState } from "./collector.js";
+import { buildGeniusContext, geniusAnswer, isExactLookupQuestion } from "./genius.js";
 
 function orgOrigin(env) { return env.APP_ORIGIN || "https://portal.flossbyte.com"; }
 
@@ -166,7 +167,7 @@ function locNav(loc, active) {
     ${item("overview", base, "Overview", "grid")}
     <a class="rail-item${["network", "equipment", "topology"].includes(active) ? " active" : ""}" href="${base}/network">${icon("topology")}Office IT</a>
     ${item("tickets", base + "/tickets", "Tickets", "ticket")}${item("documents", base + "/documents", "Documents", "folder")}
-    ${item("ask", base + "/ask", "Ask", "chat")}</aside><div class="shell-main">`;
+    ${item("ask", base + "/ask", "Genius", "chat")}</aside><div class="shell-main">`;
 }
 
 // Top tabs inside the Network section: the sidebar picks the place,
@@ -2250,33 +2251,81 @@ export async function askAnswer(db, locationId, question) {
 export async function askPage(env, request, user, locationId) {
   const { loc, error } = await guard(env, user, locationId);
   if (error) return denied(user, error);
+  const canEscalate = await laneOn(env.DB, loc.customer_id, locationId);
   const { results } = await env.DB.prepare(
     "SELECT * FROM ask_messages WHERE location_id = ? ORDER BY created_at DESC LIMIT 10").bind(locationId).all();
   const history = (results || []).reverse().map((m) => `<div class="msg q">${esc(m.question)}</div>
-    <div class="msg a">${esc(m.answer)}</div>`).join("");
+    <div class="msg a">${esc(m.answer)}</div>${canEscalate ? `<form method="post" action="/app/locations/${locationId}/ask/escalate" style="margin:2px 0 8px">
+      <input type="hidden" name="message_id" value="${m.id}">
+      <button class="btn small secondary" type="submit">Send this to FlossByte</button></form>` : ""}`).join("");
   const starter = (q) => `<form method="post" action="/app/locations/${locationId}/ask" style="margin:0"><input type="hidden" name="question" value="${esc(q)}"><button class="btn small secondary" type="submit">${esc(q)}</button></form>`;
-  const body = `${locNav(loc, "ask")}<h1>Ask</h1>
-    <div class="card"><p class="muted">Ask about your internet, WiFi, equipment, cameras, expiry dates, tickets, documents, and recent changes. Answers come only from what is recorded for this practice.</p>
+  const body = `${locNav(loc, "ask")}<h1>Genius</h1>
+    <div class="card"><p class="muted">Genius explains your internet, WiFi, equipment, cameras, expiry dates, tickets, documents, and recent changes in plain language. It answers only from what is recorded for this office.</p>
     <p class="muted" style="margin-bottom:6px">Try one of these:</p>
-    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px">${starter("Is our internet OK?")}${starter("What's the WiFi password?")}${starter("Which devices are offline?")}</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px">${starter("Is our internet OK?")}${starter("What's the WiFi password?")}${starter("Which devices are offline?")}${starter("Why is a computer offline?")}</div>
     <form method="post" action="/app/locations/${locationId}/ask">
-      <input name="question" placeholder="What is expiring in the next 90 days?" required>
-      <p style="margin-top:12px"><button class="btn" type="submit">Ask</button></p></form>
+      <input name="question" placeholder="Why is the front desk computer offline?" required>
+      <p style="margin-top:12px"><button class="btn" type="submit">Ask Genius</button></p></form>
     ${history ? `<div class="chat">${history}</div>` : ""}</div>`;
-  return page({ title: "Ask", user, body });
+  return page({ title: "Genius", user, body });
 }
 
 export async function askPost(env, request, user, locationId) {
   const { loc, error } = await guard(env, user, locationId);
   if (error) return denied(user, error);
   const f = await request.formData();
-  const question = String(f.get("question") || "").trim();
+  const question = String(f.get("question") || "").trim().slice(0, 1200);
   if (question) {
-    const answer = await askAnswer(env.DB, locationId, question);
+    const recordsAnswer = await askAnswer(env.DB, locationId, question);
+    let answer = recordsAnswer;
+    // Passwords and other exact identifiers never go through the
+    // model. Genius handles the conversational questions; the records
+    // answer remains the fallback whenever the model is unavailable.
+    if (!isExactLookupQuestion(question)) {
+      try {
+        const health = await officeHealth(env.DB, locationId);
+        const built = await buildGeniusContext(env.DB, loc, { health, userId: user.id });
+        const aiAnswer = await geniusAnswer(env, {
+          question,
+          context: built.context,
+          history: built.history,
+          recordsAnswer,
+        });
+        if (aiAnswer) answer = `${aiAnswer}\n(Answered by Genius from your own portal records only.)`;
+      } catch { answer = recordsAnswer; }
+    }
     await env.DB.prepare("INSERT INTO ask_messages (location_id, user_id, question, answer) VALUES (?, ?, ?, ?)")
       .bind(locationId, user.id, question, answer).run();
   }
   return redirect(`/app/locations/${locationId}/ask`);
+}
+
+export async function askEscalatePost(env, request, user, locationId) {
+  const { loc, error } = await guard(env, user, locationId);
+  if (error) return denied(user, error);
+  if (!(await laneOn(env.DB, loc.customer_id, locationId))) return redirect(`/app/locations/${locationId}/ask`);
+  const f = await request.formData();
+  const messageId = Number(f.get("message_id") || 0);
+  const msg = await env.DB.prepare(
+    "SELECT * FROM ask_messages WHERE id = ? AND location_id = ?").bind(messageId, locationId).first();
+  if (!msg) return denied(user, 404);
+  const title = `Genius help: ${String(msg.question || "Support request").slice(0, 90)}`;
+  const res = await env.DB.prepare(
+    "INSERT INTO tickets (location_id, title, priority, created_by) VALUES (?, ?, ?, ?)")
+    .bind(locationId, title, "normal", user.id).run();
+  const tid = res.meta.last_row_id;
+  const detail = `Sent from Genius by ${user.name}.\n\nQuestion:\n${msg.question}\n\nGenius answer:\n${msg.answer}`;
+  await env.DB.prepare("INSERT INTO ticket_updates (ticket_id, author_id, body) VALUES (?, ?, ?)").bind(tid, user.id, detail).run();
+  await audit(env.DB, user.id, "ticket_create", "ticket", tid, "Created from Genius");
+  if (user.kind === "customer") {
+    const mail = ticketCreatedNoticeEmail(env, {
+      customerName: loc.customer_name, locationName: loc.name,
+      title, priority: "normal", authorName: user.name,
+      link: `${orgOrigin(env)}/app/locations/${locationId}/tickets/${tid}`,
+    });
+    await alertFlossByte(env, "ticket_created", mail);
+  }
+  return redirect(`/app/locations/${locationId}/tickets/${tid}`);
 }
 
 // ---------- Quotes and invoices (organization level) ----------

@@ -230,6 +230,8 @@ async function route(request, env) {
   m = path.match(/^\/app\/locations\/(\d+)\/ask$/);
   if (m && method === "GET") return client.askPage(env, request, user, Number(m[1]));
   if (m && method === "POST") return client.askPost(env, request, user, Number(m[1]));
+  m = path.match(/^\/app\/locations\/(\d+)\/ask\/escalate$/);
+  if (m && method === "POST") return client.askEscalatePost(env, request, user, Number(m[1]));
 
   return notFound(user);
 }

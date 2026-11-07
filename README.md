@@ -3,8 +3,8 @@
 The customer portal for FlossByte, a dental IT support company. Customers sign
 in to see their own practice equipment (Sophos, UniFi, SonicWall, and more),
 license and warranty expiry dates, support tickets, documents, which FlossByte
-products they have, and an Ask feature that answers only from their own
-records. FlossByte runs everything from an admin console with per-customer
+products they have, and Genius, an AI assistant that answers only from
+their own records. FlossByte runs everything from an admin console with per-customer
 product on/off switches.
 
 Runs on Cloudflare Workers with a D1 (SQLite) database and R2 file storage,
@@ -24,7 +24,10 @@ documents only.
 - `src/layout.js` , shared page chrome in FlossByte branding
 - `src/pages-public.js` , setup, login, signup, invite, reset, MFA pages
 - `src/pages-client.js` , client views: overview, equipment, tickets,
-  documents, product pages, Ask
+  documents, product pages, Genius
+- `src/genius.js` , the records-only AI layer for Genius (Cloudflare
+  Workers AI; exact identifiers and passwords stay on the deterministic
+  records path)
 - `src/pages-admin.js` , admin console: clients, locations, product switches,
   invites, pending accounts, admin accounts
 - `migrations/` , D1 schema migrations, plain standard SQL

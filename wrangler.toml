@@ -33,3 +33,9 @@ bucket_name = "flossbyte-portal-docs"
 # Secrets are set with `npx wrangler secret put NAME` and never live in this
 # repo: RESEND_API_KEY, EMAIL_FROM, ADMIN_ALERT_EMAIL (the last one can also
 # be a plain var if preferred).
+
+# Genius uses Cloudflare Workers AI through this binding. No provider
+# API key is stored in the repo. GENIUS_MODEL can override the default
+# model as a Worker variable if FlossByte changes models later.
+[ai]
+binding = "AI"
