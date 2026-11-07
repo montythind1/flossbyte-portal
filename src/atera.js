@@ -214,6 +214,15 @@ export async function runAteraSync(env) {
       if (!row && a.mac) row = await db.prepare("SELECT * FROM equipment WHERE location_id = ? AND mac = ? ORDER BY id LIMIT 1").bind(locationId, a.mac).first();
       if (!row && a.serial) row = await db.prepare("SELECT * FROM equipment WHERE location_id = ? AND serial = ? ORDER BY id LIMIT 1").bind(locationId, String(a.serial)).first();
       if (!row) row = await db.prepare("SELECT * FROM equipment WHERE location_id = ? AND LOWER(name) = LOWER(?) ORDER BY id LIMIT 1").bind(locationId, a.name).first();
+      // UniFi client rows carry a MAC suffix in their stored name
+      // ("Front2 c3:54"), so also match the name as a prefix.
+      if (!row) row = await db.prepare("SELECT * FROM equipment WHERE location_id = ? AND LOWER(name) LIKE LOWER(?) || ' %' ORDER BY id LIMIT 1").bind(locationId, a.name).first();
+      // Last resort: the record already sitting at this agent's IP in
+      // this office (never a row another Atera agent owns).
+      if (!row && a.ip) {
+        const byIp = await db.prepare("SELECT * FROM equipment WHERE location_id = ? AND ip_address = ? ORDER BY id LIMIT 1").bind(locationId, a.ip).first();
+        if (byIp && !(byIp.source === "atera" && byIp.external_id && String(byIp.external_id) !== String(a.agentId))) row = byIp;
+      }
 
       let equipmentId;
       if (row) {
