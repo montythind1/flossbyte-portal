@@ -584,8 +584,8 @@ async function officeHealth(db, locationId) {
       if (isp.uptimePct != null && isp.uptimePct < 99) {
         const pts = isp.uptimePct < 95 ? 20 : 10;
         score -= pts;
-        reasons.push(`Internet uptime is ${Math.round(isp.uptimePct * 10) / 10}% over the last day`);
-        details.push({ text: `Internet uptime was ${Math.round(isp.uptimePct * 10) / 10}% over the last 24 hours`, pts });
+        reasons.push(`Internet was up ${Math.round(isp.uptimePct * 10) / 10}% of the last day`);
+        details.push({ text: `Internet was up ${Math.round(isp.uptimePct * 10) / 10}% of the last 24 hours`, pts });
       }
     } catch { /* the internet section is optional */ }
     score = Math.max(0, score);
@@ -1067,7 +1067,7 @@ function wpCopy(b){var c=b.parentElement.querySelector('.wp');if(!c||!navigator.
       <div class="stat"><b>${isp ? (working ? "Working" : "Having trouble") : "—"}</b><span>Internet status${isp && isp.ispName ? " · " + esc(isp.ispName) : ""}</span></div>
       ${isp && isp.downMbps != null ? `<div class="stat"><b>${n1(isp.downMbps)} Mbps</b><span>Download speed</span></div>` : ""}
       ${isp && isp.upMbps != null ? `<div class="stat"><b>${n1(isp.upMbps)} Mbps</b><span>Upload speed</span></div>` : ""}
-      ${isp && isp.uptimePct != null ? `<div class="stat"><b>${n1(isp.uptimePct)}%</b><span>Uptime, last ${isp.hours || 24} hours</span></div>` : ""}
+      ${isp && isp.uptimePct != null ? `<div class="stat"><b>${n1(isp.uptimePct)}%</b><span>Time online, last ${isp.hours || 24} hours</span></div>` : ""}
       ${eqTotal ? `<div class="stat"><b>${eqOn} of ${eqTotal}</b><span>Devices online</span></div>` : ""}
     </div>`;
     const note = isp && (isp.downtimeSec || 0) > 0 ? `<p class="muted" style="margin-bottom:0">Total time down in the last ${isp.hours || 24} hours: ${n1((isp.downtimeSec || 0) / 60)} minutes.</p>` : "";
@@ -1109,11 +1109,11 @@ function wpCopy(b){var c=b.parentElement.querySelector('.wp');if(!c||!navigator.
     const bars = histDays.map((d) => {
       const u = d.uptimePct != null ? d.uptimePct : 100;
       const col = u >= 99.5 ? "#00BFA5" : u >= 98 ? "#f59e0b" : "#dc2626";
-      return `<div title="${esc(d.date)}: ${esc(String(u))}% uptime${d.downtimeMin ? `, ${esc(String(d.downtimeMin))} min down` : ""}" style="flex:1;background:${col};height:${Math.max(8, Math.round(u))}%;border-radius:3px 3px 0 0;min-width:6px"></div>`;
+      return `<div title="${esc(d.date)}: ${u >= 99.95 ? "online all day" : `online ${esc(String(u))}% of the day${d.downtimeMin ? `, down ${esc(String(d.downtimeMin))} min` : ""}`}" style="flex:1;background:${col};height:${Math.max(8, Math.round(u))}%;border-radius:3px 3px 0 0;min-width:6px"></div>`;
     }).join("");
     historyCard = `<div class="card"><h2 style="margin-top:0">Internet, last ${histDays.length} days</h2>
       <div style="display:flex;gap:3px;align-items:flex-end;height:90px">${bars}</div>
-      <p class="muted" style="margin-bottom:0">Each bar is one day's internet uptime, ending today. Green means 99.5% or better. Hover a bar for the day's numbers.</p></div>`;
+      <p class="muted" style="margin-bottom:0">Each bar is one day, ending today. Green means the internet was up at least 99.5% of that day. Hover a bar for the day's numbers.</p></div>`;
   }
   const svc = snaps.isp_service || null;
   const ispNow = (snaps.internet || {}).isp || null;
@@ -1670,8 +1670,11 @@ export async function askPage(env, request, user, locationId) {
     "SELECT * FROM ask_messages WHERE location_id = ? ORDER BY created_at DESC LIMIT 10").bind(locationId).all();
   const history = (results || []).reverse().map((m) => `<div class="msg q">${esc(m.question)}</div>
     <div class="msg a">${esc(m.answer)}</div>`).join("");
+  const starter = (q) => `<form method="post" action="/app/locations/${locationId}/ask" style="margin:0"><input type="hidden" name="question" value="${esc(q)}"><button class="btn small secondary" type="submit">${esc(q)}</button></form>`;
   const body = `${locNav(loc, "ask")}<h1>Ask</h1>
-    <div class="card"><p class="muted">Ask about your own equipment, expiry dates, internet, WiFi, VPN, cameras, recent network changes, tickets, and documents. Answers come only from what is recorded for this practice.</p>
+    <div class="card"><p class="muted">Ask about your internet, WiFi, equipment, cameras, expiry dates, tickets, documents, and recent changes. Answers come only from what is recorded for this practice.</p>
+    <p class="muted" style="margin-bottom:6px">Try one of these:</p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px">${starter("Is our internet OK?")}${starter("What's the WiFi password?")}${starter("Which devices are offline?")}</div>
     <form method="post" action="/app/locations/${locationId}/ask">
       <input name="question" placeholder="What is expiring in the next 90 days?" required>
       <p style="margin-top:12px"><button class="btn" type="submit">Ask</button></p></form>
