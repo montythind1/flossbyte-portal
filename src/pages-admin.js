@@ -1426,6 +1426,8 @@ function lastRunHtml(last, unitLabel) {
     ${last.snapshots != null ? srow("Network snapshots updated", last.snapshots) : ""}
     ${last.patchAgents != null ? srow("Computers with patch state", last.patchAgents) : ""}
     ${last.alerts != null ? srow("Open alerts mirrored", last.alerts) : ""}
+    ${last.monDevices != null ? srow("Monitoring devices mirrored", last.monDevices) : ""}
+    ${last.monError ? `<p style="color:#b91c1c;margin:8px 0 0">${esc(last.monError)}</p>` : ""}
     ${last.changesLogged ? srow("Changes logged", last.changesLogged) : ""}` : ""}
     ${errs}${checks}</div>`;
 }
@@ -1456,7 +1458,7 @@ export async function syncPage(env, request, user) {
       ${lastRunHtml(lastSophos, "Tenants")}</div>
     <div class="card"><h3>Atera</h3>
       <p class="muted">${env.ATERA_API_KEY
-        ? "An API key is saved, so the portal polls Atera on the same cycle and keeps each mapped location's computer records current: operating system, hardware, serial numbers, signed-in user, last reboot, waiting Windows patches (refreshed hourly), and open Atera alerts. Software lists are not in the Atera API; they arrive by the scheduled script instead."
+        ? "An API key is saved, so the portal polls Atera on the same cycle and keeps each mapped location's computer records current: operating system, hardware, serial numbers, signed-in user, last reboot, waiting and installed Windows patches (refreshed hourly), and open Atera alerts. Monitoring devices registered in Atera (printers, NAS, UPS and the like) mirror into the same equipment lists. Software lists are not in the Atera API; they arrive by the scheduled script instead."
         : "Not connected yet. In Atera, open Admin, then Data management, then API, and copy the API key. Save it in Cloudflare as the secret ATERA_API_KEY. After that the portal polls Atera on its own; you map each Atera customer to a location below."}</p>
       <form method="post" action="/admin/sync/run-atera"><button class="btn" type="submit">Sync now</button></form>
       ${lastRunHtml(lastAtera, "Customers")}</div>
@@ -1666,6 +1668,13 @@ async function findDuplicatePairs(env) {
         if (na && na === nb && na.length >= 4) { reasons.push("Same name"); score += 3; }
         else if (na && nb && Math.min(na.length, nb.length) >= 6 && (na.startsWith(nb) || nb.startsWith(na))) { reasons.push("Very similar names"); score += 2; }
         else if (na && nb && Math.min(na.length, nb.length) >= 6 && editDist(na, nb) <= 2) { reasons.push("Very similar names"); score += 2; }
+        // A monitoring device that matched nothing still gets a
+        // human look when the office already has a record of the
+        // same kind from another source: at a small office, two
+        // printer (or NAS / UPS / camera) records usually means
+        // the same box seen two ways.
+        if ((a.source === "atera-device" || b.source === "atera-device") && a.source !== b.source
+          && a.type === b.type && ["Printer", "NAS", "UPS", "Camera"].includes(a.type)) { reasons.push("Same kind of device"); score += 1; }
         if (!reasons.length) continue;
         const key = `${Math.min(a.id, b.id)}:${Math.max(a.id, b.id)}`;
         if (dismissed.has(key)) continue;

@@ -135,6 +135,39 @@ function agentShape(a) {
   };
 }
 
+// Monitoring devices: gear that cannot run an agent (printers, NAS,
+// UPS, CBCT...), watched by an agent PC on the same network. Atera
+// serves them at GET /api/v3/devices; field names vary by device kind
+// (SNMP / TCP / HTTP / Generic), so extraction stays tolerant.
+function deviceShape(d) {
+  const siteName = pick(d, "SiteName", "FolderName");
+  const siteId = pick(d, "SiteID", "SiteId", "FolderID");
+  const rawType = String(pick(d, "DeviceType", "Type", "MonitorType", "DeviceClass") || "");
+  const type = /printer/i.test(rawType) ? "Printer"
+    : /nas|storage/i.test(rawType) ? "NAS"
+    : /ups|battery/i.test(rawType) ? "UPS"
+    : /switch/i.test(rawType) ? "Switch"
+    : /router|gateway|firewall/i.test(rawType) ? "Router"
+    : /phone|voip/i.test(rawType) ? "Phone"
+    : /camera/i.test(rawType) ? "Camera"
+    : rawType ? rawType.charAt(0).toUpperCase() + rawType.slice(1) : "Monitored device";
+  const st = String(pick(d, "Status", "State", "AvailabilityStatus") || "");
+  const ipRaw = asList(pick(d, "IPAddresses", "IpAddresses", "IPAddress", "IP", "Address"))[0] || null;
+  return {
+    id: pick(d, "DeviceID", "DeviceId", "ID", "DeviceGuid", "Guid"),
+    customerId: pick(d, "CustomerID", "CustomerId"),
+    customerName: pick(d, "CustomerName"),
+    siteKey: siteId != null ? String(siteId) : (siteName ? String(siteName).toLowerCase().replace(/[^a-z0-9]+/g, "-") : null),
+    siteName: siteName ? String(siteName) : null,
+    name: String(pick(d, "DeviceName", "Name", "HostName", "MachineName") || pickFuzzy(d, /(device|host|machine)name$/i) || "Monitored device"),
+    type,
+    online: d.Online === true || d.Online === 1 || /online|up|available|connected|active/i.test(st),
+    lastSeen: isoDate(pick(d, "LastSeen", "LastSeenDate") || pickFuzzy(d, /^last.*(seen|contact|check)/i)),
+    mac: normMac(asList(pick(d, "MacAddresses", "MacAddress", "MACAddress", "Mac"))[0] || ""),
+    ip: ipRaw && /^\d{1,3}(\.\d{1,3}){3}$/.test(String(ipRaw)) ? String(ipRaw) : null,
+  };
+}
+
 function groupKey(agent) {
   return agent.siteKey ? `cust:${agent.customerId}:site:${agent.siteKey}` : `cust:${agent.customerId}`;
 }
@@ -152,6 +185,7 @@ export async function runAteraSync(env) {
     at: new Date().toISOString(), ok: false, message: "",
     sites: 0, devices: 0, inserted: 0, updated: 0, offlined: 0,
     unmappedDevices: 0, patchAgents: 0, alerts: 0,
+    monDevices: 0, monUnmapped: 0,
   };
   const finish = async (msg) => {
     summary.message = msg;
@@ -172,9 +206,19 @@ export async function runAteraSync(env) {
   const groups = new Map();
   for (const a of agents) {
     const key = groupKey(a);
-    if (!groups.has(key)) groups.set(key, { key, name: [a.customerName, a.siteName].filter(Boolean).join(" · ") || key, agents: [] });
+    if (!groups.has(key)) groups.set(key, { key, name: [a.customerName, a.siteName].filter(Boolean).join(" · ") || key, agents: [], devices: [] });
     groups.get(key).agents.push(a);
   }
+  // Monitoring devices join the same mapping units; a customer with
+  // devices but no agents still gets a group so it can be mapped.
+  try {
+    const monDevices = (await listAll(env, "/api/v3/devices")).map(deviceShape).filter((d) => d.id != null && d.customerId != null);
+    for (const d of monDevices) {
+      const key = groupKey(d);
+      if (!groups.has(key)) groups.set(key, { key, name: [d.customerName, d.siteName].filter(Boolean).join(" · ") || key, agents: [], devices: [] });
+      groups.get(key).devices.push(d);
+    }
+  } catch { summary.monError = "Monitoring devices could not be read this run."; }
   summary.sites = groups.size;
   for (const g of groups.values()) {
     try {
@@ -286,6 +330,61 @@ export async function runAteraSync(env) {
     }
   }
 
+  // Monitoring devices pass: the same careful join as agents, under
+  // their own source so the two passes never fight over a record.
+  const seenMonByLocation = new Map();
+  for (const g of groups.values()) {
+    if (!g.devices || !g.devices.length) continue;
+    const locationId = mapping.get(g.key);
+    if (!locationId) { summary.monUnmapped += g.devices.length; continue; }
+    if (!seenMonByLocation.has(locationId)) seenMonByLocation.set(locationId, new Set());
+    const seenMon = seenMonByLocation.get(locationId);
+    for (const d of g.devices) {
+      const status = d.online ? "online" : "offline";
+      let row = await db.prepare("SELECT * FROM equipment WHERE location_id = ? AND source = 'atera-device' AND external_id = ?")
+        .bind(locationId, String(d.id)).first();
+      if (!row && d.mac) row = await db.prepare("SELECT * FROM equipment WHERE location_id = ? AND mac = ? ORDER BY id LIMIT 1").bind(locationId, d.mac).first();
+      if (!row) row = await db.prepare("SELECT * FROM equipment WHERE location_id = ? AND LOWER(name) = LOWER(?) ORDER BY id LIMIT 1").bind(locationId, d.name).first();
+      if (!row) row = await db.prepare("SELECT * FROM equipment WHERE location_id = ? AND LOWER(name) LIKE LOWER(?) || ' %' ORDER BY id LIMIT 1").bind(locationId, d.name).first();
+      if (!row && d.ip) {
+        const byIp = await db.prepare("SELECT * FROM equipment WHERE location_id = ? AND ip_address = ? ORDER BY id LIMIT 1").bind(locationId, d.ip).first();
+        // Never claim a computer record (agent or endpoint syncs own
+        // those); a monitoring device pointing at the same address
+        // is the same box watched a second way, surfaced by the
+        // duplicates review instead.
+        if (byIp && byIp.source !== "atera" && !(byIp.source === "atera-device" && byIp.external_id && String(byIp.external_id) !== String(d.id))) row = byIp;
+      }
+      if (row) {
+        await db.prepare(
+          `UPDATE equipment SET status = ?, last_seen_at = COALESCE(?, last_seen_at),
+             mac = COALESCE(mac, ?), ip_address = COALESCE(?, ip_address), updated_at = datetime('now') WHERE id = ?`)
+          .bind(status, d.lastSeen, d.mac || null, d.ip, row.id).run();
+        if (row.source === "atera-device") {
+          await db.prepare("UPDATE equipment SET name = ?, type = ? WHERE id = ?").bind(d.name, d.type, row.id).run();
+        }
+        seenMon.add(row.id);
+        summary.monDevices++;
+      } else {
+        const ins = await db.prepare(
+          `INSERT INTO equipment (location_id, vendor, type, model, serial, status, name, mac, ip_address, source, external_id, last_seen_at)
+           VALUES (?, 'Atera', ?, NULL, NULL, ?, ?, ?, ?, 'atera-device', ?, ?)`)
+          .bind(locationId, d.type, status, d.name, d.mac || null, d.ip, String(d.id), d.lastSeen).run();
+        seenMon.add(ins.meta.last_row_id);
+        summary.monDevices++;
+      }
+    }
+  }
+  // Monitoring devices that vanished from Atera go offline, not away.
+  for (const [locationId, seenMon] of seenMonByLocation) {
+    const { results: rows } = await db.prepare(
+      "SELECT id FROM equipment WHERE location_id = ? AND source = 'atera-device' AND status != 'offline'").bind(locationId).all();
+    for (const r of rows || []) {
+      if (!seenMon.has(r.id)) {
+        await db.prepare("UPDATE equipment SET status = 'offline', updated_at = datetime('now') WHERE id = ?").bind(r.id).run();
+      }
+    }
+  }
+
   // Agents that vanished from Atera: their rows go offline, never away.
   for (const [locationId, seen] of seenByLocation) {
     const { results: rows } = await db.prepare(
@@ -343,5 +442,5 @@ export async function runAteraSync(env) {
   }
 
   summary.ok = true;
-  return finish(`Atera sync complete. ${summary.inserted + summary.updated} computers mirrored, ${summary.unmappedDevices} waiting on mapping.`);
+  return finish(`Atera sync complete. ${summary.inserted + summary.updated} computers mirrored, ${summary.unmappedDevices} waiting on mapping.${summary.monDevices ? ` ${summary.monDevices} monitoring devices mirrored.` : ""}`);
 }
