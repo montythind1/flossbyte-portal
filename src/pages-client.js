@@ -281,7 +281,7 @@ export async function appHome(env, request, user) {
     if (snap) { try { isp = JSON.parse(snap.payload || "{}").isp || null; } catch { isp = null; } }
     totDevices += c.total || 0; totOnline += c.online || 0; totTickets += t.n || 0;
     const pill = health && typeof health.score === "number"
-      ? `<span class="pill ${health.score >= 85 ? "on" : health.score < 60 ? "off" : "warn"}">Health: ${esc(health.label)} ${health.score}</span>` : "";
+      ? `<span class="pill ${health.score >= 85 ? "on" : health.score < 60 ? "off" : "warn"}">Health: ${esc(health.label)}</span>` : "";
     cards.push(`<a class="card" href="/app/locations/${loc.id}" style="text-decoration:none;color:inherit;display:block">
       <div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start">
         <div><div style="font-size:18px;font-weight:800">${esc(loc.name)}</div>
@@ -290,7 +290,7 @@ export async function appHome(env, request, user) {
       <div style="margin-top:8px">
       ${srow("Internet", isp ? `${isp.uptimePct != null && isp.uptimePct >= 99 ? "Working" : "Check connection"}${isp.ispName ? " · " + esc(isp.ispName) : ""}` : "—")}
       ${srow("Devices online", c.total ? `${c.online || 0} of ${c.total}` : "None recorded")}
-      ${srow("Open tickets", String(t.n || 0))}
+      ${srow("Open tickets", t.n ? String(t.n) : "No open tickets")}
       </div>
       <p style="margin:12px 0 0;color:#0A7C6E;font-weight:700">Open practice ›</p></a>`);
   }
@@ -311,8 +311,12 @@ export async function appHome(env, request, user) {
   if (!worst || worst.score >= 85) { bandDot = dot("#0A7C6E"); bandMainHtml = "Everything is running"; }
   else if (worst.score >= 60) { bandDot = dot("#b45309"); bandMainHtml = `${esc(worst.name)} is running <span style="color:#b45309">fair</span>`; }
   else { bandDot = dot("#b91c1c"); bandMainHtml = `${esc(worst.name)} <span style="color:#b91c1c">needs attention</span>`; }
-  const bandSub = !worst || worst.score >= 85 ? "Nothing needs attention at any practice."
-    : (worst.reasons.slice(0, 2).join(" · ") || "See its practice card for details.");
+  const lastCheck = locs.length ? await db.prepare(
+    "SELECT MAX(captured_at) AS last FROM network_snapshots WHERE location_id IN (SELECT id FROM locations WHERE customer_id = ?)")
+    .bind(locs[0].customer_id).first().catch(() => null) : null;
+  const bandSub = (!worst || worst.score >= 85 ? "Nothing needs attention at any practice."
+    : (worst.reasons.slice(0, 2).join(" · ") || "See its practice card for details."))
+    + (lastCheck && lastCheck.last ? ` · checked ${relTime(lastCheck.last)}` : "");
   const chip = "background:#F2F6FA;border:1px solid #DDE5EE;color:#0A1628;border-radius:99px;padding:6px 12px;font-weight:600;font-size:13px;text-decoration:none;white-space:nowrap";
   const chips = [
     billing && billing.quotes_waiting ? `<a href="/app/billing" style="${chip}">${billing.quotes_waiting} quote${billing.quotes_waiting > 1 ? "s" : ""} waiting</a>` : "",
@@ -386,6 +390,17 @@ export async function locationOverview(env, request, user, locationId) {
 // What the organization has with FlossByte, per location, and where an
 // admin asks for a service the practice does not have yet. Kept off the
 // everyday location pages on purpose: this is account administration.
+// Plain-English service descriptions for the customer Services page.
+// The database descriptions read like a catalog ("A scoped project
+// engagement"); customers get the version a person would say out loud.
+const PRODUCT_PLAIN = {
+  managed_it: "We look after this office's computers, network, and internet, and fix problems early.",
+  flossverify: "We check your patients' insurance before their visit, so the front desk does not have to.",
+  hipaa_security: "A yearly check that this office meets the HIPAA security rules, with a written report and a fix list.",
+  voip: "This office's phones, run over the internet and looked after by us.",
+  one_time_project: "One-off jobs, like a new office setup or a server move, quoted up front before work starts.",
+};
+
 export async function servicesPage(env, request, user) {
   const org = await customerAdminOrg(env.DB, user);
   if (org === null) return denied(user, 403);
@@ -396,8 +411,8 @@ export async function servicesPage(env, request, user) {
   for (const loc of locs || []) {
     const states = await productStates(db, org, loc.id);
     const rowsHtml = states.map((p) => `<tr><td><strong>${esc(p.name)}</strong>
-        <div class="muted">${esc(p.description || "")}</div></td>
-      <td>${p.enabled ? `<span class="pill on">On</span>` : `<span class="pill off">Not included</span>`}</td>
+        <div class="muted">${esc(PRODUCT_PLAIN[p.key] || p.description || "")}</div></td>
+      <td>${p.enabled ? `<span class="pill on">Included</span>` : `<span class="pill off">Not included</span>`}</td>
       <td>${p.enabled ? "" : requestForm(loc, p.key)}</td></tr>`).join("");
     cards.push(`<div class="card"><h2 style="margin-top:0">${esc(loc.name)}</h2>
       <div class="tscroll"><table class="stack"><thead><tr><th>Service</th><th>Status</th><th></th></tr></thead>
@@ -1808,17 +1823,18 @@ async function invoicesSection(env, org) {
   const rows = (results || []).map((inv) => {
     const pay = inv.status === "unpaid" && inv.pay_url
       ? `<a class="btn small" href="${esc(inv.pay_url)}" target="_blank" rel="noopener">Pay</a>`
-      : inv.status === "unpaid" ? `<span class="muted">FlossByte will email a payment link.</span>` : "";
+      : inv.status === "unpaid" ? `<span class="muted">We'll email you a payment link.</span>` : "";
     const note = inv.kind === "deposit"
       ? (inv.status === "unpaid" ? `<div class="muted">Work is scheduled once this deposit is paid.</div>` : `<div class="muted">Deposit received.</div>`) : "";
+    const overdue = inv.status === "unpaid" && inv.due_date && inv.due_date < new Date().toISOString().slice(0, 10);
     return `<tr><td><a href="/app/invoices/${inv.id}">INV-${1000 + inv.id}</a></td><td>${esc(inv.title)}${note}</td>
       <td>${esc(INVOICE_KIND[inv.kind] || "Invoice")}</td><td class="num">${fmtMoney(inv.amount_cents)}</td>
       <td><span class="pill ${inv.status === "paid" ? "on" : ""}">${inv.status === "paid" ? "Paid" : "Unpaid"}</span>${inv.status === "paid" && inv.paid_at ? `<div class="muted">${esc(fmtDateUS(inv.paid_at))}</div>` : ""}</td>
-      <td>${esc(fmtDateUS(inv.due_date))}</td><td>${pay}</td></tr>`;
+      <td>${esc(fmtDateUS(inv.due_date))}${overdue ? ` <span style="color:#b91c1c;font-weight:700">overdue</span>` : ""}</td><td>${pay}</td></tr>`;
   }).join("");
   return `
     <div class="card" style="padding:10px 14px;margin-top:16px"><h3 style="margin:2px 0 8px">Invoices</h3><div class="tscroll"><table class="stack"><thead><tr><th>Number</th><th>Invoice</th><th>Type</th><th class="num">Amount</th><th>Status</th><th>Due</th><th></th></tr></thead>
-    <tbody>${rows || `<tr><td colspan="7" class="muted">No invoices yet.</td></tr>`}</tbody></table></div></div>`;
+    <tbody>${rows || `<tr><td colspan="7" class="muted">No invoices yet. When there's something to pay, it shows up here.</td></tr>`}</tbody></table></div></div>`;
 }
 
 export async function invoiceViewPage(env, request, user, invoiceId) {
@@ -1829,7 +1845,7 @@ export async function invoiceViewPage(env, request, user, invoiceId) {
   const cust = await env.DB.prepare("SELECT name FROM customers WHERE id = ?").bind(org).first();
   const pay = inv.status === "unpaid" && inv.pay_url
     ? `<p style="margin-top:16px"><a class="btn" href="${esc(inv.pay_url)}" target="_blank" rel="noopener">Pay ${fmtMoney(inv.amount_cents)}</a></p>`
-    : inv.status === "unpaid" ? `<p class="muted" style="margin-top:16px">FlossByte will email a payment link for this invoice. Questions: call (669) 237-2264.</p>` : "";
+    : inv.status === "unpaid" ? `<p class="muted" style="margin-top:16px">We'll email you a payment link for this invoice. Questions: call (669) 237-2264.</p>` : "";
   const rail = await railLocs(env, user);
   const body = `${orgRail(user, "billing", cust ? cust.name : "My Portal", rail)}<p><a href="/app/billing">&larr; Billing</a></p>
     <h1>INV-${1000 + inv.id}</h1>
@@ -1841,7 +1857,7 @@ export async function invoiceViewPage(env, request, user, invoiceId) {
       <tr><td class="muted">Type</td><td>${esc(INVOICE_KIND[inv.kind] || "Invoice")}</td></tr>
       <tr><td class="muted">Amount</td><td><strong>${fmtMoney(inv.amount_cents)}</strong></td></tr>
       <tr><td class="muted">Status</td><td><span class="pill ${inv.status === "paid" ? "on" : ""}">${inv.status === "paid" ? "Paid" : inv.status === "void" ? "Void" : "Unpaid"}</span>${inv.status === "paid" && inv.paid_at ? ` ${esc(fmtDateUS(inv.paid_at))}${inv.paid_method ? " by " + esc(inv.paid_method) : ""}` : ""}</td></tr>
-      ${inv.due_date ? `<tr><td class="muted">Due</td><td>${esc(fmtDateUS(inv.due_date))}</td></tr>` : ""}
+      ${inv.due_date ? `<tr><td class="muted">Due</td><td>${esc(fmtDateUS(inv.due_date))}${inv.status === "unpaid" && inv.due_date < new Date().toISOString().slice(0, 10) ? ` <span style="color:#b91c1c;font-weight:700">overdue</span>` : ""}</td></tr>` : ""}
       </tbody></table></div>${pay}</div>`;
   return page({ title: `INV-${1000 + inv.id}`, user, body });
 }
