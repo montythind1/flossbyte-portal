@@ -222,7 +222,12 @@ html{scroll-padding-top:84px;scroll-padding-bottom:120px}
 .gpage .gcomposer{position:static}
 @media (max-width:900px){.gpage{height:calc(100vh - 300px);height:calc(100dvh - 300px)}}
 .app-main{max-width:none;margin:0;padding:0}
-.gapp{height:100vh;height:100dvh;display:flex;flex-direction:column;background:var(--bg)}
+.gapp{height:100vh;height:100dvh;display:flex;background:var(--bg)}
+.gside{width:232px;flex:0 0 auto;background:#fff;border-right:1px solid var(--line);padding:14px 10px;display:flex;flex-direction:column;gap:2px;overflow-y:auto}
+.gside .gover{display:block;padding:0 10px 9px;margin-bottom:9px;border-bottom:1px solid #EEF2F7;color:#5B6B82;text-decoration:none;font-size:13px;font-weight:600}
+.gmain{flex:1 1 auto;min-width:0;display:flex;flex-direction:column}
+.gmenu{display:none;background:#fff;border:1px solid var(--line);border-radius:9px;width:36px;height:36px;font-size:17px;line-height:1;cursor:pointer;color:var(--ink)}
+@media (max-width:900px){.gside{position:fixed;top:0;bottom:0;left:0;width:252px;z-index:60;transform:translateX(-106%);transition:transform .18s ease;box-shadow:2px 0 18px rgba(10,22,40,.18)}.gside.open{transform:none}.gmenu{display:block}}
 .gbar{min-height:54px;display:flex;align-items:center;gap:14px;padding:6px 16px;background:#fff;border-bottom:1px solid var(--line)}
 .gbar .gback{font-weight:700;color:var(--ink);text-decoration:none;white-space:nowrap}
 .gbar .gtitle{font-family:"Plus Jakarta Sans",Inter,sans-serif;font-weight:800;font-size:17px}
