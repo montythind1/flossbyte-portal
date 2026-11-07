@@ -9,7 +9,7 @@ import {
 import { sendEmail, quoteAcceptedNoticeEmail, ticketCreatedNoticeEmail, ticketReplyNoticeEmail, productRequestEmail } from "./email.js";
 import { splitName, joinName, normalizePhone } from "./auth.js";
 import { issueCollectorToken, collectorTokenState } from "./collector.js";
-import { buildGeniusContext, geniusAnswer, isExactLookupQuestion } from "./genius.js";
+import { buildGeniusContext, geniusAnswer, geniusFooter, isExactLookupQuestion } from "./genius.js";
 
 function orgOrigin(env) { return env.APP_ORIGIN || "https://portal.flossbyte.com"; }
 
@@ -2260,7 +2260,7 @@ export async function askPage(env, request, user, locationId) {
       <button class="btn small secondary" type="submit">Send this to FlossByte</button></form>` : ""}`).join("");
   const starter = (q) => `<form method="post" action="/app/locations/${locationId}/ask" style="margin:0"><input type="hidden" name="question" value="${esc(q)}"><button class="btn small secondary" type="submit">${esc(q)}</button></form>`;
   const body = `${locNav(loc, "ask")}<h1>Genius</h1>
-    <div class="card"><p class="muted">Genius explains your internet, WiFi, equipment, cameras, expiry dates, tickets, documents, and recent changes in plain language. It answers only from what is recorded for this office.</p>
+    <div class="card"><p class="muted">Genius explains your internet, WiFi, equipment, cameras, expiry dates, tickets, documents, and recent changes in plain language. Facts come only from what is recorded for this office. When the records do not cover a problem, Genius may add a general tip, always marked as one.</p>
     <p class="muted" style="margin-bottom:6px">Try one of these:</p>
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px">${starter("Is our internet OK?")}${starter("What's the WiFi password?")}${starter("Which devices are offline?")}${starter("Why is a computer offline?")}</div>
     <form method="post" action="/app/locations/${locationId}/ask">
@@ -2291,7 +2291,7 @@ export async function askPost(env, request, user, locationId) {
           history: built.history,
           recordsAnswer,
         });
-        if (aiAnswer) answer = `${aiAnswer}\n(Answered by Genius from your own portal records only.)`;
+        if (aiAnswer) answer = `${aiAnswer}\n${geniusFooter(aiAnswer)}`;
       } catch { answer = recordsAnswer; }
     }
     await env.DB.prepare("INSERT INTO ask_messages (location_id, user_id, question, answer) VALUES (?, ?, ?, ?)")

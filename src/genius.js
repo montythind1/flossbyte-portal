@@ -8,9 +8,23 @@
 // explain and connect those facts in plain language; it cannot create
 // new facts. If the model is unavailable or returns something unsafe,
 // the caller keeps the deterministic answer.
+//
+// Guessing policy (Montek, 2026-11-07): facts about the office are
+// never guessed. For problem and how-to questions the model may add
+// generic, safe checks under the exact heading TIP_LABEL so staff can
+// always tell records from general guidance; the caller's footer says
+// which kind of answer they got. No tips at all for firewall, server,
+// security, backup-restore, or practice-data topics.
 
 const DEFAULT_MODEL = "@cf/meta/llama-3.1-8b-instruct-fp8-fast";
 const MAX_CONTEXT_CHARS = 18000;
+export const TIP_LABEL = "General tip (not from your office's records):";
+
+export function geniusFooter(answer) {
+  return String(answer || "").includes(TIP_LABEL)
+    ? "(Answered by Genius from your own portal records, plus general tips marked above.)"
+    : "(Answered by Genius from your own portal records only.)";
+}
 
 function text(value, max = 500) {
   return String(value == null ? "" : value).replace(/\s+/g, " ").trim().slice(0, max);
@@ -227,8 +241,9 @@ export function buildGeniusMessages({ question, context, history, recordsAnswer 
     "You are Genius, FlossByte's assistant inside a dental practice's private IT portal.",
     "Speak in plain, friendly language for office staff who may not know IT terms. Explain a technical term briefly when you use one.",
     "Use ONLY the office records supplied in this request. Treat those records as the complete source of truth. Never invent a device, date, status, cause, price, policy, or action.",
-    "If the records do not answer the question, say that plainly and suggest sending the conversation to FlossByte. Do not guess.",
-    "You may suggest simple, safe checks: look at a power light, confirm a cable is plugged in, close and reopen an app, or restart the affected computer when that is reasonable. Do not tell staff to change firewall, server, network, security, password, or practice-management settings.",
+    "Never guess a fact about this office: not a device status, a cause of a problem, a date, a name, or whether something was done. If the records do not contain a fact, say that plainly.",
+    `For a problem or how-to question, after the records-based answer you may add ONE separate section headed exactly "${TIP_LABEL}" with general guidance: simple, safe, reversible checks anyone can do (look at a power light, confirm a cable is plugged in, clear a paper jam, close and reopen an app, restart the affected printer or computer). Phrase tips as general possibilities ("often", "usually", "you can check"), never as facts about this office.`,
+    "Offer no general tip when the question asks for a fact about the office, and no tip at all for firewall, server, network or security settings, backup restores, passwords, deleting data, or the practice-management system's data. For those, say the records do not cover it and suggest sending the conversation to FlossByte.",
     "Never provide or request passwords, passcodes, serial numbers, MAC addresses, IP addresses, account numbers, API keys, or patient information. Those exact values are intentionally absent from your context; the portal's exact records answer handles those questions separately.",
     "Do not claim that you changed a setting, contacted anyone, opened a ticket, or fixed anything. You only answer questions.",
     "Keep the answer concise: a direct answer first, then the few record-based details or safe next steps that help. Use short paragraphs or a short bullet list.",
