@@ -152,7 +152,7 @@ function locNav(loc, active) {
   const item = (key, href, label, ic) =>
     `<a class="rail-item${active === key ? " active" : ""}" href="${href}">${icon(ic)}${label}</a>`;
   return `<div class="shell"><aside class="rail">
-    <a href="/app" style="display:block;padding:0 10px 9px;margin-bottom:9px;border-bottom:1px solid #EEF2F7;color:#5A6B82;text-decoration:none;font-size:13px;font-weight:600">&larr; Your practices</a>
+    <a href="/app" style="display:block;padding:0 10px 9px;margin-bottom:9px;border-bottom:1px solid #EEF2F7;color:#5A6B82;text-decoration:none;font-size:13px;font-weight:600">&larr; Overview</a>
     <div class="rail-context"><div class="rc-t">${esc(loc.name)}</div><div class="rc-s">${esc(loc.customer_name)}</div></div>
     ${item("overview", base, "Overview", "grid")}
     <a class="rail-item${["network", "equipment", "topology"].includes(active) ? " active" : ""}" href="${base}/network">${icon("topology")}Office IT</a>
@@ -189,7 +189,7 @@ function orgRail(user, active, orgName, locs) {
     : "";
   return `<div class="shell"><aside class="rail">
     <div class="rail-context"><div class="rc-t">${esc(orgName || "My Portal")}</div></div>
-    ${item("practices", "/app", "Your practices", "home")}${item("billing", "/app/billing", "Billing", "receipt")}
+    ${item("practices", "/app", "Overview", "home")}${item("billing", "/app/billing", "Billing", "receipt")}
     ${practiceLinks}${account}</aside><div class="shell-main">`;
 }
 
@@ -340,7 +340,7 @@ export async function appHome(env, request, user) {
     <div class="stat"><b>${billing ? billing.unpaid || 0 : 0}</b><span>Unpaid invoices</span></div>
   </div>`;
   const orgName = locs.length ? locs[0].customer_name : "";
-  const body = `${orgRail(user, "practices", orgName || "My Portal", locs)}<h1 style="margin-bottom:14px">Your practices</h1>
+  const body = `${orgRail(user, "practices", orgName || "My Portal", locs)}<h1 style="margin-bottom:14px">Overview</h1>
     ${band}
     ${strip}
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px">${cards.join("")}</div>`;
