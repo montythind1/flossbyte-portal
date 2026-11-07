@@ -949,6 +949,24 @@ export async function topologyPage(env, request, user, locationId) {
   if (leftovers.length) {
     tree += leftovers.map((e) => { const meta = [deviceKind(e), e.ip_address].filter(Boolean).join(" · "); return `<li><span class="topo-node${e.status === "offline" ? " off" : ""}"><span class="topo-dot"></span><span class="topo-name">${esc(label(e))}</span><span class="topo-meta">${esc(meta)}</span></span></li>`; }).join("");
   }
+  // The same tree as data for the interactive map (the list below
+  // stays as the alternate view). Fresh traversal with its own seen
+  // set; anything unreachable becomes its own root, like the list.
+  const seenJson = new Set();
+  const toNode = (e, depth) => {
+    if (seenJson.has(e.id) || depth > 10) return null;
+    seenJson.add(e.id);
+    return { id: e.id, name: label(e), meta: [deviceKind(e), e.ip_address].filter(Boolean).join(" · "), off: e.status === "offline", root: depth === 0,
+      children: (kids.get(e.id) || []).map((c) => toNode(c, depth + 1)).filter(Boolean) };
+  };
+  const forest = roots.map((e) => toNode(e, 0)).filter(Boolean);
+  for (const e of all) {
+    if (!seenJson.has(e.id)) {
+      seenJson.add(e.id);
+      forest.push({ id: e.id, name: label(e), meta: [deviceKind(e), e.ip_address].filter(Boolean).join(" · "), off: e.status === "offline", root: true, children: [] });
+    }
+  }
+  const topoData = JSON.stringify(forest).replace(/</g, "\\u003c");
   const online = all.filter((e) => e.status === "online").length;
   const offNames = all.filter((e) => e.status === "offline").map((e) => esc(displayName(e, renames)));
   const lastSeen = all.map((e) => e.last_seen_at || "").sort().pop();
@@ -956,9 +974,84 @@ export async function topologyPage(env, request, user, locationId) {
     ? `<div class="card" style="border-left:4px solid #b45309"><p style="margin:0"><b>Needs attention:</b> ${offNames.length === 1 ? "1 device is" : offNames.length + " devices are"} offline: ${offNames.slice(0, 4).join(", ")}${offNames.length > 4 ? ", and more" : ""}. Everything else is working.</p></div>`
     : `<div class="card" style="border-left:4px solid #0e9f6e"><p style="margin:0"><b>Everything is online.</b> All ${all.length} devices are up and connected.</p></div>`;
   const body = `${locNav(loc, "topology")}<h1>Network map</h1>${locTabs(loc, "topology")}
-    <p class="muted" style="margin-top:0">${all.length} devices, ${online} online${lastSeen ? ` · last checked ${esc(relTime(lastSeen))}` : ""}. Devices are grouped under whatever they plug into, starting from the main internet box at the top. A green dot means the device is on; red means it is off or unreachable.</p>
+    <p class="muted" style="margin-top:0">${all.length} devices, ${online} online${lastSeen ? ` · last checked ${esc(relTime(lastSeen))}` : ""}. Every device hangs under whatever it plugs into, starting from the main internet box at the top.</p>
     ${verdict}
-    <div class="card"><div class="topo"><ul>${tree}</ul></div></div>`;
+    <div class="card" style="padding:0;overflow:hidden">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:12px 14px;border-bottom:1px solid #EEF2F7;flex-wrap:wrap">
+        <div class="muted" style="font-size:13px"><span style="color:#0e9f6e">&#9679;</span> Online &nbsp;<span style="color:#dc2626">&#9679;</span> Offline &nbsp;&middot;&nbsp; Drag to move, scroll or use + and &minus; to zoom, tap a device to open it</div>
+        <div style="display:flex;gap:6px;align-items:center">
+          <button class="btn small secondary" id="tzOut" type="button" aria-label="Zoom out">&minus;</button>
+          <span id="tzPct" class="muted" style="min-width:44px;text-align:center">100%</span>
+          <button class="btn small secondary" id="tzIn" type="button" aria-label="Zoom in">+</button>
+          <button class="btn small secondary" id="tzFit" type="button">Fit</button>
+          <span style="width:8px"></span>
+          <button class="btn small" id="tvMap" type="button">Map</button>
+          <button class="btn small secondary" id="tvList" type="button">List</button>
+        </div>
+      </div>
+      <div id="topoMapWrap" style="height:540px;background-color:#F7FAFC;background-image:radial-gradient(circle,#DFE8F0 1.1px,transparent 1.1px);background-size:22px 22px">
+        <svg id="topoSvg" width="100%" height="100%" style="display:block;touch-action:none;cursor:grab" role="img" aria-label="Network map"></svg>
+      </div>
+      <div id="topoListWrap" class="topo" style="display:none;padding:16px"><ul>${tree}</ul></div>
+    </div>
+    <script>
+    (function () {
+      var DATA = ${topoData};
+      var LOC = ${locationId};
+      var NW = 196, NH = 48, HGAP = 16, VGAP = 82, PAD = 16;
+      var svg = document.getElementById('topoSvg');
+      if (!svg || !DATA.length) return;
+      var NS = 'http://www.w3.org/2000/svg';
+      function escT(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+      function trunc(s, n) { s = String(s || ''); return s.length > n ? s.slice(0, n - 1) + '…' : s; }
+      function kw(ks) { var w = 0; for (var i = 0; i < ks.length; i++) w += ks[i].w + (i ? HGAP : 0); return w; }
+      function layout(n, d) { n.depth = d; var ks = n.children || []; for (var i = 0; i < ks.length; i++) layout(ks[i], d + 1); n.w = ks.length ? Math.max(NW, kw(ks)) : NW; }
+      function place(n, x) { n.x = x + n.w / 2; n.y = PAD + n.depth * VGAP; var ks = n.children || []; var cx = x + (n.w - kw(ks)) / 2; for (var i = 0; i < ks.length; i++) { place(ks[i], cx); cx += ks[i].w + HGAP; } }
+      var maxD = 0;
+      function track(n) { if (n.depth > maxD) maxD = n.depth; (n.children || []).forEach(track); }
+      DATA.forEach(function (r) { layout(r, 0); });
+      var rootsW = kw(DATA);
+      var cx0 = PAD;
+      DATA.forEach(function (r) { place(r, cx0); cx0 += r.w + HGAP; });
+      DATA.forEach(track);
+      var totalW = rootsW + PAD * 2, totalH = PAD * 2 + maxD * VGAP + NH;
+      var g = document.createElementNS(NS, 'g');
+      svg.appendChild(g);
+      var html = '';
+      function edges(n) { var ks = n.children || []; if (!ks.length) return; var midY = n.y + NH + (VGAP - NH) / 2; for (var i = 0; i < ks.length; i++) { var c = ks[i]; html += '<path d="M ' + n.x + ' ' + (n.y + NH) + ' V ' + midY + ' H ' + c.x + ' V ' + c.y + '" fill="none" stroke="#C3D0DE" stroke-width="1.5"/>'; } ks.forEach(edges); }
+      function nodes(n) {
+        var x = n.x - NW / 2, y = n.y, root = n.root;
+        html += '<g class="tnode" data-id="' + n.id + '" style="cursor:pointer">'
+          + '<rect x="' + x + '" y="' + y + '" width="' + NW + '" height="' + NH + '" rx="10" fill="' + (root ? '#0A1628' : '#ffffff') + '" stroke="' + (root ? '#0A1628' : '#D8E1EC') + '"/>'
+          + '<circle cx="' + (x + 16) + '" cy="' + (y + NH / 2) + '" r="5" fill="' + (n.off ? '#dc2626' : '#0e9f6e') + '"/>'
+          + '<text x="' + (x + 28) + '" y="' + (y + 20) + '" font-size="13" font-weight="700" font-family="Inter,sans-serif" fill="' + (root ? '#ffffff' : '#0A1628') + '">' + escT(trunc(n.name, 22)) + '</text>'
+          + '<text x="' + (x + 28) + '" y="' + (y + 37) + '" font-size="11" font-family="Inter,sans-serif" fill="' + (root ? '#B9C7DC' : '#667085') + '">' + escT(trunc(n.meta, 30)) + '</text></g>';
+        (n.children || []).forEach(nodes);
+      }
+      DATA.forEach(edges); DATA.forEach(nodes);
+      g.innerHTML = html;
+      var view = { k: 1, x: 0, y: 0 };
+      var pct = document.getElementById('tzPct');
+      function apply() { g.setAttribute('transform', 'translate(' + view.x + ',' + view.y + ') scale(' + view.k + ')'); if (pct) pct.textContent = Math.round(view.k * 100) + '%'; }
+      function fit() { var r = svg.getBoundingClientRect(); var k = Math.min(1, r.width / totalW, r.height / totalH); view.k = k; view.x = (r.width - totalW * k) / 2; view.y = Math.max(6, (r.height - totalH * k) / 2); apply(); }
+      function zoomAt(f, px, py) { var k2 = Math.max(0.08, Math.min(2.5, view.k * f)); view.x = px - (px - view.x) * (k2 / view.k); view.y = py - (py - view.y) * (k2 / view.k); view.k = k2; apply(); }
+      document.getElementById('tzIn').addEventListener('click', function () { var r = svg.getBoundingClientRect(); zoomAt(1.3, r.width / 2, r.height / 2); });
+      document.getElementById('tzOut').addEventListener('click', function () { var r = svg.getBoundingClientRect(); zoomAt(0.77, r.width / 2, r.height / 2); });
+      document.getElementById('tzFit').addEventListener('click', fit);
+      svg.addEventListener('wheel', function (e) { e.preventDefault(); var r = svg.getBoundingClientRect(); zoomAt(e.deltaY < 0 ? 1.12 : 0.89, e.clientX - r.left, e.clientY - r.top); }, { passive: false });
+      var drag = null, moved = 0;
+      svg.addEventListener('pointerdown', function (e) { drag = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y }; moved = 0; svg.setPointerCapture(e.pointerId); svg.style.cursor = 'grabbing'; });
+      svg.addEventListener('pointermove', function (e) { if (!drag) return; var dx = e.clientX - drag.x, dy = e.clientY - drag.y; moved = Math.max(moved, Math.abs(dx) + Math.abs(dy)); view.x = drag.vx + dx; view.y = drag.vy + dy; apply(); });
+      svg.addEventListener('pointerup', function (e) { svg.style.cursor = 'grab'; var wasDrag = moved > 6; drag = null; if (wasDrag) return; var t = e.target; while (t && !(t.getAttribute && t.getAttribute('data-id'))) t = t.parentNode; if (t) window.location.href = '/app/locations/' + LOC + '/equipment/' + t.getAttribute('data-id'); });
+      var wrapM = document.getElementById('topoMapWrap'), wrapL = document.getElementById('topoListWrap');
+      var bM = document.getElementById('tvMap'), bL = document.getElementById('tvList');
+      function showMap() { wrapM.style.display = ''; wrapL.style.display = 'none'; bM.className = 'btn small'; bL.className = 'btn small secondary'; fit(); }
+      function showList() { wrapM.style.display = 'none'; wrapL.style.display = ''; bM.className = 'btn small secondary'; bL.className = 'btn small'; }
+      bM.addEventListener('click', showMap);
+      bL.addEventListener('click', showList);
+      fit();
+    })();
+    </script>`;
   return page({ title: "Network map", user, body });
 }
 
