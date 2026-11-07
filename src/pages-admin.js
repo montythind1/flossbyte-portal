@@ -1575,7 +1575,7 @@ export async function sendMonthlyReports(env, force) {
       ? `<p>Support tickets this month: ${tickets.opened || 0} opened, ${tickets.closed || 0} closed.</p>`
       : `<p>No support tickets this month.</p>`;
     const subject = `Your Office IT report — ${org.name}`;
-    const html = wrap(subject, `<p>Here is your office technology summary for the last 30 days, from your FlossByte portal records.</p>${sections.join("")}${ticketLine}<p style="color:#5A6B82">Questions about anything here? Reply to this email or call FlossByte at (669) 237-2264.</p>`);
+    const html = wrap(subject, `<p>Here is your office technology summary for the last 30 days, from your FlossByte portal records.</p>${sections.join("")}${ticketLine}<p style="color:#5B6B82">Questions about anything here? Reply to this email or call FlossByte at (669) 237-2264.</p>`);
     const text = `Your Office IT report — ${org.name}\n\n${textParts.join("\n\n")}\n\n${tickets && (tickets.opened || tickets.closed) ? `Support tickets this month: ${tickets.opened || 0} opened, ${tickets.closed || 0} closed.` : "No support tickets this month."}`;
     for (const to of recipients) {
       await sendEmail(env, { to, template: "monthly_report", subject, html, text });

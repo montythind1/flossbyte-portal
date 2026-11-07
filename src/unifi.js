@@ -777,7 +777,7 @@ export async function runUnifiSync(env) {
         }
       }
       for (const mail of mails) {
-        const html = wrap(mail.subject, `<p>${mail.text}</p><p style="color:#5A6B82">Sent by FlossByte Portal device monitoring. You can pause these alerts from the Device sync page.</p>`);
+        const html = wrap(mail.subject, `<p>${mail.text}</p><p style="color:#5B6B82">Sent by FlossByte Portal device monitoring. You can pause these alerts from the Device sync page.</p>`);
         for (const to of recipients) {
           await sendEmail(env, { to, template: "device_alert", subject: mail.subject, html, text: mail.text });
           alertsSent++;

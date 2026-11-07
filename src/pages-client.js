@@ -149,7 +149,7 @@ function relTime(iso) {
 
 function denied(user, code) {
   const body = `<div class="card narrow"><h1>${code === 404 ? "Not found" : "No access"}</h1>
-    <p class="muted">${code === 404 ? "That page does not exist." : "This login does not have access to that practice."}</p></div>`;
+    <p class="muted">${code === 404 ? "That page does not exist." : "This login does not have access to that office."}</p></div>`;
   return withStatus(page({ title: "Portal", user, body }), code);
 }
 
@@ -160,7 +160,7 @@ function locNav(loc, active) {
   const item = (key, href, label, ic) =>
     `<a class="rail-item${active === key ? " active" : ""}" href="${href}">${icon(ic)}${label}</a>`;
   return `<div class="shell"><aside class="rail">
-    <a href="/app" style="display:block;padding:0 10px 9px;margin-bottom:9px;border-bottom:1px solid #EEF2F7;color:#5A6B82;text-decoration:none;font-size:13px;font-weight:600">&larr; Overview</a>
+    <a href="/app" style="display:block;padding:0 10px 9px;margin-bottom:9px;border-bottom:1px solid #EEF2F7;color:#5B6B82;text-decoration:none;font-size:13px;font-weight:600">&larr; Overview</a>
     <div class="rail-context"><div class="rc-t">${esc(loc.name)}</div><div class="rc-s">${esc(loc.customer_name)}</div></div>
     ${item("overview", base, "Overview", "grid")}
     <a class="rail-item${["network", "equipment", "topology"].includes(active) ? " active" : ""}" href="${base}/network">${icon("topology")}Office IT</a>
@@ -174,7 +174,7 @@ function locNav(loc, active) {
 function locTabs(loc, current) {
   const base = `/app/locations/${loc.id}`;
   const tab = (key, href, label) =>
-    `<a href="${href}" style="padding:9px 14px;font-weight:${current === key ? "700" : "500"};color:${current === key ? "#0A1628" : "#5A6B82"};border-bottom:3px solid ${current === key ? "#00BFA5" : "transparent"};margin-bottom:-2px;text-decoration:none;white-space:nowrap">${label}</a>`;
+    `<a href="${href}" style="padding:9px 14px;font-weight:${current === key ? "700" : "500"};color:${current === key ? "#0A1628" : "#5B6B82"};border-bottom:3px solid ${current === key ? "#00BFA5" : "transparent"};margin-bottom:-2px;text-decoration:none;white-space:nowrap">${label}</a>`;
   return `<div style="display:flex;gap:2px;border-bottom:2px solid #E6EBF2;margin:4px 0 18px;overflow-x:auto">${tab("network", base + "/network", "WiFi &amp; Internet")}${tab("equipment", base + "/equipment", "Equipment")}${tab("topology", base + "/topology", "Network map")}</div>`;
 }
 
@@ -210,7 +210,7 @@ async function railLocs(env, user) {
 function lockedTile(user, loc, productName, productKey) {
   const body = `${locNav(loc, "")}<div class="card"><h2>${esc(productName)}</h2>
     <p><span class="pill off">Not included</span></p>
-    <p class="muted">This service is not turned on for your practice.</p>
+    <p class="muted">This service is not turned on for this office.</p>
     ${productKey ? requestForm(loc, productKey) : ""}</div>`;
   return page({ title: productName, user, body });
 }
@@ -325,8 +325,8 @@ export async function appHome(env, request, user) {
   const lastCheck = locs.length ? await db.prepare(
     "SELECT MAX(captured_at) AS last FROM network_snapshots WHERE location_id IN (SELECT id FROM locations WHERE customer_id = ?)")
     .bind(locs[0].customer_id).first().catch(() => null) : null;
-  const bandSub = (!worst || worst.score >= 85 ? "Nothing needs attention at any practice."
-    : (worst.reasons.slice(0, 2).join(" · ") || "See its practice card for details."))
+  const bandSub = (!worst || worst.score >= 85 ? "Nothing needs attention at any office."
+    : (worst.reasons.slice(0, 2).join(" · ") || "See its office card for details."))
     + (lastCheck && lastCheck.last ? ` · checked ${relTime(lastCheck.last)}` : "");
   const chip = "background:#F2F6FA;border:1px solid #DDE5EE;color:#0A1628;border-radius:99px;padding:6px 12px;font-weight:600;font-size:13px;text-decoration:none;white-space:nowrap";
   const chips = [
@@ -344,7 +344,7 @@ export async function appHome(env, request, user) {
   // portal's standard tile style (Montek asked for the numbers back
   // with the white-band design kept).
   const strip = `<div class="statgrid">
-    <div class="stat"><b>${locs.length}</b><span>${locs.length === 1 ? "Practice" : "Practices"}</span></div>
+    <div class="stat"><b>${locs.length}</b><span>${locs.length === 1 ? "Office" : "Offices"}</span></div>
     <div class="stat"><b>${totDevices ? `${totOnline} of ${totDevices}` : "0"}</b><span>Devices online</span></div>
     <div class="stat"><b>${totTickets}</b><span>Open tickets</span></div>
     <div class="stat"><b>${billing ? billing.unpaid || 0 : 0}</b><span>Unpaid invoices</span></div>
@@ -550,9 +550,9 @@ function teamEditFormHtml(target, user) {
        <label style="display:flex;gap:8px;align-items:flex-start;font-weight:400;margin:0 0 8px"><input type="radio" name="role" value="user" style="width:auto;margin-top:3px" ${target.role !== "customer_admin" ? "checked" : ""}> <span><b>User</b><br><span class="muted">Sees the locations below, can open tickets and view documents and billing.</span></span></label>
        <label style="display:flex;gap:8px;align-items:flex-start;font-weight:400;margin:0 0 14px"><input type="radio" name="role" value="admin" style="width:auto;margin-top:3px" ${target.role === "customer_admin" ? "checked" : ""}> <span><b>Admin</b><br><span class="muted">Everything a user can do, plus services, the team, and editing equipment records.</span></span></label>
        <label>Sees</label>
-       <label style="display:flex;gap:8px;align-items:center;font-weight:400;margin:0 0 6px"><input type="checkbox" name="all_locations" value="1" style="width:auto" ${target.all_locations ? "checked" : ""}> All locations</label>
+       <label style="display:flex;gap:8px;align-items:center;font-weight:400;margin:0 0 6px"><input type="checkbox" name="all_locations" value="1" style="width:auto" ${target.all_locations ? "checked" : ""}> All offices</label>
        ${target.org_locations.map((l) => `<label style="display:flex;gap:8px;align-items:center;font-weight:400;margin:0 0 6px"><input type="checkbox" name="loc" value="${l.id}" style="width:auto" ${target.location_ids.includes(l.id) ? "checked" : ""}> ${esc(l.name)}</label>`).join("")}
-       <p class="muted" style="margin:0 0 14px">Tick All locations, or tick the individual locations this login may see.</p>`;
+       <p class="muted" style="margin:0 0 14px">Tick All offices, or tick the individual offices this login may see.</p>`;
   return `<form method="post" action="/app/team/${target.id}/edit" style="padding:6px 2px">
       <div class="row"><span style="flex:1"><label>First name <span class="req">*</span></label><input name="first_name" value="${esc(np.first)}" required></span>
       <span style="flex:1"><label>Middle name</label><input name="middle_name" value="${esc(np.middle)}"></span>
@@ -603,7 +603,7 @@ export async function teamEditPost(env, request, user, targetId) {
     const allLocs = f.get("all_locations") === "1";
     const picked = f.getAll("loc").map((v) => Number(v)).filter((n) => Number.isInteger(n) && n > 0);
     const validPicked = picked.filter((id) => target.org_locations.some((l) => l.id === id));
-    if (!allLocs && validPicked.length === 0) return back("Tick All locations, or at least one location this login can see.");
+    if (!allLocs && validPicked.length === 0) return back("Tick All offices, or at least one office this login can see.");
     const sameAccess = allLocs === !!target.all_locations
       && (allLocs || (validPicked.length === target.location_ids.length
         && validPicked.every((id) => target.location_ids.includes(id))));
@@ -652,7 +652,7 @@ export async function productPage(env, request, user, locationId, productKey) {
   const states = await productStates(env.DB, loc.customer_id, locationId);
   const state = states.find((s) => s.key === productKey);
   const body = `${locNav(loc, "")}<div class="card"><h2>${esc(prod.name)}</h2>
-    <p><span class="pill on">On for this practice</span></p>
+    <p><span class="pill on">On for this office</span></p>
     <p class="muted">${esc(prod.description || "")}</p>
     <p class="muted">Work for this service shows up here as it gets scheduled. Questions: call (669) 237-2264.</p></div>`;
   return page({ title: prod.name, user, body });
@@ -1124,12 +1124,12 @@ export async function topologyPage(env, request, user, locationId) {
   const verdict = offList.length
     ? `<div class="card" style="border-left:4px solid #b45309"><p style="margin:0"><b>Needs attention.</b> ${all.length} devices, ${online} online${lastSeen ? ` · last checked ${esc(relTime(lastSeen))}` : ""}.</p>
        <p style="margin:6px 0 0"><b>Offline now:</b> ${findLinks}. <span class="muted">Tap a name to find it on the map.</span></p></div>`
-    : `<div class="card" style="border-left:4px solid #0e9f6e"><p style="margin:0"><b>Everything is online.</b> All ${all.length} devices are up and connected${lastSeen ? ` · last checked ${esc(relTime(lastSeen))}` : ""}.</p></div>`;
+    : `<div class="card" style="border-left:4px solid #0A7C6E"><p style="margin:0"><b>Everything is online.</b> All ${all.length} devices are up and connected${lastSeen ? ` · last checked ${esc(relTime(lastSeen))}` : ""}.</p></div>`;
   const body = `${locNav(loc, "topology")}<h1>Network map</h1>${locTabs(loc, "topology")}
     ${verdict}
     <div class="card" style="padding:0;overflow:hidden">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:12px 14px;border-bottom:1px solid #EEF2F7;flex-wrap:wrap">
-        <div class="muted" style="font-size:13px"><span style="color:#0e9f6e">&#9679;</span> Online &nbsp;<span style="color:#dc2626">&#9679;</span> Offline &nbsp;&middot;&nbsp; Drag to move, scroll or use + and &minus; to zoom, tap a device to open it</div>
+        <div class="muted" style="font-size:13px"><span style="color:#0A7C6E">&#9679;</span> Online &nbsp;<span style="color:#b91c1c">&#9679;</span> Offline &nbsp;&middot;&nbsp; Drag to move, scroll or use + and &minus; to zoom, tap a device to open it</div>
         <div style="display:flex;gap:6px;align-items:center">
           <input id="tq" type="search" placeholder="Find a device…" aria-label="Find a device" style="border:1px solid #D8E1EC;border-radius:8px;padding:6px 10px;font:inherit;font-size:13px;width:160px">
           <span id="tqMsg" class="muted" style="font-size:12px"></span>
@@ -1205,7 +1205,7 @@ export async function topologyPage(env, request, user, locationId) {
           var tx = n.group ? x + 16 : x + 28;
           html += '<g class="tnode" data-id="' + n.id + '" style="cursor:pointer">'
             + '<rect x="' + x + '" y="' + y + '" width="' + NW + '" height="' + NH + '" rx="10" fill="' + fill + '" stroke="' + stroke + '"' + (n.group ? ' stroke-dasharray="5 4"' : '') + '/>'
-            + (n.group ? '' : '<circle cx="' + (x + 16) + '" cy="' + (y + NH / 2) + '" r="5" fill="' + (n.off ? '#dc2626' : '#0e9f6e') + '"/>')
+            + (n.group ? '' : '<circle cx="' + (x + 16) + '" cy="' + (y + NH / 2) + '" r="5" fill="' + (n.off ? '#b91c1c' : '#0A7C6E') + '"/>')
             + '<text x="' + tx + '" y="' + (y + 20) + '" font-size="13" font-weight="700" font-family="Inter,sans-serif" fill="' + (root ? '#ffffff' : '#0A1628') + '">' + escT(trunc(n.name, 22)) + '</text>'
             + '<text x="' + tx + '" y="' + (y + 37) + '" font-size="11" font-family="Inter,sans-serif" fill="' + (root ? '#B9C7DC' : '#667085') + '">' + escT(trunc(n.meta, 30)) + '</text></g>';
           (n.children || []).forEach(nodes);
@@ -1449,7 +1449,7 @@ function wpCopy(b){var c=b.parentElement.querySelector('.wp');if(!c||!navigator.
   if (histDays.length >= 2) {
     const bars = histDays.map((d) => {
       const u = d.uptimePct != null ? d.uptimePct : 100;
-      const col = u >= 99.5 ? "#00BFA5" : u >= 98 ? "#f59e0b" : "#dc2626";
+      const col = u >= 99.5 ? "#0A7C6E" : u >= 98 ? "#b45309" : "#b91c1c";
       return `<div title="${esc(d.date)}: ${u >= 99.95 ? "online all day" : `online ${esc(String(u))}% of the day${d.downtimeMin ? `, down ${esc(String(d.downtimeMin))} min` : ""}`}" style="flex:1;background:${col};height:${Math.max(8, Math.round(u))}%;border-radius:3px 3px 0 0;min-width:6px"></div>`;
     }).join("");
     historyCard = `<div class="card"><h2 style="margin-top:0">Internet, last ${histDays.length} days</h2>
@@ -1480,7 +1480,7 @@ function wpCopy(b){var c=b.parentElement.querySelector('.wp');if(!c||!navigator.
       ${srow("Promised speed", svc.down || svc.up ? `${svc.down ? esc(String(svc.down)) + " down" : ""}${svc.down && svc.up ? " · " : ""}${svc.up ? esc(String(svc.up)) + " up" : ""} Mbps` : "")}
       ${srow("Account number", esc(svc.account || ""))}
       ${srow("Contract ends", svc.contractEnd ? `${esc(fmtDateUS(svc.contractEnd))}${cDays != null && cDays <= 90 ? ` <span class="pill warn">${cDays < 0 ? "ended" : cDays + " days left"}</span>` : ""}` : "")}
-      ${pct != null ? `<div style="margin-top:12px"><div style="height:8px;background:#E6EBF2;border-radius:99px;overflow:hidden"><div style="height:100%;width:${pct}%;background:${pct >= 80 ? "#00BFA5" : pct >= 50 ? "#f59e0b" : "#dc2626"}"></div></div>
+      ${pct != null ? `<div style="margin-top:12px"><div style="height:8px;background:#E6EBF2;border-radius:99px;overflow:hidden"><div style="height:100%;width:${pct}%;background:${pct >= 80 ? "#0A7C6E" : pct >= 50 ? "#b45309" : "#b91c1c"}"></div></div>
       <p class="muted" style="margin:6px 0 0">Measured download is ${measured} Mbps, ${pct}% of the ${promised} Mbps on the plan.</p></div>` : ""}
       ${isFb ? `<details style="margin-top:12px"><summary class="muted" style="cursor:pointer">Update plan details</summary><div style="margin-top:10px">${svcForm(svc)}</div></details>` : ""}
     </div>`;
