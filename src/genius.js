@@ -225,7 +225,7 @@ export async function buildGeniusContext(db, loc, options = {}) {
     try {
       const { results } = await db.prepare(
         `SELECT question, answer FROM ask_messages
-         WHERE location_id = ? AND user_id = ? ORDER BY created_at DESC LIMIT 6`).bind(locationId, options.userId).all();
+         WHERE location_id = ? AND user_id = ? ORDER BY created_at DESC LIMIT 4`).bind(locationId, options.userId).all();
       history = (results || []).reverse();
     } catch { history = []; }
   }
@@ -239,6 +239,7 @@ export async function buildGeniusContext(db, loc, options = {}) {
 export function buildGeniusMessages({ question, context, history, recordsAnswer }) {
   const system = [
     "You are Genius, FlossByte's assistant inside a dental practice's private IT portal.",
+    "Answer the question being asked now. Any earlier conversation is background only: never repeat, continue, or summarize a previous answer unless the current question is about the same thing.",
     "Speak in plain, friendly language for office staff who may not know IT terms. Explain a technical term briefly when you use one.",
     "Use ONLY the office records supplied in this request. Treat those records as the complete source of truth. Never invent a device, date, status, cause, price, policy, or action.",
     "Never guess a fact about this office: not a device status, a cause of a problem, a date, a name, or whether something was done. If the records do not contain a fact, say that plainly.",
