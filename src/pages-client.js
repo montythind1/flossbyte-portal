@@ -2341,11 +2341,15 @@ export async function askPage(env, request, user, locationId) {
   // pinned to the bottom. The newest exchange sits right above the
   // composer, and the page lands on it.
   const rows = (results || []).reverse();
+  // Typing reveal: right after a question is asked, the newest answer
+  // types out like ChatGPT instead of appearing all at once. It is a
+  // presentation of the saved answer only; revisits show it in full.
+  const fresh = new URL(request.url).searchParams.get("fresh") === "1" && !openThread;
   const history = rows.map((m, i) => `<div class="gex"${!openThread && i === rows.length - 1 ? ' id="latest"' : ""}>
     ${seeAll && m.user_id !== user.id ? `<div class="muted" style="font-size:12.5px">${esc(m.asker_name || "Team member")}</div>` : ""}
     <div class="msg q">${esc(m.question)}</div>
     <div class="glabel">Genius</div>
-    <div class="msg a">${esc(m.answer)}</div>${canEscalate ? `<form method="post" action="/app/locations/${locationId}/ask/escalate" style="margin:0">
+    <div class="msg a${fresh && i === rows.length - 1 ? " gtype" : ""}">${esc(m.answer)}</div>${canEscalate ? `<form method="post" action="/app/locations/${locationId}/ask/escalate" style="margin:0">
       <input type="hidden" name="message_id" value="${m.id}">
       <button class="btn small secondary" type="submit">Send this to FlossByte</button></form>` : ""}</div>`).join("");
   const starter = (q) => `<form method="post" action="/app/locations/${locationId}/ask" style="margin:0"><input type="hidden" name="question" value="${esc(q)}"><button class="btn secondary" style="width:100%;text-align:left" type="submit">${esc(q)}</button></form>`;
@@ -2383,6 +2387,24 @@ export async function askPage(env, request, user, locationId) {
   const endBtn = openThread
     ? `<form method="post" action="/app/locations/${locationId}/chat/end" style="margin:0" onsubmit="return confirm('End this chat? The conversation is saved, and Genius becomes available again.')">
         <button class="btn small secondary" type="submit">End chat</button></form>` : "";
+  const typeScript = fresh && rows.length ? `<script>
+  (function(){
+    var el = document.querySelector('.gtype');
+    if (!el) return;
+    if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) { el.classList.remove('gtype'); return; }
+    var full = el.textContent;
+    var step = Math.max(2, Math.ceil(full.length / 200));
+    var i = 0;
+    el.textContent = '';
+    var timer = setInterval(function(){
+      i += step;
+      el.textContent = full.slice(0, i);
+      el.scrollIntoView({ block: 'end' });
+      if (i >= full.length) { clearInterval(timer); el.classList.remove('gtype'); }
+    }, 14);
+    el.addEventListener('click', function(){ clearInterval(timer); el.textContent = full; el.classList.remove('gtype'); });
+  })();
+  </script>` : "";
   const pollScript = openThread ? `<script>
   (function(){
     var last = ${lastChatId}, loc = ${locationId}, box = document.getElementById('chat-msgs');
@@ -2417,6 +2439,7 @@ export async function askPage(env, request, user, locationId) {
   ${composer}
   ${underRow}
   ${pollScript}
+  ${typeScript}
   <script>
   (function(){ var el = document.getElementById('latest') || document.getElementById('chat-msgs'); if (el) { el.scrollIntoView({ block: 'end' }); } })();
   </script>`;
@@ -2454,7 +2477,7 @@ export async function askPost(env, request, user, locationId) {
     await env.DB.prepare("INSERT INTO ask_messages (location_id, user_id, question, answer) VALUES (?, ?, ?, ?)")
       .bind(locationId, user.id, question, answer).run();
   }
-  return redirect(`/app/locations/${locationId}/ask#latest`);
+  return redirect(`/app/locations/${locationId}/ask?fresh=1#latest`);
 }
 
 export async function askEscalatePost(env, request, user, locationId) {

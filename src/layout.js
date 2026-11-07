@@ -204,6 +204,8 @@ td.num,th.num{text-align:right}
 .gex{display:flex;flex-direction:column;gap:8px}
 .gstream .msg.a{max-width:94%}
 .glabel{font-size:11px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:#00796b}
+.gtype::after{content:"▌";color:#00796b;font-size:12px;margin-left:1px;animation:gblink 1s steps(1) infinite}
+@keyframes gblink{0%,49%{opacity:1}50%,100%{opacity:0}}
 .gcomposer{position:sticky;bottom:14px;z-index:5;display:flex;gap:8px;align-items:center;background:#fff;border:1px solid var(--line);border-radius:14px;padding:10px;box-shadow:0 8px 28px rgba(10,22,40,.10);margin-top:14px}
 .gcomposer input{flex:1;font-size:16px;border:none;outline:none;background:transparent;padding:10px 6px;font-family:inherit;color:var(--ink);min-width:0}
 .gcomposer .btn{border-radius:10px;flex:0 0 auto}
