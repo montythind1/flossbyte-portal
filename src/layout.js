@@ -223,6 +223,13 @@ html{scroll-padding-top:84px;scroll-padding-bottom:120px}
 .gpage .gstream{flex:1 1 auto;overflow-y:auto;min-height:0;overscroll-behavior:contain}
 .gpage .gcomposer{position:static}
 @media (max-width:900px){.gpage{height:calc(100vh - 300px);height:calc(100dvh - 300px)}}
+main:has(.gfill-shell){max-width:none;padding:0}
+.gfill-shell{height:calc(100vh - 72px);height:calc(100dvh - 72px);gap:0;align-items:stretch}
+.gfill-shell .rail{position:static;height:100%;overflow-y:auto;border-radius:0;border-top:none;border-bottom:none;border-left:none}
+.gfill-main{min-height:0;display:flex;flex-direction:column}
+.gfill-main .gpage{flex:1 1 auto;height:auto !important;min-height:0;padding:14px 20px 10px}
+@media (max-width:900px){.gfill-shell{grid-template-rows:auto minmax(0,1fr)}.gfill-shell .rail{height:auto;overflow-x:auto;overflow-y:hidden;border:none;border-bottom:1px solid var(--line)}.gfill-main .gpage{padding:10px 10px 8px}}
+@media (max-width:640px){.gfill-shell{height:calc(100vh - 56px);height:calc(100dvh - 56px)}}
 .gcomposer .btn{border-radius:10px;flex:0 0 auto}
 .gempty{text-align:center;padding:26px 8px 8px}
 .gmark{display:inline-flex;align-items:center;justify-content:center;width:46px;height:46px;border-radius:50%;background:var(--navy,#0A1628);color:#fff;font-family:'Plus Jakarta Sans',Inter,sans-serif;font-weight:800;font-size:20px}

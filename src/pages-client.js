@@ -158,17 +158,17 @@ function denied(user, code) {
 
 // App shell openers (see adminNav in pages-admin.js): left rail on
 // desktop, swipeable chip bar on phones; the layout CSS owns the switch.
-function locNav(loc, active) {
+function locNav(loc, active, fill) {
   const base = `/app/locations/${loc.id}`;
   const item = (key, href, label, ic) =>
     `<a class="rail-item${active === key ? " active" : ""}" href="${href}">${icon(ic)}${label}</a>`;
-  return `<div class="shell"><aside class="rail">
+  return `<div class="shell${fill ? " gfill-shell" : ""}"><aside class="rail">
     <a class="rail-back" href="/app">&larr; Overview</a>
     <div class="rail-context"><div class="rc-t">${esc(loc.name)}</div><div class="rc-s">${esc(loc.customer_name)}</div></div>
     ${item("overview", base, "Overview", "grid")}
     <a class="rail-item${["network", "equipment", "topology"].includes(active) ? " active" : ""}" href="${base}/network">${icon("topology")}Office IT</a>
     ${item("tickets", base + "/tickets", "Tickets", "ticket")}${item("documents", base + "/documents", "Documents", "folder")}
-    ${item("ask", base + "/ask", "Genius", "chat")}</aside><div class="shell-main">`;
+    ${item("ask", base + "/ask", "Genius", "chat")}</aside><div class="shell-main${fill ? " gfill-main" : ""}">`;
 }
 
 // Top tabs inside the Network section: the sidebar picks the place,
@@ -2634,7 +2634,7 @@ export async function askPage(env, request, user, locationId) {
     setInterval(tick, 4000);
   })();
   </script>` : "";
-  const body = `${locNav(loc, "ask")}
+  const body = `${locNav(loc, "ask", true)}
   <div class="gpage">
   <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
     <h1 style="margin:0">${openThread ? "FlossByte Support" : "Genius"}</h1>${endBtn}</div>
