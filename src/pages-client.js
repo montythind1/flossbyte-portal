@@ -2409,16 +2409,31 @@ export async function askPage(env, request, user, locationId) {
     if (!el) return;
     if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) { el.classList.remove('gtype'); return; }
     var full = el.textContent;
-    var step = Math.max(2, Math.ceil(full.length / 200));
-    var i = 0;
+    var duration = Math.min(4600, Math.max(850, full.length * 6));
+    var started = null;
+    var lastScroll = 0;
+    var frameId = 0;
     el.textContent = '';
-    var timer = setInterval(function(){
-      i += step;
-      el.textContent = full.slice(0, i);
+    function finish(){
+      if (frameId) cancelAnimationFrame(frameId);
+      el.textContent = full;
+      el.classList.remove('gtype');
       el.scrollIntoView({ block: 'end' });
-      if (i >= full.length) { clearInterval(timer); el.classList.remove('gtype'); }
-    }, 14);
-    el.addEventListener('click', function(){ clearInterval(timer); el.textContent = full; el.classList.remove('gtype'); });
+    }
+    function frame(now){
+      if (!started) started = now;
+      var progress = Math.min(1, (now - started) / duration);
+      var count = Math.floor(full.length * progress);
+      el.textContent = full.slice(0, count);
+      if (now - lastScroll > 160) {
+        lastScroll = now;
+        el.scrollIntoView({ block: 'end' });
+      }
+      if (progress < 1) frameId = requestAnimationFrame(frame);
+      else finish();
+    }
+    frameId = requestAnimationFrame(frame);
+    el.addEventListener('click', finish);
   })();
   </script>` : "";
   const askScript = !openThread ? `<script>
@@ -2433,15 +2448,30 @@ export async function askPage(env, request, user, locationId) {
     function typeInto(node, full){
       if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) { node.textContent = full; return; }
       node.classList.add('gtype');
-      var step = Math.max(2, Math.ceil(full.length / 200));
-      var i = 0;
-      var timer = setInterval(function(){
-        i += step;
-        node.textContent = full.slice(0, i);
+      var duration = Math.min(4600, Math.max(850, full.length * 6));
+      var started = null;
+      var lastScroll = 0;
+      var frameId = 0;
+      function finish(){
+        if (frameId) cancelAnimationFrame(frameId);
+        node.textContent = full;
+        node.classList.remove('gtype');
         node.scrollIntoView({ block: 'end' });
-        if (i >= full.length) { clearInterval(timer); node.classList.remove('gtype'); }
-      }, 14);
-      node.addEventListener('click', function(){ clearInterval(timer); node.textContent = full; node.classList.remove('gtype'); });
+      }
+      function frame(now){
+        if (!started) started = now;
+        var progress = Math.min(1, (now - started) / duration);
+        var count = Math.floor(full.length * progress);
+        node.textContent = full.slice(0, count);
+        if (now - lastScroll > 160) {
+          lastScroll = now;
+          node.scrollIntoView({ block: 'end' });
+        }
+        if (progress < 1) frameId = requestAnimationFrame(frame);
+        else finish();
+      }
+      frameId = requestAnimationFrame(frame);
+      node.addEventListener('click', finish);
     }
     function addEscalate(wrap, id){
       if (!ESC || !id) return;
