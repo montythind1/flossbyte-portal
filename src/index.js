@@ -100,6 +100,8 @@ async function route(request, env) {
     if (path === "/admin/sync/run" && method === "POST") return admin.syncRunPost(env, request, user);
     if (path === "/admin/sync/run-sophos" && method === "POST") return admin.syncRunSophosPost(env, request, user);
     if (path === "/admin/sync/run-atera" && method === "POST") return admin.syncRunAteraPost(env, request, user);
+    if (path === "/admin/sync/merge" && method === "POST") return admin.syncMergePost(env, request, user);
+    if (path === "/admin/sync/dup-dismiss" && method === "POST") return admin.syncDupDismissPost(env, request, user);
     if (path === "/admin/sync/mute" && method === "POST") return admin.syncMutePost(env, request, user);
     if (path === "/admin/sync/report" && method === "POST") return admin.syncReportPost(env, request, user);
     m = path.match(/^\/admin\/transfer\/(\d+)$/);

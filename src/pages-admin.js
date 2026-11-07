@@ -155,7 +155,7 @@ export async function ticketsInboxPage(env, request, user) {
 // ---------- Activity (the audit log, readable) ----------
 const ACTION_LABEL = {
   ticket_create: "Opened a ticket", ticket_status: "Changed a ticket status", equipment_add: "Added equipment",
-  equipment_edit: "Edited equipment", equipment_delete: "Deleted equipment", document_upload: "Uploaded a document",
+  equipment_edit: "Edited equipment", equipment_delete: "Deleted equipment", equipment_merge: "Merged duplicate equipment", document_upload: "Uploaded a document",
   quote_accept: "Accepted a quote", quote_create: "Created a quote", quote_send: "Sent a quote",
   quote_decline: "Declined a quote", quote_delete: "Deleted a quote",
   invoice_create: "Created an invoice", invoice_paid: "Marked an invoice paid", invoice_void: "Voided an invoice",
@@ -1463,6 +1463,7 @@ export async function syncPage(env, request, user) {
     <div class="card"><h3>Which site is which office?</h3>
       <p class="muted">Devices are imported only after you map a site or tenant to a location. Devices from unmapped ones are counted in the sync summaries but never added.</p>
       ${unifiMap}${sophosMap}${ateraMap}</div>
+    ${await dupCardHtml(env)}
     <div class="card"><h3>Alerts &amp; monthly report</h3>
       <p class="muted">When a key device (gateway, server, firewall) goes offline, or a whole office goes dark, the portal emails the FlossByte admins right after that check. ${mutedUntil
         ? `<b>Alerts are paused until ${esc(mutedUntil.slice(0, 16).replace("T", " "))} UTC.</b>`
@@ -1606,6 +1607,181 @@ export async function syncRunSophosPost(env, request, user) {
     ? `Sophos sync done. ${s.inserted} added, ${s.updated} updated, ${s.offlined} marked offline, ${s.unmappedDevices} not imported (tenant not mapped).`
     : `Sophos sync did not run: ${s.message}`;
   return redirect("/admin/sync?msg=" + encodeURIComponent(text));
+}
+
+// ---------- Possible duplicate equipment ----------
+// The syncs join on vendor id, then MAC, then serial, then name. A
+// device that shows up with none of those in common across systems (a
+// laptop UniFi sees on its dock and Atera sees on WiFi, say) can still
+// land as two rows. This review flags likely pairs per location so an
+// admin can merge them into one record, or dismiss the pair as two
+// genuinely different devices (dismissals are kept in system_state).
+function dupNorm(s) { return String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, ""); }
+function editDist(a, b) {
+  if (Math.abs(a.length - b.length) > 2) return 99;
+  const row = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    let prev = row[0]; row[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const cur = row[j];
+      row[j] = Math.min(row[j] + 1, row[j - 1] + 1, prev + (a[i - 1] === b[j - 1] ? 0 : 1));
+      prev = cur;
+    }
+  }
+  return row[b.length];
+}
+function sourceLabel(s) {
+  return s === "unifi" ? "UniFi" : s === "unifi-client" ? "UniFi connected device" : s === "sophos" ? "Sophos"
+    : s === "atera" ? "Atera" : "Added by hand";
+}
+async function getDupDismissed(db) {
+  try {
+    const r = await db.prepare("SELECT value FROM system_state WHERE key = 'dup_dismissed'").first();
+    const arr = r ? JSON.parse(r.value || "[]") : [];
+    return new Set(Array.isArray(arr) ? arr : []);
+  } catch { return new Set(); }
+}
+async function findDuplicatePairs(env) {
+  const { results: rows } = await env.DB.prepare(
+    `SELECT e.*, l.name AS loc_name, c.name AS cust_name FROM equipment e
+     JOIN locations l ON l.id = e.location_id JOIN customers c ON c.id = l.customer_id
+     ORDER BY e.location_id, e.id`).all();
+  const dismissed = await getDupDismissed(env.DB);
+  const byLoc = new Map();
+  for (const r of rows || []) {
+    if (!byLoc.has(r.location_id)) byLoc.set(r.location_id, []);
+    byLoc.get(r.location_id).push(r);
+  }
+  const pairs = [];
+  for (const list of byLoc.values()) {
+    for (let i = 0; i < list.length; i++) {
+      for (let j = i + 1; j < list.length; j++) {
+        const a = list[i], b = list[j];
+        const reasons = [];
+        let score = 0;
+        if (a.mac && b.mac && String(a.mac).toLowerCase() === String(b.mac).toLowerCase()) { reasons.push("Same MAC address"); score += 4; }
+        if (a.serial && b.serial && String(a.serial).trim().toLowerCase() === String(b.serial).trim().toLowerCase()) { reasons.push("Same serial number"); score += 4; }
+        const na = dupNorm(a.name), nb = dupNorm(b.name);
+        if (na && na === nb && na.length >= 4) { reasons.push("Same name"); score += 3; }
+        else if (na && nb && Math.min(na.length, nb.length) >= 6 && (na.startsWith(nb) || nb.startsWith(na))) { reasons.push("Very similar names"); score += 2; }
+        else if (na && nb && Math.min(na.length, nb.length) >= 6 && editDist(na, nb) <= 2) { reasons.push("Very similar names"); score += 2; }
+        if (!reasons.length) continue;
+        const key = `${Math.min(a.id, b.id)}:${Math.max(a.id, b.id)}`;
+        if (dismissed.has(key)) continue;
+        pairs.push({ a, b, reasons, score, key });
+      }
+    }
+  }
+  pairs.sort((x, y) => y.score - x.score);
+  return pairs.slice(0, 30);
+}
+function dupPairHtml(p) {
+  const rec = (r, other) => `<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:8px 0;border-bottom:1px solid #EEF2F7">
+      <div style="flex:1;min-width:220px"><a href="/app/locations/${r.location_id}/equipment/${r.id}" style="font-weight:700;color:inherit;text-decoration:none">${esc(r.name)}</a>
+      <div class="muted" style="font-size:12.5px">${esc(sourceLabel(r.source))} · ${esc(r.type || "Device")}${r.mac ? ` · MAC ${esc(r.mac)}` : ""}${r.serial ? ` · Serial ${esc(r.serial)}` : ""}${r.ip_address ? ` · ${esc(r.ip_address)}` : ""} · ${esc(r.status)}</div></div>
+      <form method="post" action="/admin/sync/merge"><input type="hidden" name="keep" value="${r.id}"><input type="hidden" name="drop" value="${other.id}"><button class="btn small secondary" type="submit">Keep this record</button></form></div>`;
+  return `<div style="border:1px solid #E3EAF2;border-radius:10px;padding:6px 14px 10px;margin:0 0 12px">
+    <p style="margin:8px 0 2px"><b>${esc(p.a.cust_name)}: ${esc(p.a.loc_name)}</b> ${p.reasons.map((r) => `<span class="pill warn">${esc(r)}</span>`).join(" ")}</p>
+    ${rec(p.a, p.b)}${rec(p.b, p.a)}
+    <form method="post" action="/admin/sync/dup-dismiss" style="margin-top:8px"><input type="hidden" name="a" value="${p.a.id}"><input type="hidden" name="b" value="${p.b.id}"><button class="btn small secondary" type="submit">Not the same device</button></form></div>`;
+}
+async function dupCardHtml(env) {
+  try {
+    const pairs = await findDuplicatePairs(env);
+    return `<div class="card"><h3>Possible duplicates</h3>
+      <p class="muted">Different systems sometimes report the same device in ways that cannot be matched automatically, a laptop on its dock versus on WiFi, for example. Keep one record and the other merges into it (best details from both, links and computer details re-pointed), or mark the pair as two different devices and it will not be flagged again.</p>
+      ${pairs.length ? pairs.map(dupPairHtml).join("") : `<p class="muted">No possible duplicates right now.</p>`}</div>`;
+  } catch {
+    return `<div class="card"><h3>Possible duplicates</h3><p class="muted">The duplicate check could not run on this database yet.</p></div>`;
+  }
+}
+
+export async function syncMergePost(env, request, user) {
+  const f = await request.formData();
+  const keepId = Number(f.get("keep") || 0);
+  const dropId = Number(f.get("drop") || 0);
+  const back = (msg) => redirect("/admin/sync?msg=" + encodeURIComponent(msg));
+  if (!keepId || !dropId || keepId === dropId) return back("Those two records could not be merged.");
+  const keep = await env.DB.prepare("SELECT * FROM equipment WHERE id = ?").bind(keepId).first();
+  const drop = await env.DB.prepare("SELECT * FROM equipment WHERE id = ?").bind(dropId).first();
+  if (!keep || !drop || keep.location_id !== drop.location_id) return back("Those two records could not be merged.");
+  const take = (k, d) => (k !== null && k !== undefined && k !== "" ? k : d);
+  // Ownership: a hand-added keeper adopts the synced record's identity,
+  // so that sync keeps maintaining the merged row instead of the two
+  // halves drifting apart again.
+  let source = keep.source, externalId = keep.external_id;
+  if ((!keep.source || keep.source === "manual") && drop.source && drop.source !== "manual") {
+    source = drop.source; externalId = drop.external_id;
+  }
+  const status = keep.status === "online" || drop.status !== "online" ? keep.status : drop.status;
+  await env.DB.prepare(
+    `UPDATE equipment SET vendor = ?, type = ?, model = ?, serial = ?, mac = ?, firmware = ?,
+       ip_address = ?, ip_mode = ?, license_expires = ?, warranty_expires = ?, notes = ?,
+       parent_mac = ?, source = ?, external_id = ?, status = ?, last_seen_at = COALESCE(?, last_seen_at),
+       updated_at = datetime('now') WHERE id = ?`)
+    .bind(take(keep.vendor, drop.vendor), take(keep.type, drop.type), take(keep.model, drop.model),
+      take(keep.serial, drop.serial), take(keep.mac, drop.mac), take(keep.firmware, drop.firmware),
+      take(keep.ip_address, drop.ip_address), take(keep.ip_mode, drop.ip_mode),
+      take(keep.license_expires, drop.license_expires), take(keep.warranty_expires, drop.warranty_expires),
+      take(keep.notes, drop.notes), take(keep.parent_mac, drop.parent_mac), source, externalId, status,
+      drop.last_seen_at, keep.id).run();
+  // Anything plugged into the dropped record now hangs off the keeper.
+  const keepMac = take(keep.mac, drop.mac);
+  if (keepMac && drop.mac && String(keepMac).toLowerCase() !== String(drop.mac).toLowerCase()) {
+    await env.DB.prepare("UPDATE equipment SET parent_mac = ? WHERE location_id = ? AND parent_mac = ?")
+      .bind(keepMac, keep.location_id, drop.mac).run();
+  }
+  // Snapshot fix-ups: display-name renames move across, and Atera
+  // computer details that pointed at the dropped row point at the keeper.
+  try {
+    const snap = await env.DB.prepare("SELECT payload FROM network_snapshots WHERE location_id = ? AND kind = 'device_names'").bind(keep.location_id).first();
+    if (snap && snap.payload) {
+      const renames = JSON.parse(snap.payload || "{}");
+      const dropKey = drop.external_id || drop.mac;
+      const keepKey = externalId || keepMac;
+      if (dropKey && renames[dropKey] && keepKey && !renames[keepKey]) {
+        renames[keepKey] = renames[dropKey];
+        delete renames[dropKey];
+        await env.DB.prepare(
+          `INSERT INTO network_snapshots (location_id, kind, payload) VALUES (?, 'device_names', ?)
+           ON CONFLICT(location_id, kind) DO UPDATE SET payload = excluded.payload, captured_at = datetime('now')`)
+          .bind(keep.location_id, JSON.stringify(renames)).run();
+      }
+    }
+  } catch { /* renames are cosmetic; never block a merge */ }
+  try {
+    const snap = await env.DB.prepare("SELECT payload FROM network_snapshots WHERE location_id = ? AND kind = 'atera_agent'").bind(keep.location_id).first();
+    if (snap && snap.payload) {
+      const data = JSON.parse(snap.payload || "{}");
+      let changed = false;
+      for (const entry of Object.values(data.byAgent || {})) {
+        if (entry && entry.equipmentId === drop.id) { entry.equipmentId = keep.id; changed = true; }
+      }
+      if (changed) {
+        await env.DB.prepare(
+          `INSERT INTO network_snapshots (location_id, kind, payload) VALUES (?, 'atera_agent', ?)
+           ON CONFLICT(location_id, kind) DO UPDATE SET payload = excluded.payload, captured_at = datetime('now')`)
+          .bind(keep.location_id, JSON.stringify(data)).run();
+      }
+    }
+  } catch { /* detail re-points on the next sync anyway */ }
+  await env.DB.prepare("DELETE FROM equipment WHERE id = ?").bind(drop.id).run();
+  await audit(env.DB, user.id, "equipment_merge", "location", keep.location_id, `Kept #${keep.id} (${keep.name}); merged in #${drop.id} (${drop.name})`);
+  return back(`Merged. "${drop.name}" is now part of "${keep.name}", one record with the best details from both.`);
+}
+
+export async function syncDupDismissPost(env, request, user) {
+  const f = await request.formData();
+  const a = Number(f.get("a") || 0), b = Number(f.get("b") || 0);
+  if (a && b) {
+    const key = `${Math.min(a, b)}:${Math.max(a, b)}`;
+    const set = await getDupDismissed(env.DB);
+    set.add(key);
+    await env.DB.prepare(
+      "INSERT INTO system_state (key, value) VALUES ('dup_dismissed', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+      .bind(JSON.stringify([...set])).run();
+  }
+  return redirect("/admin/sync?msg=" + encodeURIComponent("Marked as two different devices. That pair will not be flagged again."));
 }
 
 export async function syncRunAteraPost(env, request, user) {
