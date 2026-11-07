@@ -4,10 +4,10 @@ import { page, redirect, esc, icon, fmtDateUS, withStatus } from "./layout.js";
 import {
   canAccessLocation, locationScope, getLocation, productEnabled, productStates,
   expiringItems, audit, accessibleLocationIds, customerAdminOrg, orgMembers,
-  removeUserFromCustomer,
+  removeUserFromCustomer, grantUserAccess,
 } from "./access.js";
 import { sendEmail, quoteAcceptedNoticeEmail, ticketCreatedNoticeEmail, ticketReplyNoticeEmail, productRequestEmail } from "./email.js";
-import { splitName, joinName } from "./auth.js";
+import { splitName, joinName, normalizePhone } from "./auth.js";
 
 function orgOrigin(env) { return env.APP_ORIGIN || "https://portal.flossbyte.com"; }
 
@@ -461,7 +461,7 @@ export async function teamPage(env, request, user) {
   }).join("");
   const rail = await railLocs(env, user);
   const body = `${orgRail(user, "team", cust ? cust.name : "My Portal", rail)}<h1>Team</h1>
-    <p class="muted">People with a login for ${esc(cust ? cust.name : "your organization")}. Use Edit to fix someone's name; an email address can't be changed once a login is created. Removing someone signs them out right away and takes away everything they could see here. Tickets and documents they created stay on record.</p>
+    <p class="muted">People with a login for ${esc(cust ? cust.name : "your organization")}. Use Edit to change someone's name, phone, role, or which locations they can see; an email address can't be changed once a login is created. Removing someone signs them out right away and takes away everything they could see here. Tickets and documents they created stay on record.</p>
     <div class="card" style="padding:8px 14px"><div class="tscroll"><table class="stack"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Sees</th><th>Status</th><th></th></tr></thead>
     <tbody>${rows || `<tr><td colspan="6" class="muted">No logins yet.</td></tr>`}</tbody></table></div></div>`;
   const msg = new URL(request.url).searchParams.get("msg");
@@ -492,41 +492,135 @@ export async function teamRemovePost(env, request, user, targetId) {
   return redirect("/app/team?msg=" + encodeURIComponent(`${result.target.name} was removed.`));
 }
 
+// Loads everything the team edit form needs about one member: the
+// user row (phone included), whether they are the org's main admin,
+// their current location rows, and the org's locations.
+async function teamTarget(db, org, targetId) {
+  const members = await orgMembers(db, org);
+  const target = members.find((m) => m.id === Number(targetId));
+  if (!target || target.status === "disabled") return null;
+  const row = await db.prepare("SELECT phone FROM users WHERE id = ?").bind(target.id).first();
+  const mainRow = await db.prepare(
+    "SELECT MAX(is_main_admin) AS m FROM user_access WHERE user_id = ? AND customer_id = ?")
+    .bind(target.id, org).first().catch(() => null);
+  const { results: locRows } = await db.prepare(
+    "SELECT location_id FROM user_access WHERE user_id = ? AND customer_id = ?").bind(target.id, org).all();
+  const { results: locs } = await db.prepare(
+    "SELECT id, name FROM locations WHERE customer_id = ? ORDER BY name").bind(org).all();
+  return {
+    ...target,
+    phone: row ? row.phone || "" : "",
+    is_main_admin: !!(mainRow && mainRow.m),
+    location_ids: (locRows || []).filter((r) => r.location_id !== null).map((r) => r.location_id),
+    org_locations: locs || [],
+  };
+}
+
 export async function teamEditPage(env, request, user, targetId) {
   const org = await customerAdminOrg(env.DB, user);
   if (org === null) return denied(user, 403);
-  const members = await orgMembers(env.DB, org);
-  const target = members.find((m) => m.id === Number(targetId));
-  if (!target || target.status === "disabled") return denied(user, 404);
+  const target = await teamTarget(env.DB, org, targetId);
+  if (!target) return denied(user, 404);
   const np = splitName(target.name);
-  const body = `<div class="card narrow"><h1>Edit name</h1>
+  const isSelf = target.id === user.id;
+  // Role and location access stay locked for your own login (so you
+  // can't lock yourself out) and for the main admin (the org's anchor
+  // login; changing who that is stays a deliberate separate step).
+  const lockReason = target.is_main_admin
+    ? "This is the main admin login for the organization, so its role and access can't be changed here."
+    : isSelf ? "You can't change your own role or access. Another admin can change them for you." : "";
+  const roleSection = lockReason
+    ? `<label>Role</label><p style="margin:0 0 4px"><b>${target.role === "customer_admin" ? "Admin" : "User"}</b></p>
+       <p class="muted" style="margin:0 0 14px">${lockReason}</p>
+       <label>Sees</label><p style="margin:0 0 14px">${esc(target.locations_label || "")}</p>`
+    : `<label>Role</label>
+       <label style="display:flex;gap:8px;align-items:flex-start;font-weight:400;margin:0 0 8px"><input type="radio" name="role" value="user" style="width:auto;margin-top:3px" ${target.role !== "customer_admin" ? "checked" : ""}> <span><b>User</b><br><span class="muted">Sees the locations below, can open tickets and view documents and billing.</span></span></label>
+       <label style="display:flex;gap:8px;align-items:flex-start;font-weight:400;margin:0 0 14px"><input type="radio" name="role" value="admin" style="width:auto;margin-top:3px" ${target.role === "customer_admin" ? "checked" : ""}> <span><b>Admin</b><br><span class="muted">Everything a user can do, plus services, the team, and editing equipment records.</span></span></label>
+       <label>Sees</label>
+       <label style="display:flex;gap:8px;align-items:center;font-weight:400;margin:0 0 6px"><input type="checkbox" name="all_locations" value="1" style="width:auto" ${target.all_locations ? "checked" : ""}> All locations</label>
+       ${target.org_locations.map((l) => `<label style="display:flex;gap:8px;align-items:center;font-weight:400;margin:0 0 6px"><input type="checkbox" name="loc" value="${l.id}" style="width:auto" ${target.location_ids.includes(l.id) ? "checked" : ""}> ${esc(l.name)}</label>`).join("")}
+       <p class="muted" style="margin:0 0 14px">Tick All locations, or tick the individual locations this login may see.</p>`;
+  const body = `<div class="card narrow"><h1>Edit ${esc(target.name)}</h1>
     <form method="post" action="/app/team/${target.id}/edit">
       <div class="row"><span style="flex:1"><label>First name <span class="req">*</span></label><input name="first_name" value="${esc(np.first)}" required></span>
       <span style="flex:1"><label>Middle name</label><input name="middle_name" value="${esc(np.middle)}"></span>
       <span style="flex:1"><label>Last name <span class="req">*</span></label><input name="last_name" value="${esc(np.last)}" required></span></div>
+      <label>Phone</label><input name="phone" value="${esc(target.phone)}" autocomplete="tel">
       <label>Email</label><input value="${esc(target.email)}" disabled>
-      <p class="muted" style="margin:4px 0 0">The email is their login and can't be changed.</p>
-      <p style="margin-top:16px"><button class="btn" type="submit">Save name</button>
+      <p class="muted" style="margin:4px 0 14px">The email is their login and can't be changed.</p>
+      ${roleSection}
+      <p style="margin-top:16px"><button class="btn" type="submit">Save changes</button>
       <a class="btn secondary" href="/app/team">Cancel</a></p>
     </form></div>`;
-  return page({ title: "Edit name", user, body, error: new URL(request.url).searchParams.get("err") || undefined });
+  return page({ title: "Edit team member", user, body, error: new URL(request.url).searchParams.get("err") || undefined });
 }
 
 export async function teamEditPost(env, request, user, targetId) {
   const org = await customerAdminOrg(env.DB, user);
   if (org === null) return denied(user, 403);
-  const members = await orgMembers(env.DB, org);
-  const target = members.find((m) => m.id === Number(targetId));
-  if (!target || target.status === "disabled") return denied(user, 404);
+  const target = await teamTarget(env.DB, org, targetId);
+  if (!target) return denied(user, 404);
+  const back = (err) => redirect(`/app/team/${target.id}/edit?err=` + encodeURIComponent(err));
   const f = await request.formData();
   const first = String(f.get("first_name") || "").trim();
   const middle = String(f.get("middle_name") || "").trim();
   const last = String(f.get("last_name") || "").trim();
-  if (!first || !last) return redirect(`/app/team/${target.id}/edit?err=` + encodeURIComponent("First name and last name are required."));
+  if (!first || !last) return back("First name and last name are required.");
   const name = joinName(first, middle, last);
-  await env.DB.prepare("UPDATE users SET name = ?, updated_at = datetime('now') WHERE id = ?").bind(name, target.id).run();
-  await audit(env.DB, user.id, "user_update", "user", target.id, `client ${org}`);
-  return redirect("/app/team?msg=" + encodeURIComponent(`${name}'s name is saved.`));
+  const phoneRaw = String(f.get("phone") || "").trim();
+  const phone = phoneRaw ? normalizePhone(phoneRaw) : "";
+  if (phoneRaw && !phone) return back("That phone number doesn't look complete. Use a 10-digit US number, or leave it blank.");
+  const locked = target.is_main_admin || target.id === user.id;
+  // Decide and validate role and access BEFORE writing anything, so a
+  // refused change never leaves a half-saved edit behind.
+  let wantAdmin = target.role === "customer_admin";
+  let roleChanged = false;
+  let accessPlan = null; // null = unchanged; otherwise { all, locIds }
+  if (!locked) {
+    wantAdmin = String(f.get("role") || "") === "admin";
+    roleChanged = wantAdmin !== (target.role === "customer_admin");
+    if (roleChanged && !wantAdmin) {
+      const admins = (await orgMembers(env.DB, org)).filter((m) => m.role === "customer_admin" && m.status === "active");
+      if (admins.length <= 1) return back("This is the organization's only admin, so the role can't be taken away. Make someone else an admin first.");
+    }
+    const allLocs = f.get("all_locations") === "1";
+    const picked = f.getAll("loc").map((v) => Number(v)).filter((n) => Number.isInteger(n) && n > 0);
+    const validPicked = picked.filter((id) => target.org_locations.some((l) => l.id === id));
+    if (!allLocs && validPicked.length === 0) return back("Tick All locations, or at least one location this login can see.");
+    const sameAccess = allLocs === !!target.all_locations
+      && (allLocs || (validPicked.length === target.location_ids.length
+        && validPicked.every((id) => target.location_ids.includes(id))));
+    if (!sameAccess) accessPlan = { all: allLocs, locIds: validPicked };
+  }
+  const changes = [];
+  if (name !== target.name) changes.push("name");
+  if (phone !== (target.phone || "")) changes.push("phone");
+  await env.DB.prepare("UPDATE users SET name = ?, phone = ?, updated_at = datetime('now') WHERE id = ?")
+    .bind(name, phone, target.id).run();
+  if (roleChanged) {
+    await env.DB.prepare("UPDATE users SET role = ?, updated_at = datetime('now') WHERE id = ?")
+      .bind(wantAdmin ? "customer_admin" : "customer_user", target.id).run();
+    await env.DB.prepare("UPDATE user_access SET scope = ? WHERE user_id = ? AND customer_id = ?")
+      .bind(wantAdmin ? "admin" : "user", target.id, org).run();
+    // A privilege change signs the person out everywhere, so the new
+    // role is what their next sign-in sees.
+    await env.DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(target.id).run();
+    changes.push(wantAdmin ? "role to admin" : "role to user");
+  }
+  if (accessPlan) {
+    // Replace this org's rows (one NULL row means all locations).
+    // grantUserAccess re-checks the one-org rule on every insert.
+    const scope = wantAdmin ? "admin" : "user";
+    await env.DB.prepare("DELETE FROM user_access WHERE user_id = ? AND customer_id = ?").bind(target.id, org).run();
+    const grants = accessPlan.all ? [null] : accessPlan.locIds;
+    for (const locId of grants) {
+      const g = await grantUserAccess(env.DB, target.id, org, locId, scope);
+      if (!g.ok) return back(g.error || "That access change was refused.");
+    }
+    changes.push("locations");
+  }
+  await audit(env.DB, user.id, "user_update", "user", target.id, `client ${org}${changes.length ? ": " + changes.join(", ") : ""}`);
+  return redirect("/app/team?msg=" + encodeURIComponent(`${name}'s details are saved.`));
 }
 
 // ---------- Product status / locked page ----------
