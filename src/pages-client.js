@@ -8,6 +8,7 @@ import {
 } from "./access.js";
 import { sendEmail, quoteAcceptedNoticeEmail, ticketCreatedNoticeEmail, ticketReplyNoticeEmail, productRequestEmail } from "./email.js";
 import { splitName, joinName, normalizePhone } from "./auth.js";
+import { issueCollectorToken, collectorTokenState } from "./collector.js";
 
 function orgOrigin(env) { return env.APP_ORIGIN || "https://portal.flossbyte.com"; }
 
@@ -353,8 +354,68 @@ export async function appHome(env, request, user) {
   const body = `${orgRail(user, "practices", orgName || "My Portal", locs)}<h1 style="margin-bottom:14px">Overview</h1>
     ${band}
     ${strip}
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px">${cards.map((c) => c.html).join("")}</div>`;
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px">${cards.map((c) => c.html).join("")}</div>
+    ${user.role === "customer_admin" ? `<div class="card" style="margin-top:16px"><h2 style="margin-top:0">IT evidence pack</h2>
+    <p class="muted">Everything an auditor, insurer, or lender asks about your IT, in one printable document: the equipment inventory for every office, internet and backup status, documents on file, and upcoming expiries. Built from your own portal records.</p>
+    <p style="margin:0"><a class="btn" href="/app/evidence">Open the evidence pack</a></p></div>` : ""}`;
   return page({ title: "My Portal", user, body });
+}
+
+// ---------- Evidence pack ----------
+// One printable document per organization: the HIPAA-style asset
+// inventory for every office, internet and backup status, documents
+// on file, and the next 90 days of expiries. Customer admins and
+// FlossByte only; regular logins never see full serial lists.
+export async function evidencePage(env, request, user) {
+  const db = env.DB;
+  let orgId = null;
+  if (user.kind === "flossbyte") {
+    orgId = Number(new URL(request.url).searchParams.get("org") || "") || null;
+    if (!orgId) return denied(user, 404);
+  } else {
+    if (user.role !== "customer_admin") return denied(user, 403);
+    orgId = await customerAdminOrg(db, user);
+    if (!orgId) return denied(user, 403);
+  }
+  const cust = await db.prepare("SELECT * FROM customers WHERE id = ?").bind(orgId).first();
+  if (!cust) return denied(user, 404);
+  const { results: locs } = await db.prepare("SELECT * FROM locations WHERE customer_id = ? ORDER BY id").bind(orgId).all();
+  const today = new Date().toISOString().slice(0, 10);
+  const trow = (cells) => `<tr>${cells.map((c) => `<td style="padding:6px 8px;border-bottom:1px solid #E1E7ED;vertical-align:top">${c}</td>`).join("")}</tr>`;
+  const thead = (cells) => `<tr>${cells.map((c) => `<th style="text-align:left;padding:6px 8px;border-bottom:2px solid #0A1628;color:#45566E;font-size:12.5px;letter-spacing:.02em">${c}</th>`).join("")}</tr>`;
+  const sections = [];
+  for (const loc of locs || []) {
+    const renames = await loadRenames(db, loc.id);
+    const { results: eq } = await db.prepare("SELECT * FROM equipment WHERE location_id = ? ORDER BY name").bind(loc.id).all();
+    const rows = (eq || []).slice().sort((a, b) => displayName(a, renames).localeCompare(displayName(b, renames)));
+    const online = rows.filter((e) => e.status === "online").length;
+    const inetSnap = await db.prepare("SELECT payload FROM network_snapshots WHERE location_id = ? AND kind = 'internet'").bind(loc.id).first().catch(() => null);
+    const bkSnap = await db.prepare("SELECT payload FROM network_snapshots WHERE location_id = ? AND kind = 'backup'").bind(loc.id).first().catch(() => null);
+    let inetLine = "No internet record yet.";
+    if (inetSnap) { try { const isp = JSON.parse(inetSnap.payload || "{}").isp || {}; inetLine = `${isp.ispName ? esc(isp.ispName) + " · " : ""}uptime ${isp.uptimePct != null ? isp.uptimePct + "%" : "—"} over the last 24 hours.`; } catch { /* keep default */ } }
+    let backupLine = "No backup result on record yet.";
+    if (bkSnap) { try { const b = JSON.parse(bkSnap.payload || "{}"); backupLine = b.ok ? `Last backup completed ${b.at ? esc(fmtDateUS(String(b.at).slice(0, 10))) : ""}${b.product ? ` (${esc(b.product)})` : ""}.` : `Last backup did not complete${b.at ? ` (${esc(fmtDateUS(String(b.at).slice(0, 10)))})` : ""}.`; } catch { /* keep default */ } }
+    const { results: docs } = await db.prepare("SELECT name, created_at FROM documents WHERE location_id = ? ORDER BY created_at").bind(loc.id).all();
+    const exp = await expiringItems(db, loc.id, 90);
+    const inv = rows.length
+      ? `<table style="width:100%;border-collapse:collapse;font-size:13.5px">${thead(["Device", "Type", "Model", "Serial", "Status"])}${rows.map((e) => trow([esc(displayName(e, renames)), esc(e.type || ""), esc([e.vendor, e.model].filter(Boolean).join(" ")), esc(e.serial || "—"), e.status === "online" ? "Online" : "Offline"])).join("")}</table>`
+      : `<p class="muted">No equipment recorded yet.</p>`;
+    sections.push(`<div class="card"><h2 style="margin-top:0">${esc(loc.name)}</h2>
+      <p class="muted" style="margin-top:0">${rows.length} devices on record · ${online} online · Internet: ${inetLine} Backup: ${backupLine}</p>
+      ${inv}
+      <h3 style="margin:18px 0 6px">Documents on file</h3>
+      ${docs && docs.length ? `<p style="margin:0">${docs.map((d) => `${esc(d.name)} <span class="muted">(${esc(fmtDateUS(String(d.created_at || "").slice(0, 10)))})</span>`).join(" · ")}</p>` : `<p class="muted" style="margin:0">None uploaded yet. Policies and agreements uploaded to this office's Documents appear here.</p>`}
+      <h3 style="margin:18px 0 6px">Expiring in the next 90 days</h3>
+      ${exp.length ? `<p style="margin:0">${exp.map((e) => { const kind = e.license_expires && (!e.warranty_expires || e.license_expires <= e.warranty_expires) ? "License" : "Warranty"; const date = kind === "License" ? e.license_expires : e.warranty_expires; return `${esc(displayName(e, renames))}: ${kind.toLowerCase()} ${esc(fmtDateUS(date))}`; }).join(" · ")}</p>` : `<p class="muted" style="margin:0">Nothing on record expires in the next 90 days.</p>`}
+    </div>`);
+  }
+  const body = `${user.kind === "customer" ? orgRail(user, "", cust.name, locs || []) : ""}<h1>IT evidence pack</h1>
+    <p class="muted">${esc(cust.name)} · Prepared ${esc(fmtDateUS(today))} from this practice's own FlossByte portal records. Questions: FlossByte, (669) 237-2264, hello@flossbyte.com.</p>
+    <p><button class="btn" type="button" onclick="window.print()">Print / save as PDF</button></p>
+    ${sections.join("")}
+    <div class="card"><h2 style="margin-top:0">About this pack</h2>
+    <p class="muted" style="margin:0">This pack lists what the portal has on record: equipment, internet and backup status, documents uploaded to the portal, and recorded expiry dates. Records are only as complete as what has been connected or entered; documents kept outside the portal are not included. It is an inventory and status summary, not a compliance certification.</p></div>`;
+  return page({ title: "IT evidence pack", user, body });
 }
 
 // ---------- Location overview ----------
@@ -1118,6 +1179,42 @@ export async function ispServicePost(env, request, user, locationId) {
   return redirect(`/app/locations/${locationId}/network?msg=` + encodeURIComponent("Internet plan details saved."));
 }
 
+// Backup results arrive two ways into the same 'backup' snapshot the
+// morning check reads: automatically from the office's collector
+// script (see src/collector.js), or recorded here by FlossByte after
+// checking the backup product directly (the fallback for offices
+// where the script is not running yet).
+export async function backupPost(env, request, user, locationId) {
+  const { loc, error } = await guard(env, user, locationId);
+  if (error) return denied(user, error);
+  if (user.kind !== "flossbyte") return denied(user, 403);
+  const f = await request.formData();
+  const ok = String(f.get("result") || "") === "ok";
+  const dateStr = /^\d{4}-\d{2}-\d{2}$/.test(String(f.get("when") || "")) ? String(f.get("when")) : new Date().toISOString().slice(0, 10);
+  const snap = {
+    ok,
+    at: `${dateStr}T12:00:00.000Z`,
+    product: String(f.get("product") || "").trim().slice(0, 60),
+    detail: String(f.get("detail") || "").trim().slice(0, 200),
+    source: "manual",
+  };
+  await env.DB.prepare(
+    `INSERT INTO network_snapshots (location_id, kind, payload, captured_at) VALUES (?, 'backup', ?, datetime('now'))
+     ON CONFLICT(location_id, kind) DO UPDATE SET payload = excluded.payload, captured_at = datetime('now')`)
+    .bind(locationId, JSON.stringify(snap)).run();
+  await audit(env.DB, user.id, "backup_record", "location", locationId, ok ? "completed" : "failed");
+  return redirect(`/app/locations/${locationId}/network?msg=` + encodeURIComponent("Backup result recorded."));
+}
+
+export async function backupTokenPost(env, request, user, locationId) {
+  const { loc, error } = await guard(env, user, locationId);
+  if (error) return denied(user, error);
+  if (user.kind !== "flossbyte") return denied(user, 403);
+  const plain = await issueCollectorToken(env.DB, locationId);
+  await audit(env.DB, user.id, "backup_token", "location", locationId, "collector token issued");
+  return redirect(`/app/locations/${locationId}/network?token=${encodeURIComponent(plain)}#backup`);
+}
+
 // ---------- Topology ----------
 // The office network drawn as a tree from the equipment record: each
 // row points at the device it hangs off of (parent_mac, filled by the
@@ -1575,7 +1672,43 @@ function wpCopy(b){var c=b.parentElement.querySelector('.wp');if(!c||!navigator.
       <p class="muted">Add the plan details from the office's internet bill once, and this page compares what they pay for with what they actually get.${ispNow && ispNow.ispName ? ` The connection itself already reports ${esc(ispNow.ispName)}.` : ""}</p>
       ${svcForm({})}</div>`;
   }
-  const sections = [wifiCard, internetCard, ispCard, historyCard, camerasCard, changesCard, techCard].filter(Boolean);
+  const bk = snaps.backup || null;
+  let backupCard = "";
+  {
+    const brow = (label, val) => val ? `<div style="display:flex;justify-content:space-between;gap:16px;padding:8px 0;border-bottom:1px solid #EEF2F7"><span style="color:#45566E;font-weight:600">${label}</span><span style="text-align:right;font-weight:600">${val}</span></div>` : "";
+    const statusHtml = bk ? (bk.ok
+      ? `<span class="pill on">Completed</span>`
+      : `<span class="pill off">Did not complete</span>`) : "";
+    const newToken = new URL(request.url).searchParams.get("token");
+    const tokState = isFb ? await collectorTokenState(env.DB, locationId) : null;
+    const fbSetup = isFb ? `<details style="margin-top:12px" ${newToken ? "open" : ""}><summary class="muted" style="cursor:pointer">Backup setup (FlossByte)</summary><div style="margin-top:10px">
+      ${newToken ? `<p style="margin:0 0 6px"><b>New collector token, shown once.</b> Put it in this office's backup check script; the old token stops working.</p>
+        <input readonly value="${esc(newToken)}" style="width:100%;font-family:monospace" onclick="this.select()">`
+      : `<p class="muted" style="margin:0 0 6px">${tokState ? `Collector token active · created ${esc(fmtDateUS(String(tokState.createdAt || "").slice(0, 10)))}${tokState.lastUsed ? ` · last report ${esc(relTime(tokState.lastUsed))}` : " · no report received yet"}` : "No collector token yet. The backup check script reports with one."}</p>
+        <form method="post" action="/app/locations/${locationId}/backup/token"><button class="btn small secondary" type="submit">${tokState ? "Replace token" : "Generate token"}</button></form>`}
+      <form method="post" action="/app/locations/${locationId}/backup" class="row" style="align-items:end;margin-top:14px">
+        <span style="flex:1;min-width:130px"><label>Backup product</label><input name="product" value="${esc(bk && bk.product ? bk.product : "")}" placeholder="Axcient x360Recover"></span>
+        <span><label>Result</label><select name="result"><option value="ok">Completed</option><option value="failed">Did not complete</option></select></span>
+        <span><label>Date</label><input type="date" name="when" value="${new Date().toISOString().slice(0, 10)}"></span>
+        <span style="flex:1;min-width:130px"><label>Note (optional)</label><input name="detail" placeholder=""></span>
+        <button class="btn small" type="submit">Record backup result</button></form>
+      <p class="muted" style="margin:8px 0 0">Recording a result by hand is the fallback for offices where the automatic backup check is not running yet.</p>
+    </div></details>` : "";
+    if (bk) {
+      backupCard = `<div class="card" id="backup"><h2 style="margin-top:0">Backup</h2>
+        ${brow("Status", statusHtml)}
+        ${brow("Last backup", bk.at ? `${esc(fmtDateUS(String(bk.at).slice(0, 10)))} · ${esc(relTime(bk.at))}` : "")}
+        ${brow("Product", esc(bk.product || ""))}
+        ${bk.detail ? `<p class="muted" style="margin:10px 0 0">${esc(bk.detail)}</p>` : ""}
+        <p class="muted" style="margin:10px 0 0">${bk.source === "collector" ? "Reported automatically by the office's backup check." : "Recorded by FlossByte."}</p>
+        ${fbSetup}</div>`;
+    } else if (isFb) {
+      backupCard = `<div class="card" id="backup"><h2 style="margin-top:0">Backup</h2>
+        <p class="muted" style="margin:0">No backup result recorded yet. Once the office's backup check reports (or a result is recorded below), this card and the morning check show the office's backup status.</p>
+        ${fbSetup}</div>`;
+    }
+  }
+  const sections = [wifiCard, internetCard, ispCard, backupCard, historyCard, camerasCard, changesCard, techCard].filter(Boolean);
   if (!Object.keys(snaps).length && !isFb) {
     const body = `${locNav(loc, "network")}<h1>WiFi &amp; Internet</h1>${locTabs(loc, "network")}
       <div class="card"><p class="muted" style="margin:0">Nothing here yet. Once FlossByte connects this office, this page shows its WiFi names and passwords, internet health, and cameras, all kept up to date automatically.</p></div>`;

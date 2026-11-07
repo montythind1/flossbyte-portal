@@ -174,6 +174,7 @@ const ACTION_LABEL = {
   signout_others: "Signed out other sessions", profile_update: "Updated their profile",
   alerts_mute: "Paused device alerts", alerts_unmute: "Resumed device alerts",
   monthly_report_send: "Sent the monthly Office IT report", isp_service_update: "Updated internet plan details",
+  backup_record: "Recorded a backup result", backup_token: "Issued a backup collector token",
   wifi_save: "Saved a WiFi network", wifi_remove: "Removed a WiFi network",
 };
 export async function activityPage(env, request, user) {

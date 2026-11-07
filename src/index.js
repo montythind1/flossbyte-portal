@@ -5,6 +5,7 @@ import { resolveSession } from "./auth.js";
 import { redirect, errorPage } from "./layout.js";
 import * as pub from "./pages-public.js";
 import * as client from "./pages-client.js";
+import { collectorReport } from "./collector.js";
 import * as admin from "./pages-admin.js";
 import * as places from "./places.js";
 import { runUnifiSync } from "./unifi.js";
@@ -61,6 +62,7 @@ async function route(request, env) {
   if (path === "/reset" && method === "GET") return pub.resetRequestPage(request);
   if (path === "/reset" && method === "POST") return pub.resetRequestPost(env, request);
   if (path === "/invite/resend" && method === "POST") return pub.inviteResendPost(env, request);
+  if (path === "/api/collector/report" && method === "POST") return collectorReport(env, request);
   let m = path.match(/^\/invite\/([A-Za-z0-9_-]+)$/);
   if (m && method === "GET") return pub.invitePage(env, request, m[1]);
   if (m && method === "POST") return pub.invitePost(env, request, m[1]);
@@ -160,6 +162,7 @@ async function route(request, env) {
   if (path === "/app/team" && method === "GET") return client.teamPage(env, request, user);
   if (path === "/app/services" && method === "GET") return client.servicesPage(env, request, user);
   if (path === "/app/billing" && method === "GET") return client.billingPage(env, request, user);
+  if (path === "/app/evidence" && method === "GET") return client.evidencePage(env, request, user);
   if (path === "/app/quotes" && method === "GET") return redirect("/app/billing");
   if (path === "/app/invoices" && method === "GET") return redirect("/app/billing");
   m = path.match(/^\/app\/invoices\/(\d+)$/);
@@ -200,6 +203,10 @@ async function route(request, env) {
   if (m && method === "POST") return client.wifiDeletePost(env, request, user, Number(m[1]));
   m = path.match(/^\/app\/locations\/(\d+)\/isp-service$/);
   if (m && method === "POST") return client.ispServicePost(env, request, user, Number(m[1]));
+  m = path.match(/^\/app\/locations\/(\d+)\/backup$/);
+  if (m && method === "POST") return client.backupPost(env, request, user, Number(m[1]));
+  m = path.match(/^\/app\/locations\/(\d+)\/backup\/token$/);
+  if (m && method === "POST") return client.backupTokenPost(env, request, user, Number(m[1]));
   if (m && method === "POST") return client.equipmentPost(env, request, user, Number(m[1]));
   m = path.match(/^\/app\/locations\/(\d+)\/equipment\/(\d+)\/edit$/);
   if (m && method === "GET") return client.equipmentEditPage(env, request, user, Number(m[1]), Number(m[2]));
