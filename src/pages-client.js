@@ -2647,7 +2647,7 @@ export async function askPage(env, request, user, locationId) {
     ${gitem(gbase + "/ask", "Genius", "chat", true)}
   </aside>
   <div class="gmain">
-  <div class="gbar"><button type="button" class="gmenu" id="gmenu" aria-label="Menu">☰</button><a class="gback" href="/app/locations/${locationId}">← ${esc(loc.name)}</a><span class="gtitle">${openThread ? "FlossByte Support" : "Genius"}</span><span class="gsp"></span>${endBtn}</div>
+  <div class="gbar"><a class="gback" href="/app/locations/${locationId}">← ${esc(loc.name)}</a><span class="gtitle">${openThread ? "FlossByte Support" : "Genius"}</span><span class="gsp"></span>${endBtn}</div>
   <div class="gpage">
   <p class="muted" ${openThread ? 'id="chat-status"' : ""} style="margin:2px 0 12px">${openThread ? esc(statusLine) : `From this office's records only. ${seeAll ? "You see everyone's conversations (admin login)." : "Private to your login; office admins can see them."}`}</p>
   <div class="card">
@@ -2659,9 +2659,6 @@ export async function askPage(env, request, user, locationId) {
   </div>
   </div>
   </div>
-  <script>
-  (function(){var b=document.getElementById("gmenu"),s=document.getElementById("gside");if(!b||!s)return;b.addEventListener("click",function(e){e.stopPropagation();s.classList.toggle("open");});document.addEventListener("click",function(e){if(s.classList.contains("open")&&!s.contains(e.target))s.classList.remove("open");});})();
-  </script>
   ${pollScript}
   ${typeScript}
   ${askScript}
