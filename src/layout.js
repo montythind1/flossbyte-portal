@@ -286,7 +286,7 @@ a{color:#000;text-decoration:none}
 }
 `;
 
-export function page({ title, user, body, flash, error, auth }) {
+export function page({ title, user, body, flash, error, auth, bare }) {
   const head = `<head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(title)} | FlossByte Portal</title>
@@ -349,8 +349,9 @@ document.addEventListener("click",function(e){if(!w.contains(e.target))close();}
 document.addEventListener("keydown",function(e){if(e.key==="Escape")close();});})();
 </script>` : "";
   // Signed-in pages get a one-line footer; the full marketing footer only
-  // remains on the rare signed-out, non-auth page.
-  const footer = user
+  // remains on the rare signed-out, non-auth page. App surfaces (chat)
+  // pass bare to skip the footer entirely.
+  const footer = bare ? "" : user
     ? `<footer class="slim"><div class="footer-slim-in"><span>© ${new Date().getFullYear()} FlossByte</span><span>·</span><a href="tel:+16692372264">(669) 237-2264</a><span>·</span><a href="mailto:hello@flossbyte.com">hello@flossbyte.com</a></div></footer>`
     : `<footer class="site"><div class="footer-in">
   <div>

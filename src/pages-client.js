@@ -2638,7 +2638,7 @@ export async function askPage(env, request, user, locationId) {
   <div class="gpage">
   <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
     <h1 style="margin:0">${openThread ? "FlossByte Support" : "Genius"}</h1>${endBtn}</div>
-  <p class="muted" ${openThread ? 'id="chat-status"' : ""} style="margin:6px 0 14px">${openThread ? esc(statusLine) : `Answers come only from this office's records. ${seeAll ? "You see everyone's conversations here, because your login is an admin login." : "Your conversations are private to your login; admin logins at this office can see them."}`}</p>
+  <p class="muted" ${openThread ? 'id="chat-status"' : ""} style="margin:6px 0 14px">${openThread ? esc(statusLine) : `From this office's records only. ${seeAll ? "You see everyone's conversations (admin login)." : "Private to your login; office admins can see them."}`}</p>
   <div class="card">
     ${emptyState}
     <div class="chat gstream" id="gstream">${streamInner}</div>
@@ -2650,9 +2650,23 @@ export async function askPage(env, request, user, locationId) {
   ${typeScript}
   ${askScript}
   <script>
-  (function(){ var el = document.getElementById('latest') || document.getElementById('chat-msgs'); var box = document.getElementById('gstream'); if (!el || !box) return; var r = el.getBoundingClientRect(); var br = box.getBoundingClientRect(); var delta = r.bottom - (br.bottom - 10); if (delta > 0) box.scrollTop += delta; })();
+  (function(){
+    var pageEl = document.querySelector('.gpage');
+    var box = document.getElementById('gstream');
+    function fit(){
+      if (!pageEl) return;
+      var h = window.innerHeight - pageEl.getBoundingClientRect().top - 10;
+      if (h > 260) pageEl.style.height = h + 'px';
+    }
+    function toBottom(){ if (box) box.scrollTop = box.scrollHeight; }
+    fit(); toBottom();
+    window.addEventListener('resize', fit);
+    window.addEventListener('orientationchange', fit);
+    window.addEventListener('load', function(){ fit(); toBottom(); });
+    requestAnimationFrame(function(){ fit(); toBottom(); });
+  })();
   </script>`;
-  return page({ title: openThread ? "Live chat" : "Genius", user, body });
+  return page({ title: openThread ? "Live chat" : "Genius", user, body, bare: true });
 }
 
 // Shared Genius pipeline for the form post and the in-place API:
