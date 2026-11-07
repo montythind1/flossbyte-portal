@@ -251,16 +251,20 @@ export function buildGeniusMessages({ question, context, history, recordsAnswer 
   ].join(" ");
 
   const messages = [{ role: "system", content: system }];
-  for (const h of history || []) {
-    messages.push({ role: "user", content: text(h.question, 800) });
-    messages.push({ role: "assistant", content: redactSecrets(text(h.answer, 1800)) });
-  }
+  // Earlier ANSWERS are deliberately not replayed to the model: a
+  // small model copies a long previous answer (a device list, say)
+  // into an unrelated new answer. Only the earlier questions ride
+  // along, as background, so follow-ups keep some thread.
+  const priorQuestions = (history || []).map((h) => text(h.question, 200)).filter(Boolean);
+  const background = priorQuestions.length
+    ? `\n\nRECENT QUESTIONS FROM THIS LOGIN (background only; do not repeat their answers):\n- ${priorQuestions.join("\n- ")}`
+    : "";
   const factSheet = recordsAnswer && !String(recordsAnswer).startsWith("That is not in your portal records yet")
     ? `\n\nVERIFIED RECORDS ANSWER (prefer these exact facts):\n${redactSecrets(recordsAnswer).slice(0, 7000)}`
     : "";
   messages.push({
     role: "user",
-    content: `OFFICE RECORDS:\n${context}${factSheet}\n\nQUESTION:\n${text(question, 1200)}`,
+    content: `OFFICE RECORDS:\n${context}${factSheet}${background}\n\nQUESTION:\n${text(question, 1200)}`,
   });
   return messages;
 }
