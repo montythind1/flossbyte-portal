@@ -8,6 +8,7 @@ import { resendInviteEmail } from "./pages-public.js";
 import { runUnifiSync, lastUnifiSync } from "./unifi.js";
 import { runSophosSync, lastSophosSync } from "./sophos.js";
 import { runAteraSync, lastAteraSync } from "./atera.js";
+import { chatReady, getThread, threadMessages, addChatMessage, endChat, briefHtml, renderChatMessages, relTimeChat, notifyCustomerReply } from "./chat.js";
 
 function origin(env) { return env.APP_ORIGIN || "https://portal.flossbyte.com"; }
 function q(request) { return new URL(request.url).searchParams; }
@@ -31,7 +32,7 @@ function adminNav(active) {
     `<a class="rail-item${active === key ? " active" : ""}" href="${href}">${icon(ic)}${label}</a>`;
   return `<div class="shell"><aside class="rail">
     <div class="rail-context"><div class="rc-t">FlossByte</div><div class="rc-s">Admin console</div></div>
-    ${item("clients", "/admin", "Clients", "users")}${item("tickets", "/admin/tickets", "Tickets", "ticket")}
+    ${item("clients", "/admin", "Clients", "users")}${item("tickets", "/admin/tickets", "Tickets", "ticket")}${item("chats", "/admin/chats", "Live chat", "chat")}
     ${item("admins", "/admin/admins", "Admins", "shield")}
     ${item("sync", "/admin/sync", "Device sync", "refresh")}${item("activity", "/admin/activity", "Activity", "activity")}</aside><div class="shell-main">`;
 }
@@ -1929,4 +1930,185 @@ export async function adminActionPost(env, request, user, targetId, action) {
     await audit(env.DB, user.id, "admin_remove", "user", Number(targetId), target.email);
   }
   return redirect("/admin/admins");
+}
+
+// ---------- Live chat inbox ----------
+// The queue sorts by who has been waiting longest; the archive groups
+// ended chats by organization, then office. Assignment is explicit
+// (Take chat) or implicit on first reply, and is a plain column so a
+// round robin can replace first-come claiming later.
+
+function chatStatusPill(t) {
+  if (t.status === "waiting") return `<span class="pill warn">Waiting</span>`;
+  if (t.status === "active") return `<span class="pill on">Active</span>`;
+  return `<span class="pill">Ended</span>`;
+}
+
+export async function chatsPage(env, request, user) {
+  if (!(await chatReady(env.DB))) {
+    const body = `${adminNav("chats")}<h1>Live chat</h1>
+    <div class="card"><p>Live chat is not switched on yet. It needs one small database update (the chat tables) before the first chat can start.</p></div>`;
+    return page({ title: "Live chat", user, body });
+  }
+  const { results } = await env.DB.prepare(
+    `SELECT t.*, c.name AS customer_name, l.name AS location_name, u.name AS requester_name,
+            (SELECT body FROM chat_messages WHERE thread_id = t.id AND sender_kind != 'system' ORDER BY id DESC LIMIT 1) AS last_body
+     FROM chat_threads t
+     JOIN customers c ON c.id = t.customer_id
+     JOIN locations l ON l.id = t.location_id
+     JOIN users u ON u.id = t.user_id
+     ORDER BY t.id DESC`).all();
+  const threads = results || [];
+  const active = threads.filter((t) => t.status !== "ended")
+    .sort((a, b) => (a.status === b.status ? String(a.started_at).localeCompare(String(b.started_at)) : a.status === "waiting" ? -1 : 1));
+  const ended = threads.filter((t) => t.status === "ended").slice(0, 60);
+  const row = (t) => `<tr>
+      <td><a href="/admin/chats/${t.id}"><strong>${esc(t.requester_name)}</strong></a><br><span class="muted">${esc(t.customer_name)} · ${esc(t.location_name)}</span></td>
+      <td>${chatStatusPill(t)}${t.assigned_admin_id ? `<br><span class="muted">${t.assigned_admin_id === user.id ? "Yours" : "Taken"}</span>` : ""}</td>
+      <td class="muted">${esc(String(t.last_body || "").slice(0, 90))}</td>
+      <td class="muted">${t.status === "waiting" ? `waiting ${relTimeChat(t.started_at)}` : `started ${relTimeChat(t.started_at)}`}</td></tr>`;
+  let archiveHtml = "";
+  if (ended.length) {
+    const byOrg = new Map();
+    for (const t of ended) {
+      const key = t.customer_name;
+      if (!byOrg.has(key)) byOrg.set(key, []);
+      byOrg.get(key).push(t);
+    }
+    archiveHtml = [...byOrg.entries()].map(([org, list]) => {
+      const byOffice = new Map();
+      for (const t of list) {
+        if (!byOffice.has(t.location_name)) byOffice.set(t.location_name, []);
+        byOffice.get(t.location_name).push(t);
+      }
+      return `<h3 style="margin:18px 0 4px">${esc(org)}</h3>` + [...byOffice.entries()].map(([office, rows]) =>
+        `<p class="muted" style="margin:8px 0 2px"><strong>${esc(office)}</strong></p>` +
+        rows.map((t) => `<div style="padding:6px 0;border-bottom:1px solid var(--line)">
+          <a href="/admin/chats/${t.id}">${esc(t.requester_name)}</a>
+          <span class="muted">· ${fmtDateUS(String(t.started_at).slice(0, 10))} · ended ${esc(t.ended_by || "")}${t.ticket_id ? ` · <a href="/admin/tickets">ticket #${t.ticket_id}</a>` : ""}</span></div>`).join("")
+      ).join("");
+    }).join("");
+  }
+  const body = `${adminNav("chats")}<h1>Live chat</h1>
+  <div class="card"><h3 style="margin-top:0">Active chats</h3>
+  ${active.length ? `<div class="tscroll"><table class="stack"><thead><tr><th>Customer</th><th>Status</th><th>Last message</th><th>When</th></tr></thead><tbody>${active.map(row).join("")}</tbody></table></div>` : `<p class="muted">No live chats right now. New chats appear here the moment a customer starts one, and the starter gets an email alert too.</p>`}</div>
+  <div class="card"><h3 style="margin-top:0">Archive</h3>
+  ${ended.length ? archiveHtml : `<p class="muted">No ended chats yet. Ended chats are kept here, grouped by practice and office.</p>`}</div>`;
+  return page({ title: "Live chat", user, body });
+}
+
+export async function chatThreadPage(env, request, user, threadId) {
+  const t = await getThread(env.DB, threadId).catch(() => null);
+  if (!t) return page({ title: "Live chat", user, body: `${adminNav("chats")}<h1>Live chat</h1><div class="banner error">That chat was not found.</div>` });
+  const msgs = await threadMessages(env.DB, threadId, 0);
+  const lastId = msgs.length ? msgs[msgs.length - 1].id : 0;
+  const ended = t.status === "ended";
+  const mine = t.assigned_admin_id === user.id;
+  const actions = ended ? `<p class="muted">This chat has ended${t.ended_by ? ` (by ${esc(t.ended_by)})` : ""}. It is read-only.</p>
+      ${t.ticket_id ? `<p><a class="btn small secondary" href="/admin/tickets">View the ticket from this chat</a></p>`
+        : `<form method="post" action="/admin/chats/${t.id}/ticket"><button class="btn small secondary" type="submit">Convert to ticket</button></form>`}`
+    : `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
+      ${!mine ? `<form method="post" action="/admin/chats/${t.id}/take"><button class="btn small" type="submit">${t.assigned_admin_id ? "Take over this chat" : "Take this chat"}</button></form>` : ""}
+      ${t.ticket_id ? "" : `<form method="post" action="/admin/chats/${t.id}/ticket"><button class="btn small secondary" type="submit">Convert to ticket</button></form>`}
+      <form method="post" action="/admin/chats/${t.id}/end" onsubmit="return confirm('End this chat? The transcript stays in the archive.')"><button class="btn small secondary" type="submit">End chat</button></form></div>
+      <form method="post" action="/admin/chats/${t.id}/message" style="margin-top:12px">
+        <input name="body" placeholder="Reply as FlossByte Support..." required autocomplete="off">
+        <p style="margin-top:10px"><button class="btn" type="submit">Send reply</button></p></form>`;
+  const body = `${adminNav("chats")}
+  <p><a href="/admin/chats">← Live chat</a></p>
+  <h1>${esc(t.requester_name)} · ${esc(t.location_name)}</h1>
+  <p class="muted">${esc(t.customer_name)} · started ${relTimeChat(t.started_at)} · ${chatStatusPill(t)}${t.admin_name ? ` · with ${esc(t.admin_name)}` : ""}</p>
+  ${briefHtml(t.genius_context)}
+  <div class="card">
+    <div class="chat" id="chat-msgs">${renderChatMessages(msgs, true)}</div>
+    ${actions}
+  </div>
+  ${ended ? "" : `<script>
+  (function(){
+    var last = ${lastId}, box = document.getElementById('chat-msgs');
+    function tick(){
+      fetch('/admin/chats/${t.id}/poll?after=' + last, { headers: { 'Accept': 'application/json' } })
+        .then(function(r){ return r.json(); })
+        .then(function(d){
+          if (!d || !d.ok) return;
+          if (d.status === 'ended') { location.reload(); return; }
+          (d.messages || []).forEach(function(m){
+            last = Math.max(last, m.id);
+            var div = document.createElement('div');
+            if (m.kind === 'system') { div.className = 'muted'; div.style.cssText = 'text-align:center;font-size:12.5px;margin:10px 0'; div.textContent = '— ' + m.body + ' —'; }
+            else { div.className = 'msg ' + (m.kind === 'customer' ? 'q' : 'a'); div.textContent = m.body; }
+            box.appendChild(div);
+          });
+        }).catch(function(){});
+    }
+    setInterval(tick, 4000);
+  })();
+  </script>`}`;
+  return page({ title: "Live chat", user, body });
+}
+
+export async function chatTakePost(env, request, user, threadId) {
+  const t = await getThread(env.DB, threadId);
+  if (!t || t.status === "ended") return redirect("/admin/chats");
+  await env.DB.prepare("UPDATE chat_threads SET assigned_admin_id = ?, status = 'active' WHERE id = ?").bind(user.id, threadId).run();
+  await env.DB.prepare("INSERT INTO chat_messages (thread_id, sender_kind, sender_user_id, body) VALUES (?, 'system', NULL, ?)")
+    .bind(threadId, `${user.name} from FlossByte joined the chat.`).run();
+  return redirect(`/admin/chats/${threadId}`);
+}
+
+export async function chatAdminMessagePost(env, request, user, threadId) {
+  const t = await getThread(env.DB, threadId);
+  if (!t || t.status === "ended") return redirect("/admin/chats");
+  const f = await request.formData();
+  const body = String(f.get("body") || "").trim().slice(0, 2000);
+  if (body) {
+    const hadAdminMsg = await env.DB.prepare(
+      "SELECT id FROM chat_messages WHERE thread_id = ? AND sender_kind = 'flossbyte' LIMIT 1").bind(threadId).first();
+    if (!t.assigned_admin_id) {
+      await env.DB.prepare("UPDATE chat_threads SET assigned_admin_id = ?, status = 'active' WHERE id = ?").bind(user.id, threadId).run();
+      await env.DB.prepare("INSERT INTO chat_messages (thread_id, sender_kind, sender_user_id, body) VALUES (?, 'system', NULL, ?)")
+        .bind(threadId, `${user.name} from FlossByte joined the chat.`).run();
+    } else if (t.status === "waiting") {
+      await env.DB.prepare("UPDATE chat_threads SET status = 'active' WHERE id = ?").bind(threadId).run();
+    }
+    await addChatMessage(env.DB, threadId, "flossbyte", user.id, body);
+    if (!hadAdminMsg) await notifyCustomerReply(env, t, user);
+  }
+  return redirect(`/admin/chats/${threadId}`);
+}
+
+export async function chatAdminEndPost(env, request, user, threadId) {
+  const t = await getThread(env.DB, threadId);
+  if (!t || t.status === "ended") return redirect("/admin/chats");
+  await endChat(env.DB, t, "flossbyte");
+  await audit(env.DB, user.id, "chat_end", "location", t.location_id, `Live chat ${threadId} ended by FlossByte`);
+  return redirect("/admin/chats");
+}
+
+export async function chatTicketPost(env, request, user, threadId) {
+  const t = await getThread(env.DB, threadId);
+  if (!t || t.ticket_id) return redirect(`/admin/chats/${threadId}`);
+  const msgs = await threadMessages(env.DB, threadId, 0);
+  const transcript = msgs.filter((m) => m.sender_kind !== "system")
+    .map((m) => `${m.sender_kind === "customer" ? (m.sender_name || "Customer") : "FlossByte"}: ${m.body}`).join("\n");
+  const title = `Live chat with ${t.requester_name} (${t.location_name})`;
+  const res = await env.DB.prepare("INSERT INTO tickets (location_id, title, priority, created_by) VALUES (?, ?, 'normal', ?)")
+    .bind(t.location_id, title, t.user_id).run();
+  const tid = res.meta.last_row_id;
+  await env.DB.prepare("INSERT INTO ticket_updates (ticket_id, author_id, body) VALUES (?, ?, ?)")
+    .bind(tid, user.id, `Converted from live chat ${threadId} by ${user.name}.\n\n${transcript || "(no messages)"}`).run();
+  await env.DB.prepare("UPDATE chat_threads SET ticket_id = ? WHERE id = ?").bind(tid, threadId).run();
+  await audit(env.DB, user.id, "ticket_create", "ticket", tid, "Created from live chat");
+  return redirect(`/admin/chats/${threadId}`);
+}
+
+export async function chatAdminPoll(env, request, user, threadId) {
+  const t = await getThread(env.DB, threadId).catch(() => null);
+  if (!t) return new Response(JSON.stringify({ ok: false }), { status: 404, headers: { "Content-Type": "application/json" } });
+  const after = Number(new URL(request.url).searchParams.get("after") || 0);
+  const msgs = await threadMessages(env.DB, threadId, after);
+  return new Response(JSON.stringify({
+    ok: true, status: t.status,
+    messages: msgs.map((m) => ({ id: m.id, kind: m.sender_kind, body: m.body })),
+  }), { headers: { "Content-Type": "application/json" } });
 }

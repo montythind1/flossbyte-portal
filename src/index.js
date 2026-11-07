@@ -96,6 +96,19 @@ async function route(request, env) {
     if (path === "/admin/admins" && method === "GET") return admin.adminsPage(env, request, user);
     if (path === "/admin/admins" && method === "POST") return admin.createAdminPost(env, request, user);
     if (path === "/admin/tickets" && method === "GET") return admin.ticketsInboxPage(env, request, user);
+    if (path === "/admin/chats" && method === "GET") return admin.chatsPage(env, request, user);
+    m = path.match(/^\/admin\/chats\/(\d+)$/);
+    if (m && method === "GET") return admin.chatThreadPage(env, request, user, Number(m[1]));
+    m = path.match(/^\/admin\/chats\/(\d+)\/poll$/);
+    if (m && method === "GET") return admin.chatAdminPoll(env, request, user, Number(m[1]));
+    m = path.match(/^\/admin\/chats\/(\d+)\/take$/);
+    if (m && method === "POST") return admin.chatTakePost(env, request, user, Number(m[1]));
+    m = path.match(/^\/admin\/chats\/(\d+)\/message$/);
+    if (m && method === "POST") return admin.chatAdminMessagePost(env, request, user, Number(m[1]));
+    m = path.match(/^\/admin\/chats\/(\d+)\/end$/);
+    if (m && method === "POST") return admin.chatAdminEndPost(env, request, user, Number(m[1]));
+    m = path.match(/^\/admin\/chats\/(\d+)\/ticket$/);
+    if (m && method === "POST") return admin.chatTicketPost(env, request, user, Number(m[1]));
     if (path === "/admin/activity" && method === "GET") return admin.activityPage(env, request, user);
     if (path === "/admin/sync" && method === "GET") return admin.syncPage(env, request, user);
     if (path === "/admin/sync/map" && method === "POST") return admin.syncMapPost(env, request, user);
@@ -232,6 +245,14 @@ async function route(request, env) {
   if (m && method === "POST") return client.askPost(env, request, user, Number(m[1]));
   m = path.match(/^\/app\/locations\/(\d+)\/ask\/escalate$/);
   if (m && method === "POST") return client.askEscalatePost(env, request, user, Number(m[1]));
+  m = path.match(/^\/app\/locations\/(\d+)\/chat\/start$/);
+  if (m && method === "POST") return client.chatStartPost(env, request, user, Number(m[1]));
+  m = path.match(/^\/app\/locations\/(\d+)\/chat\/message$/);
+  if (m && method === "POST") return client.chatMessagePost(env, request, user, Number(m[1]));
+  m = path.match(/^\/app\/locations\/(\d+)\/chat\/end$/);
+  if (m && method === "POST") return client.chatEndPost(env, request, user, Number(m[1]));
+  m = path.match(/^\/app\/locations\/(\d+)\/chat\/poll$/);
+  if (m && method === "GET") return client.chatPoll(env, request, user, Number(m[1]));
 
   return notFound(user);
 }

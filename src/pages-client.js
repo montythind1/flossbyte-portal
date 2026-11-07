@@ -10,6 +10,7 @@ import { sendEmail, quoteAcceptedNoticeEmail, ticketCreatedNoticeEmail, ticketRe
 import { splitName, joinName, normalizePhone } from "./auth.js";
 import { issueCollectorToken, collectorTokenState } from "./collector.js";
 import { buildGeniusContext, geniusAnswer, geniusFooter, isExactLookupQuestion } from "./genius.js";
+import { chatReady, getOpenThread, threadMessages, addChatMessage, startChat, endChat, renderChatMessages, notifyChatStarted } from "./chat.js";
 
 function orgOrigin(env) { return env.APP_ORIGIN || "https://portal.flossbyte.com"; }
 
@@ -1956,6 +1957,65 @@ export async function ticketCreatePost(env, request, user, locationId) {
   return redirect(`/app/locations/${locationId}/tickets/${tid}`);
 }
 
+// ----- Live chat (in-chat handoff from Genius) -----
+
+export async function chatStartPost(env, request, user, locationId) {
+  const { loc, error } = await guard(env, user, locationId);
+  if (error) return denied(user, error);
+  if (!(await chatReady(env.DB))) return redirect(`/app/locations/${locationId}/ask`);
+  if (user.kind !== "customer") return denied(user, 403);
+  if (!(await laneOn(env.DB, loc.customer_id, locationId))) return denied(user, 403);
+  const existing = await getOpenThread(env.DB, locationId, user.id);
+  if (!existing) {
+    const threadId = await startChat(env, user, loc);
+    await audit(env.DB, user.id, "chat_start", "location", locationId, `Live chat ${threadId}`);
+    await notifyChatStarted(env, loc, user, threadId);
+  }
+  return redirect(`/app/locations/${locationId}/ask#livechat`);
+}
+
+export async function chatMessagePost(env, request, user, locationId) {
+  const { loc, error } = await guard(env, user, locationId);
+  if (error) return denied(user, error);
+  const thread = await getOpenThread(env.DB, locationId, user.id);
+  if (!thread) return denied(user, 404);
+  const f = await request.formData();
+  const body = String(f.get("body") || "").trim().slice(0, 2000);
+  if (body) await addChatMessage(env.DB, thread.id, "customer", user.id, body);
+  return redirect(`/app/locations/${locationId}/ask#livechat`);
+}
+
+export async function chatEndPost(env, request, user, locationId) {
+  const { loc, error } = await guard(env, user, locationId);
+  if (error) return denied(user, error);
+  const thread = await getOpenThread(env.DB, locationId, user.id);
+  if (!thread) return denied(user, 404);
+  await endChat(env.DB, thread, "customer");
+  await audit(env.DB, user.id, "chat_end", "location", locationId, `Live chat ${thread.id} ended by customer`);
+  return redirect(`/app/locations/${locationId}/ask`);
+}
+
+export async function chatPoll(env, request, user, locationId) {
+  const { loc, error } = await guard(env, user, locationId);
+  if (error) return new Response(JSON.stringify({ ok: false }), { status: 403, headers: { "Content-Type": "application/json" } });
+  const after = Number(new URL(request.url).searchParams.get("after") || 0);
+  let thread = await getOpenThread(env.DB, locationId, user.id);
+  if (!thread) {
+    // The chat may have just been ended by FlossByte: report the most
+    // recent thread for this login so the page can refresh into the
+    // ended state.
+    thread = await env.DB.prepare(
+      "SELECT * FROM chat_threads WHERE location_id = ? AND user_id = ? ORDER BY id DESC LIMIT 1")
+      .bind(locationId, user.id).first().catch(() => null);
+    if (!thread) return new Response(JSON.stringify({ ok: false }), { status: 404, headers: { "Content-Type": "application/json" } });
+  }
+  const msgs = await threadMessages(env.DB, thread.id, after);
+  return new Response(JSON.stringify({
+    ok: true, status: thread.status,
+    messages: msgs.map((m) => ({ id: m.id, kind: m.sender_kind, body: m.body })),
+  }), { headers: { "Content-Type": "application/json" } });
+}
+
 export async function ticketDetailPage(env, request, user, locationId, ticketId) {
   const { loc, error } = await guard(env, user, locationId);
   if (error) return denied(user, error);
@@ -2263,6 +2323,13 @@ export async function askPage(env, request, user, locationId) {
   if (error) return denied(user, error);
   const canEscalate = await laneOn(env.DB, loc.customer_id, locationId);
   const seeAll = await geniusSeeAll(env, user, loc);
+  // Live chat: my own open thread at this office, if one is running.
+  // Genius steps aside for the customer while it is open.
+  let openThread = null, chatMsgs = [];
+  if (user.kind === "customer") {
+    openThread = await getOpenThread(env.DB, locationId, user.id);
+    if (openThread) chatMsgs = await threadMessages(env.DB, openThread.id, 0);
+  }
   const { results } = seeAll
     ? await env.DB.prepare(
       `SELECT m.*, u.name AS asker_name FROM ask_messages m LEFT JOIN users u ON u.id = m.user_id
@@ -2275,21 +2342,76 @@ export async function askPage(env, request, user, locationId) {
       <input type="hidden" name="message_id" value="${m.id}">
       <button class="btn small secondary" type="submit">Send this to FlossByte</button></form>` : ""}`).join("");
   const starter = (q) => `<form method="post" action="/app/locations/${locationId}/ask" style="margin:0"><input type="hidden" name="question" value="${esc(q)}"><button class="btn small secondary" type="submit">${esc(q)}</button></form>`;
-  const body = `${locNav(loc, "ask")}<h1>Genius</h1>
-    <div class="card"><p class="muted">Genius explains your internet, WiFi, equipment, cameras, expiry dates, tickets, documents, and recent changes in plain language. Facts come only from what is recorded for this office. When the records do not cover a problem, Genius may add a general tip, always marked as one.</p>
-    <p class="muted">${seeAll ? "You are seeing everyone's Genius conversations at this office, because your login is an admin login." : "Your Genius conversations are private to your login. Admin logins at this office can see them."}</p>
+  let chatSection = "";
+  if (user.kind === "customer" && canEscalate && await chatReady(env.DB)) {
+    if (openThread) {
+      const lastId = chatMsgs.length ? chatMsgs[chatMsgs.length - 1].id : 0;
+      const statusLine = openThread.status === "waiting"
+        ? "Waiting for a person from FlossByte. Leave your message here; if no one is free, it is not lost, and FlossByte picks it up from the chat queue."
+        : "You're chatting with FlossByte Support.";
+      chatSection = `<div class="card" id="livechat">
+      <h3 style="margin-top:0">Live chat · FlossByte Support</h3>
+      <p class="muted" id="chat-status">${esc(statusLine)}</p>
+      <p class="muted">Genius is paused while this chat is open. It picks back up when the chat ends.</p>
+      <div class="chat" id="chat-msgs">${renderChatMessages(chatMsgs, false)}</div>
+      <form method="post" action="/app/locations/${locationId}/chat/message" style="margin-top:10px">
+        <input name="body" placeholder="Type your message..." required autocomplete="off">
+        <p style="margin-top:10px"><button class="btn" type="submit">Send</button></p></form>
+      <form method="post" action="/app/locations/${locationId}/chat/end" onsubmit="return confirm('End this chat? The conversation is saved, and Genius becomes available again.')">
+        <button class="btn small secondary" type="submit">End chat</button></form>
+      <script>
+      (function(){
+        var last = ${lastId}, loc = ${locationId}, box = document.getElementById('chat-msgs');
+        function escHtml(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+        function tick(){
+          fetch('/app/locations/' + loc + '/chat/poll?after=' + last, { headers: { 'Accept': 'application/json' } })
+            .then(function(r){ return r.json(); })
+            .then(function(d){
+              if (!d || !d.ok) return;
+              if (d.status === 'ended') { location.reload(); return; }
+              (d.messages || []).forEach(function(m){
+                last = Math.max(last, m.id);
+                var div = document.createElement('div');
+                if (m.kind === 'system') { div.className = 'muted'; div.style.cssText = 'text-align:center;font-size:12.5px;margin:10px 0'; div.textContent = '— ' + m.body + ' —'; }
+                else { div.className = 'msg ' + (m.kind === 'customer' ? 'q' : 'a'); div.textContent = m.body; }
+                box.appendChild(div);
+              });
+              if (d.status === 'active') { var st = document.getElementById('chat-status'); if (st && st.textContent.indexOf('Waiting') === 0) st.textContent = "You're chatting with FlossByte Support."; }
+            }).catch(function(){});
+        }
+        setInterval(tick, 4000);
+      })();
+      </script></div>`;
+    } else {
+      chatSection = `<div class="card">
+      <h3 style="margin-top:0">Rather talk to a person?</h3>
+      <p class="muted">Start a live chat with FlossByte, right here. Genius steps aside while you chat, and FlossByte can see what you already asked Genius, so you never repeat yourself. Chat hours are weekdays 8 to 6; after hours, your chat waits in the queue and is picked up next business day.</p>
+      <form method="post" action="/app/locations/${locationId}/chat/start">
+        <button class="btn secondary" type="submit">Chat with FlossByte</button></form></div>`;
+    }
+  }
+  const geniusComposer = openThread ? "" : `
     <p class="muted" style="margin-bottom:6px">Try one of these:</p>
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px">${starter("Is our internet OK?")}${starter("What's the WiFi password?")}${starter("Which devices are offline?")}${starter("Why is a computer offline?")}</div>
     <form method="post" action="/app/locations/${locationId}/ask">
       <input name="question" placeholder="Why is the front desk computer offline?" required>
-      <p style="margin-top:12px"><button class="btn" type="submit">Ask Genius</button></p></form>
-    ${history ? `<div class="chat">${history}</div>` : ""}</div>`;
+      <p style="margin-top:12px"><button class="btn" type="submit">Ask Genius</button></p></form>`;
+  const body = `${locNav(loc, "ask")}<h1>Genius</h1>
+    <div class="card"><p class="muted">Genius explains your internet, WiFi, equipment, cameras, expiry dates, tickets, documents, and recent changes in plain language. Facts come only from what is recorded for this office. When the records do not cover a problem, Genius may add a general tip, always marked as one.</p>
+    <p class="muted">${seeAll ? "You are seeing everyone's Genius conversations at this office, because your login is an admin login." : "Your Genius conversations are private to your login. Admin logins at this office can see them."}</p>
+    ${geniusComposer}
+    ${history ? `<div class="chat">${history}</div>` : ""}</div>
+    ${chatSection}`;
   return page({ title: "Genius", user, body });
 }
 
 export async function askPost(env, request, user, locationId) {
   const { loc, error } = await guard(env, user, locationId);
   if (error) return denied(user, error);
+  // Genius is paused while this login has a live chat open here.
+  if (user.kind === "customer" && await getOpenThread(env.DB, locationId, user.id)) {
+    return redirect(`/app/locations/${locationId}/ask`);
+  }
   const f = await request.formData();
   const question = String(f.get("question") || "").trim().slice(0, 1200);
   if (question) {
