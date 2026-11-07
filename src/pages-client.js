@@ -410,41 +410,35 @@ export async function servicesPage(env, request, user) {
   const db = env.DB;
   const cust = await db.prepare("SELECT name FROM customers WHERE id = ?").bind(org).first();
   const { results: locs } = await db.prepare("SELECT * FROM locations WHERE customer_id = ? ORDER BY id").bind(org).all();
-  // Service-first cards: each service appears ONCE, with one chip
-  // per office carrying that office's state. The per-office layout
-  // printed the whole catalog once per office, which read as bulk.
-  const locStates = [];
-  for (const loc of locs || []) locStates.push({ loc, states: await productStates(db, org, loc.id) });
-  const products = locStates.length ? locStates[0].states : [];
-  const reqChip = (loc, key) => `<form method="post" action="/app/locations/${loc.id}/request-product" style="margin:0"><input type="hidden" name="product" value="${esc(key)}"><button class="btn small" type="submit">Request</button></form>`;
-  const openKey = products.some((p) => p.key === "managed_it") ? "managed_it" : (products[0] ? products[0].key : null);
-  const cards = products.map((p, idx) => {
-    const n = locStates.length;
-    const onCount = locStates.reduce((acc, { states }) => acc + (states.some((s) => s.key === p.key && s.enabled) ? 1 : 0), 0);
-    const coverage = n === 0 ? "" : onCount === n ? (n === 1 ? "Included" : `Included at all ${n} offices`)
-      : onCount === 0 ? (n === 1 ? "Not included" : "Not included at any office")
-      : `Included at ${onCount} of ${n} offices`;
-    const dotColor = n > 0 && onCount === n ? "#0A7C6E" : onCount === 0 ? "#98A6B8" : "#b45309";
-    const chips = locStates.map(({ loc, states }) => {
-      const st = states.find((s) => s.key === p.key);
-      return st && st.enabled
-        ? `<span class="pill on">${esc(loc.name)} · Included</span>`
-        : `<span style="display:inline-flex;align-items:center;gap:6px"><span class="pill off">${esc(loc.name)} · Not included</span>${reqChip(loc, p.key)}</span>`;
-    }).join("");
-    return `<details class="card" ${p.key === openKey ? "open" : ""}>
-      <summary style="cursor:pointer;display:flex;justify-content:space-between;align-items:center;gap:12px">
-        <span style="font-weight:700;font-size:16px">${esc(p.name)}</span>
-        <span style="display:flex;align-items:center;gap:8px;flex:none"><span style="width:9px;height:9px;border-radius:50%;background:${dotColor};flex:none"></span><span class="muted" style="font-size:13px">${esc(coverage)}</span><span class="chev" aria-hidden="true" style="color:#98A6B8;font-size:20px;font-weight:700;line-height:1">›</span></span>
-      </summary>
-      <div class="muted" style="margin-top:8px">${esc(PRODUCT_PLAIN[p.key] || p.description || "")}</div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;align-items:center">${chips}</div>
-    </details>`;
-  });
+  // Office switcher (Montek's pick over the collapsible list): one
+  // office at a time, chosen with the chips at the top (?office=id).
+  // The page is always exactly one office's services, however many
+  // offices the organization has.
+  const qp = new URL(request.url).searchParams;
+  const wanted = parseInt(qp.get("office") || "", 10);
+  const loc = (locs || []).find((l) => l.id === wanted) || (locs || [])[0] || null;
+  const switcher = locs && locs.length > 1
+    ? `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:16px"><span class="muted" style="font-weight:600">Office:</span>${locs.map((l) => `<a class="btn small ${loc && l.id === loc.id ? "" : "secondary"}" href="/app/services?office=${l.id}" style="text-decoration:none">${esc(l.name)}</a>`).join("")}</div>`
+    : "";
+  let card = `<div class="card"><p class="muted">No offices yet.</p></div>`;
+  if (loc) {
+    const states = await productStates(db, org, loc.id);
+    const inc = states.filter((p) => p.enabled);
+    const avail = states.filter((p) => !p.enabled);
+    const glabel = (t) => `<div style="font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);padding:12px 0 2px">${t}</div>`;
+    const rowIn = (p) => `<div style="display:flex;justify-content:space-between;align-items:center;gap:14px;padding:9px 0;border-bottom:1px solid #EEF2F7"><span style="font-weight:600">${esc(p.name)}</span><span class="pill on">Included</span></div>`;
+    const rowOut = (p) => `<div style="display:flex;justify-content:space-between;align-items:center;gap:14px;padding:10px 0;border-bottom:1px solid #EEF2F7">
+      <div><div style="font-weight:600">${esc(p.name)}</div><div class="muted">${esc(PRODUCT_PLAIN[p.key] || p.description || "")}</div></div>
+      <div style="display:flex;align-items:center;gap:8px;flex:none"><span class="pill off">Not included</span>${requestForm(loc, p.key, true)}</div></div>`;
+    const both = inc.length > 0 && avail.length > 0;
+    card = `<div class="card">
+      ${both ? glabel("Included") : ""}${inc.map(rowIn).join("")}
+      ${avail.length ? `${both ? glabel("Available to add") : ""}${avail.map(rowOut).join("")}` : ""}</div>`;
+  }
   const rail = await railLocs(env, user);
   const body = `${orgRail(user, "services", cust ? cust.name : "My Portal", rail)}<h1>Services</h1>
     <p class="muted">What each office has with FlossByte, and what you can add. To change a service that's on, contact FlossByte.</p>
-    ${cards.join("") || `<div class="card"><p class="muted">No offices yet.</p></div>`}`;
-  const qp = new URL(request.url).searchParams;
+    ${switcher}${card}`;
   return page({ title: "Services", user, body, flash: qp.get("msg") || undefined, error: qp.get("err") || undefined });
 }
 
