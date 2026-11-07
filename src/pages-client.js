@@ -9,7 +9,7 @@ import {
 import { sendEmail, quoteAcceptedNoticeEmail, ticketCreatedNoticeEmail, ticketReplyNoticeEmail, productRequestEmail } from "./email.js";
 import { splitName, joinName, normalizePhone } from "./auth.js";
 import { issueCollectorToken, collectorTokenState } from "./collector.js";
-import { buildGeniusContext, geniusAnswer, geniusFooter, isExactLookupQuestion } from "./genius.js";
+import { buildGeniusContext, geniusAnswer, geniusFooter, isExactLookupQuestion, isLiveChatRequest } from "./genius.js";
 import { chatReady, getOpenThread, threadMessages, addChatMessage, startChat, endChat, renderChatMessages, notifyChatStarted } from "./chat.js";
 
 function orgOrigin(env) { return env.APP_ORIGIN || "https://portal.flossbyte.com"; }
@@ -2360,16 +2360,21 @@ export async function askPage(env, request, user, locationId) {
   // types out like ChatGPT instead of appearing all at once. It is a
   // presentation of the saved answer only; revisits show it in full.
   const fresh = new URL(request.url).searchParams.get("fresh") === "1" && !openThread;
+  const chatTablesOk = await chatReady(env.DB).catch(() => false);
+  // If the newest question was a typed request for a human, the start
+  // button belongs right under that answer, not only under the composer.
+  const lastWantsChat = !openThread && rows.length > 0 && user.kind === "customer" && canEscalate && chatTablesOk && isLiveChatRequest(rows[rows.length - 1].question);
   const history = rows.map((m, i) => `<div class="gex"${!openThread && i === rows.length - 1 ? ' id="latest"' : ""}>
     ${seeAll && m.user_id !== user.id ? `<div class="muted" style="font-size:12.5px">${esc(m.asker_name || "Team member")}</div>` : ""}
     <div class="msg q">${esc(m.question)}</div>
     <div class="glabel">Genius</div>
     <div class="msg a${fresh && i === rows.length - 1 ? " gtype" : ""}">${esc(m.answer)}</div>${canEscalate ? `<form method="post" action="/app/locations/${locationId}/ask/escalate" style="margin:0">
       <input type="hidden" name="message_id" value="${m.id}">
-      <button class="btn small secondary" type="submit">Send this to FlossByte</button></form>` : ""}</div>`).join("");
+      <button class="btn small secondary" type="submit">Send this to FlossByte</button></form>` : ""}${lastWantsChat && i === rows.length - 1 ? `<form method="post" action="/app/locations/${locationId}/chat/start" style="margin:8px 0 0">
+      <button class="btn" type="submit">Start live chat with FlossByte</button></form>` : ""}</div>`).join("");
   const starter = (q) => `<form class="gchip" method="post" action="/app/locations/${locationId}/ask" style="margin:0"><input type="hidden" name="question" value="${esc(q)}"><button class="btn secondary" style="width:100%;text-align:left" type="submit">${esc(q)}</button></form>`;
   const SEND_ICON = `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg>`;
-  const chatOn = user.kind === "customer" && canEscalate && await chatReady(env.DB);
+  const chatOn = user.kind === "customer" && canEscalate && chatTablesOk;
   const lastChatId = chatMsgs.length ? chatMsgs[chatMsgs.length - 1].id : 0;
   const streamInner = openThread
     ? `${history}
@@ -2494,6 +2499,16 @@ export async function askPage(env, request, user, locationId) {
       frameId = requestAnimationFrame(frame);
       node.addEventListener('click', finish);
     }
+    function addLiveChat(wrap){
+      var f = document.createElement('form');
+      f.method = 'post';
+      f.action = '/app/locations/' + LOC + '/chat/start';
+      f.style.margin = '8px 0 0';
+      var b = el('button', 'btn', 'Start live chat with FlossByte');
+      b.type = 'submit';
+      f.appendChild(b);
+      wrap.appendChild(f);
+    }
     function addEscalate(wrap, id){
       if (!ESC || !id) return;
       var f = document.createElement('form');
@@ -2530,7 +2545,11 @@ export async function askPage(env, request, user, locationId) {
         .then(function(d){
           input.disabled = false; btn.disabled = false; input.focus();
           if (!d || !d.ok) { ans.textContent = 'Something went wrong on our side. Please try again.'; return; }
-          typeInto(ans, d.answer, function(){ addEscalate(wrap, d.id); scrollAboveBar(wrap); });
+          typeInto(ans, d.answer, function(){
+            if (d.liveChat) addLiveChat(wrap);
+            else addEscalate(wrap, d.id);
+            scrollAboveBar(wrap);
+          });
         })
         .catch(function(){
           input.disabled = false; btn.disabled = false;
@@ -2630,6 +2649,19 @@ export async function askPage(env, request, user, locationId) {
 // records answer first, exact lookups never reach the model, the
 // model answer wins when it returns one, and the exchange is saved.
 async function runGeniusAsk(env, user, loc, question) {
+  // A typed request for a human is a handoff, not an IT question:
+  // answer it directly and flag it so the page offers the live chat
+  // start button right under the answer.
+  if (user.kind === "customer" && isLiveChatRequest(question)) {
+    let canChat = false;
+    try { canChat = (await chatReady(env.DB)) && (await laneOn(env.DB, loc.customer_id, loc.id)); } catch { canChat = false; }
+    const answer = canChat
+      ? "Of course. I can connect you with a person at FlossByte right here in this conversation. Tap Start live chat below, and FlossByte will see what you asked Genius, so you do not have to repeat yourself."
+      : "I can't open a live chat from here, but you can send this conversation to FlossByte with the button under this answer, or call (669) 237-2264 and a person will help you.";
+    const r = await env.DB.prepare("INSERT INTO ask_messages (location_id, user_id, question, answer) VALUES (?, ?, ?, ?)")
+      .bind(loc.id, user.id, question, answer).run();
+    return { id: r.meta.last_row_id, answer, liveChat: canChat };
+  }
   const recordsAnswer = await askAnswer(env.DB, loc.id, question);
   let answer = recordsAnswer;
   if (!isExactLookupQuestion(question)) {
@@ -2674,7 +2706,7 @@ export async function askApiPost(env, request, user, locationId) {
   const question = String(f.get("question") || "").trim().slice(0, 1200);
   if (!question) return json({ ok: false }, 400);
   const r = await runGeniusAsk(env, user, loc, question);
-  return json({ ok: true, id: r.id, answer: r.answer });
+  return json({ ok: true, id: r.id, answer: r.answer, liveChat: !!r.liveChat });
 }
 
 export async function askEscalatePost(env, request, user, locationId) {

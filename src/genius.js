@@ -38,6 +38,27 @@ export function isExactLookupQuestion(question) {
   return /(password|passcode|credential|serial|\bmac\b|\bip\b|account number|wi[-\s]?fi\s+(pass|code|key)|network\s+(pass|code|key))/i.test(String(question || ""));
 }
 
+// A typed request for a human ("chat with someone", "I want to chat
+// with a live person", "talk to a human") is a live-chat handoff
+// request, not an IT question. Anchored to person words plus a
+// chat/talk/connect verb (or the exact phrase "live chat") so
+// questions ABOUT chat systems or software never trigger it.
+export function isLiveChatRequest(question) {
+  const q = String(question || "").toLowerCase().replace(/\s+/g, " ").trim();
+  if (!q) return false;
+  const person = "(live |real |actual )?(person|human|someone|agent|representative|rep|flossbyte|support)";
+  if (/\blive chat\b/.test(q)) return true;
+  if (/\b(message|contact) flossbyte\b/.test(q)) return true;
+  if (/^(contact|message) support[.!]?$/.test(q)) return true;
+  if (new RegExp("\\b(chat|talk|speak|connect|message) (to|with) (a |an |the )?" + person + "\\b").test(q)) return true;
+  if (/\b(want|need|would like|like|trying) to (chat|talk|speak|connect|message) (to|with )?(a |an |the )?(live )?(person|human|someone|agent|representative|rep|flossbyte|support)\b/.test(q)) return true;
+  if (/\b(connect|transfer|get|bring|give) me (to |with )?(a |an |the )?(live )?(person|human|someone|agent|representative|rep|flossbyte|support)\b/.test(q)) return true;
+  if (/\b(live|real|actual) (person|human|agent)\b/.test(q)) return true;
+  if (/^(chat|talk|speak) (to|with) (someone|a person|flossbyte)[.!]?$/.test(q)) return true;
+  if (/^(human|person|agent|live person|real person)[.!]?$/.test(q)) return true;
+  return false;
+}
+
 export function redactSecrets(value) {
   return String(value || "")
     .replace(/(password\s+)([^\s,;]+)/gi, "$1[exact value shown by the portal]")
