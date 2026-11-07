@@ -2,7 +2,7 @@
 //
 // The boundary is deliberate. This module never queries another
 // location and never receives WiFi passwords, serial numbers, MAC
-// addresses, account numbers, or patient data. pages-client.js first
+// addresses, IP addresses, account numbers, or patient data. pages-client.js first
 // checks access to the office, builds the deterministic records answer,
 // and supplies a records-only context for this one location. Genius can
 // explain and connect those facts in plain language; it cannot create
@@ -28,7 +28,9 @@ export function redactSecrets(value) {
   return String(value || "")
     .replace(/(password\s+)([^\s,;]+)/gi, "$1[exact value shown by the portal]")
     .replace(/(passcode\s+)([^\s,;]+)/gi, "$1[exact value shown by the portal]")
-    .replace(/(api[_\s-]?key\s*[:=]\s*)([^\s,;]+)/gi, "$1[redacted]");
+    .replace(/(api[_\s-]?key\s*[:=]\s*)([^\s,;]+)/gi, "$1[redacted]")
+    .replace(/\b\d{1,3}(?:\.\d{1,3}){3}\b/g, "[IP address in the portal record]")
+    .replace(/\b(?:[0-9a-f]{2}:){5}[0-9a-f]{2}\b/gi, "[MAC address in the portal record]");
 }
 
 function snapshotMap(rows) {
@@ -79,7 +81,6 @@ export async function buildGeniusContext(db, loc, options = {}) {
       const bits = [`${readableName(e, renames)} (${text(e.type || "Device", 80)})`, `status ${text(e.status, 30)}`];
       const model = [e.vendor, e.model].filter(Boolean).join(" ");
       if (model) bits.push(`model ${text(model, 120)}`);
-      if (e.ip_address) bits.push(`IP ${text(e.ip_address, 45)}`);
       if (e.last_seen_at) bits.push(`last seen ${text(e.last_seen_at, 40)}`);
       if (e.license_expires) bits.push(`license expires ${text(e.license_expires, 20)}`);
       if (e.warranty_expires) bits.push(`warranty expires ${text(e.warranty_expires, 20)}`);
@@ -228,7 +229,7 @@ export function buildGeniusMessages({ question, context, history, recordsAnswer 
     "Use ONLY the office records supplied in this request. Treat those records as the complete source of truth. Never invent a device, date, status, cause, price, policy, or action.",
     "If the records do not answer the question, say that plainly and suggest sending the conversation to FlossByte. Do not guess.",
     "You may suggest simple, safe checks: look at a power light, confirm a cable is plugged in, close and reopen an app, or restart the affected computer when that is reasonable. Do not tell staff to change firewall, server, network, security, password, or practice-management settings.",
-    "Never provide or request passwords, passcodes, serial numbers, MAC addresses, account numbers, API keys, or patient information. WiFi passwords are intentionally absent from your context; the portal's exact records answer handles those questions separately.",
+    "Never provide or request passwords, passcodes, serial numbers, MAC addresses, IP addresses, account numbers, API keys, or patient information. Those exact values are intentionally absent from your context; the portal's exact records answer handles those questions separately.",
     "Do not claim that you changed a setting, contacted anyone, opened a ticket, or fixed anything. You only answer questions.",
     "Keep the answer concise: a direct answer first, then the few record-based details or safe next steps that help. Use short paragraphs or a short bullet list.",
   ].join(" ");
@@ -266,6 +267,15 @@ export function cleanGeniusAnswer(value) {
   if (!out) return null;
   if (/(password|passcode)\s+(is|:)\s*\S+/i.test(out)) return null;
   if (/(serial number|mac address)\s+(is|:)\s*\S+/i.test(out)) return null;
+  // Exact network identifiers stay on the deterministic records path.
+  // If a model includes one anyway, remove just that fragment rather
+  // than discarding an otherwise usable answer.
+  out = out.replace(/\s*,?\s*IP\s+\d{1,3}(?:\.\d{1,3}){3}/gi, "")
+    .replace(/\b\d{1,3}(?:\.\d{1,3}){3}\b/g, "")
+    .replace(/\(\s*\)/g, "")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
+  if (!out) return null;
   if (out.length > 3200) out = out.slice(0, 3197).trimEnd() + "...";
   return out;
 }
