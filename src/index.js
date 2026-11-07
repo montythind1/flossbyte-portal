@@ -103,6 +103,8 @@ async function route(request, env) {
     if (m && method === "GET") return admin.chatAdminPoll(env, request, user, Number(m[1]));
     m = path.match(/^\/admin\/chats\/(\d+)\/take$/);
     if (m && method === "POST") return admin.chatTakePost(env, request, user, Number(m[1]));
+    m = path.match(/^\/admin\/chats\/(\d+)\/api$/);
+    if (m && method === "POST") return admin.chatAdminApiPost(env, request, user, Number(m[1]));
     m = path.match(/^\/admin\/chats\/(\d+)\/message$/);
     if (m && method === "POST") return admin.chatAdminMessagePost(env, request, user, Number(m[1]));
     m = path.match(/^\/admin\/chats\/(\d+)\/end$/);

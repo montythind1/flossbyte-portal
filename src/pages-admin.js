@@ -2011,9 +2011,9 @@ export async function chatThreadPage(env, request, user, threadId) {
       ${!mine ? `<form method="post" action="/admin/chats/${t.id}/take"><button class="btn small" type="submit">${t.assigned_admin_id ? "Take over this chat" : "Take this chat"}</button></form>` : ""}
       ${t.ticket_id ? "" : `<form method="post" action="/admin/chats/${t.id}/ticket"><button class="btn small secondary" type="submit">Convert to ticket</button></form>`}
       <form method="post" action="/admin/chats/${t.id}/end" onsubmit="return confirm('End this chat? The transcript stays in the archive.')"><button class="btn small secondary" type="submit">End chat</button></form></div>
-      <form method="post" action="/admin/chats/${t.id}/message" style="margin-top:12px">
-        <input name="body" placeholder="Reply as FlossByte Support..." required autocomplete="off">
-        <p style="margin-top:10px"><button class="btn" type="submit">Send reply</button></p></form>`;
+      <form id="chat-reply-form" class="gcomposer" method="post" action="/admin/chats/${t.id}/message" style="margin-top:12px">
+        <input id="chat-reply-input" name="body" placeholder="Reply as FlossByte Support..." required autocomplete="off">
+        <button id="chat-send-btn" class="sendbtn" type="submit" aria-label="Send reply"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg></button></form>`;
   const body = `${adminNav("chats")}
   <p><a href="/admin/chats">← Live chat</a></p>
   <h1>${esc(t.requester_name)} · ${esc(t.location_name)}</h1>
@@ -2026,22 +2026,53 @@ export async function chatThreadPage(env, request, user, threadId) {
   ${ended ? "" : `<script>
   (function(){
     var last = ${lastId}, box = document.getElementById('chat-msgs');
+    function sAbove(node){
+      var bar = document.querySelector('.gcomposer');
+      var reserve = bar ? bar.offsetHeight + 30 : 110;
+      var r = node.getBoundingClientRect();
+      var target = window.pageYOffset + r.bottom - (window.innerHeight - reserve);
+      if (target > window.pageYOffset) window.scrollTo(0, target);
+    }
     function tick(){
       fetch('/admin/chats/${t.id}/poll?after=' + last, { headers: { 'Accept': 'application/json' } })
         .then(function(r){ return r.json(); })
         .then(function(d){
           if (!d || !d.ok) return;
           if (d.status === 'ended') { location.reload(); return; }
+          var appended = null;
           (d.messages || []).forEach(function(m){
             last = Math.max(last, m.id);
             var div = document.createElement('div');
             if (m.kind === 'system') { div.className = 'muted'; div.style.cssText = 'text-align:center;font-size:12.5px;margin:10px 0'; div.textContent = '— ' + m.body + ' —'; }
             else { div.className = 'msg ' + (m.kind === 'customer' ? 'q' : 'a'); div.textContent = m.body; }
             box.appendChild(div);
+            appended = div;
           });
+          if (appended) sAbove(appended);
         }).catch(function(){});
     }
     setInterval(tick, 4000);
+    var form = document.getElementById('chat-reply-form');
+    if (form) {
+      var inp = document.getElementById('chat-reply-input');
+      var btn = document.getElementById('chat-send-btn');
+      form.addEventListener('submit', function(ev){
+        ev.preventDefault();
+        var body = inp.value.trim();
+        if (!body) return;
+        inp.disabled = true; btn.disabled = true;
+        var fd = new FormData();
+        fd.append('body', body);
+        fetch('/admin/chats/${t.id}/api', { method: 'POST', body: fd, headers: { 'Accept': 'application/json' } })
+          .then(function(r){ return r.json(); })
+          .then(function(d){
+            inp.disabled = false; btn.disabled = false;
+            if (d && d.ok) { inp.value = ''; inp.focus(); tick(); }
+            else { form.submit(); }
+          })
+          .catch(function(){ inp.disabled = false; btn.disabled = false; form.submit(); });
+      });
+    }
   })();
   </script>`}`;
   return page({ title: "Live chat", user, body });
@@ -2056,25 +2087,46 @@ export async function chatTakePost(env, request, user, threadId) {
   return redirect(`/admin/chats/${threadId}`);
 }
 
+// Shared by the classic form post and the in-place API: claims an
+// unassigned chat, activates a waiting one, stores the reply, and
+// emails the customer on the first FlossByte reply in the thread.
+async function postAdminChatMessage(env, user, t, body) {
+  const hadAdminMsg = await env.DB.prepare(
+    "SELECT id FROM chat_messages WHERE thread_id = ? AND sender_kind = 'flossbyte' LIMIT 1").bind(t.id).first();
+  if (!t.assigned_admin_id) {
+    await env.DB.prepare("UPDATE chat_threads SET assigned_admin_id = ?, status = 'active' WHERE id = ?").bind(user.id, t.id).run();
+    await env.DB.prepare("INSERT INTO chat_messages (thread_id, sender_kind, sender_user_id, body) VALUES (?, 'system', NULL, ?)")
+      .bind(t.id, `${user.name} from FlossByte joined the chat.`).run();
+  } else if (t.status === "waiting") {
+    await env.DB.prepare("UPDATE chat_threads SET status = 'active' WHERE id = ?").bind(t.id).run();
+  }
+  const id = await addChatMessage(env.DB, t.id, "flossbyte", user.id, body);
+  if (!hadAdminMsg) await notifyCustomerReply(env, t, user);
+  return id;
+}
+
 export async function chatAdminMessagePost(env, request, user, threadId) {
   const t = await getThread(env.DB, threadId);
   if (!t || t.status === "ended") return redirect("/admin/chats");
   const f = await request.formData();
   const body = String(f.get("body") || "").trim().slice(0, 2000);
-  if (body) {
-    const hadAdminMsg = await env.DB.prepare(
-      "SELECT id FROM chat_messages WHERE thread_id = ? AND sender_kind = 'flossbyte' LIMIT 1").bind(threadId).first();
-    if (!t.assigned_admin_id) {
-      await env.DB.prepare("UPDATE chat_threads SET assigned_admin_id = ?, status = 'active' WHERE id = ?").bind(user.id, threadId).run();
-      await env.DB.prepare("INSERT INTO chat_messages (thread_id, sender_kind, sender_user_id, body) VALUES (?, 'system', NULL, ?)")
-        .bind(threadId, `${user.name} from FlossByte joined the chat.`).run();
-    } else if (t.status === "waiting") {
-      await env.DB.prepare("UPDATE chat_threads SET status = 'active' WHERE id = ?").bind(threadId).run();
-    }
-    await addChatMessage(env.DB, threadId, "flossbyte", user.id, body);
-    if (!hadAdminMsg) await notifyCustomerReply(env, t, user);
-  }
+  if (body) await postAdminChatMessage(env, user, t, body);
   return redirect(`/admin/chats/${threadId}`);
+}
+
+// In-place reply (the Genius pattern): no page reload; the client
+// clears the bar, then polls once so the new message (and any system
+// line from claiming the chat) lands in the stream in order.
+export async function chatAdminApiPost(env, request, user, threadId) {
+  const json = (obj, status = 200) => new Response(JSON.stringify(obj), { status, headers: { "Content-Type": "application/json" } });
+  const t = await getThread(env.DB, threadId).catch(() => null);
+  if (!t) return json({ ok: false }, 404);
+  if (t.status === "ended") return json({ ok: false, error: "ended" }, 409);
+  const f = await request.formData();
+  const body = String(f.get("body") || "").trim().slice(0, 2000);
+  if (!body) return json({ ok: false }, 400);
+  const id = await postAdminChatMessage(env, user, t, body);
+  return json({ ok: true, id });
 }
 
 export async function chatAdminEndPost(env, request, user, threadId) {
