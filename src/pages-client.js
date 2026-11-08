@@ -1106,13 +1106,49 @@ export async function equipmentDetailPage(env, request, user, locationId, equipm
   const kids = children.length ? `<div class="card"><h3 style="margin-top:0">Plugged into this device</h3>
     ${children.slice(0, 15).map((c) => `<div style="display:flex;justify-content:space-between;gap:12px;padding:8px 0;border-bottom:1px solid #EEF2F7"><a href="/app/locations/${locationId}/equipment/${c.id}" style="font-weight:600;color:inherit;text-decoration:none">${esc(displayName(c, renames))}</a><span class="muted">${esc(deviceKind(c))}${c.ip_address ? " · " + esc(c.ip_address) : ""}</span></div>`).join("")}
     ${children.length > 15 ? `<p class="muted" style="margin-bottom:0">and ${children.length - 15} more</p>` : ""}</div>` : "";
+  // A gateway or firewall carries the office's whole internet and
+  // security picture, most of which lives in the office's synced
+  // snapshots rather than on this row: pull it together here so the
+  // device page shows everything known about this box in one place.
+  let fwCard = "";
+  if (kind === "Gateway" || kind === "Firewall") {
+    try {
+      const inetSnap = await env.DB.prepare("SELECT payload, captured_at FROM network_snapshots WHERE location_id = ? AND kind = 'internet'").bind(locationId).first().catch(() => null);
+      const cfgSnap = await env.DB.prepare("SELECT payload, captured_at FROM network_snapshots WHERE location_id = ? AND kind = 'config'").bind(locationId).first().catch(() => null);
+      const inet = inetSnap && inetSnap.payload ? JSON.parse(inetSnap.payload) : {};
+      const cfg = cfgSnap && cfgSnap.payload ? JSON.parse(cfgSnap.payload) : {};
+      const isp = inet.isp || {};
+      const onCount = (arr) => (arr || []).filter((x) => x && x.enabled !== false).length;
+      const names = (arr, fb) => (arr || []).map((x) => x && (x.name || fb)).filter(Boolean);
+      const fwRows = [
+        isp.ispName ? drow("Internet provider", esc(isp.ispName)) : "",
+        isp.uptimePct != null ? drow("Internet uptime", `${Math.round(isp.uptimePct * 10) / 10}% over the last ${isp.hours || 24} hours`) : "",
+        isp.avgLatencyMs != null ? drow("Average latency", `${Math.round(isp.avgLatencyMs)} ms`) : "",
+        isp.downMbps != null || isp.upMbps != null ? drow("Measured speed", `${isp.downMbps != null ? Math.round(isp.downMbps) + " down" : ""}${isp.downMbps != null && isp.upMbps != null ? " · " : ""}${isp.upMbps != null ? Math.round(isp.upMbps) + " up" : ""} Mbps`) : "",
+        (inet.wans || []).length ? drow("Internet connections", esc(names(inet.wans, "WAN").join(", "))) : "",
+        (cfg.firewallPolicies || []).length ? drow("Firewall policies", `${cfg.firewallPolicies.length} rules · ${onCount(cfg.firewallPolicies)} on`) : "",
+        (cfg.firewallZones || []).length ? drow("Firewall zones", esc(names(cfg.firewallZones, "Zone").join(", "))) : "",
+        (cfg.networks || []).length ? drow("Networks protected", `${cfg.networks.length} · ${esc(names(cfg.networks, "Network").join(", "))}`) : "",
+        (cfg.vpnServers || []).length ? drow("VPN servers", esc(names(cfg.vpnServers, "VPN server").join(", "))) : "",
+        (cfg.vpnTunnels || []).length ? drow("Site-to-site VPN", esc((cfg.vpnTunnels || []).map((t) => (t.name || "Tunnel") + (t.state || t.status ? ` (${t.state || t.status})` : "")).join(", "))) : "",
+        (cfg.aclRules || []).length ? drow("Switch access rules", `${cfg.aclRules.length} rules`) : "",
+        (cfg.radiusProfiles || []).length ? drow("RADIUS profiles", esc(names(cfg.radiusProfiles, "Profile").join(", "))) : "",
+      ].filter(Boolean).join("");
+      const checked = (cfgSnap && cfgSnap.captured_at) || (inetSnap && inetSnap.captured_at);
+      if (fwRows) fwCard = `<div class="card" style="margin-top:16px"><h3 style="margin-top:0">Firewall</h3>
+        <p class="muted" style="margin-top:0">This box is the office's firewall: it guards the network and carries the internet connection. Its live settings and state, from the office's network sync.</p>
+        ${fwRows}
+        ${checked ? `<p class="muted" style="margin:10px 0 0;font-size:12.5px">Checked ${esc(relTime(checked))}.</p>` : ""}</div>`;
+    } catch { fwCard = ""; }
+  }
   const body = `${locNav(loc, "equipment")}<p class="flash-print-hide"><a href="/app/locations/${locationId}/equipment">&larr; Equipment</a></p>
     ${header}
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px;align-items:start">
       <div class="card"><h3 style="margin-top:0">Details</h3>${detailRows || '<p class="muted">Nothing else on file for this device.</p>'}
       ${row.notes ? `<p style="margin:14px 0 0"><span class="muted">Notes</span><br>${esc(row.notes)}</p>` : ""}</div>
       <div style="display:grid;gap:16px">${parentCard}${computerCard}${health}${kids}</div>
-    </div>`;
+    </div>
+    ${fwCard}`;
   return page({ title: title, user, body });
 }
 

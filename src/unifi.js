@@ -561,7 +561,11 @@ export async function runUnifiSync(env) {
           if (!mac) continue;
           summary.clientsSeen++;
           const externalId = "client:" + mac.replace(/:/g, "");
-          const name = c.name ? String(c.name) : mac;
+          // UniFi names clients "Front2 c3:54" (hostname plus a MAC
+          // fragment); store the readable name, the fragment adds
+          // nothing the MAC column does not already say.
+          const rawClientName = c.name ? String(c.name) : mac;
+          const name = rawClientName.replace(/ [0-9a-f]{2}:[0-9a-f]{2}$/i, "") || rawClientName;
           const parentMac = hasParent
             ? (c.uplinkDeviceId && local.uuidToMac[String(c.uplinkDeviceId)]) || consoleMacBySite[siteId] || null
             : null;
