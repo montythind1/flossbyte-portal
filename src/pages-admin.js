@@ -1437,79 +1437,8 @@ function lastRunHtml(last, unitLabel) {
     ${last.alerts != null ? srow("Open alerts mirrored", last.alerts) : ""}
     ${last.monDevices != null ? srow("Monitoring devices mirrored", last.monDevices) : ""}
     ${last.monError ? `<p style="color:#b91c1c;margin:8px 0 0">${esc(last.monError)}</p>` : ""}
-    ${last.extra ? srow("Contacts pulled from Atera", last.extra.contacts) : ""}
-    ${last.extra ? srow("Contracts pulled from Atera", last.extra.contracts) : ""}
-    ${last.extra ? srow("Invoices pulled from Atera", last.extra.invoices) : ""}
-    ${last.extra ? srow("Expenses pulled from Atera", last.extra.expenses) : ""}
-    ${last.extra ? srow("Products and rates pulled from Atera", last.extra.products) : ""}
-    ${last.extra ? srow("Custom values pulled from Atera", last.extra.customValues) : ""}
-    ${last.extra ? srow("Knowledge base articles pulled", last.extra.kb) : ""}
-    ${last.extra ? srow("Departments pulled from Atera", last.extra.departments) : ""}
-    ${last.extra && last.extra.waitingCustomers ? srow("Atera customers with records waiting on mapping", last.extra.waitingCustomers) : ""}
-    ${last.extraErrors ? Object.entries(last.extraErrors).map(([k, v]) => `<p style="color:#b91c1c;margin:8px 0 0">${esc({ contacts: "Contacts", contracts: "Contracts", invoices: "Invoices", expenses: "Expenses", products: "Products and rates", customValues: "Custom values", kb: "Knowledge base", departments: "Departments" }[k] || k)}: ${esc(v)}</p>`).join("") : ""}
     ${last.changesLogged ? srow("Changes logged", last.changesLogged) : ""}` : ""}
     ${errs}${checks}</div>`;
-}
-
-// Everything the Atera sync pulled beyond computers: per-office
-// contacts, contracts, invoices, and expenses (kept as location
-// snapshots), plus the account-level products, custom values,
-// knowledge base, and departments (kept together in system_state).
-async function ateraRecordsHtml(env) {
-  let snaps = [];
-  try {
-    const { results } = await env.DB.prepare(
-      `SELECT s.kind, s.payload, l.name AS loc_name, c.name AS cust_name FROM network_snapshots s
-       JOIN locations l ON l.id = s.location_id JOIN customers c ON c.id = l.customer_id
-       WHERE s.kind IN ('atera_contacts', 'atera_contracts', 'atera_invoices', 'atera_expenses')
-       ORDER BY c.name, l.name`).all();
-    snaps = results || [];
-  } catch { snaps = []; }
-  const money = (v) => v == null || v === "" ? "" : (Number.isNaN(Number(v)) ? esc(String(v)) : "$" + Number(v).toLocaleString("en-US"));
-  const day = (iso) => iso ? esc(fmtDateUS(String(iso).slice(0, 10))) : "";
-  const byLoc = new Map();
-  for (const s of snaps) {
-    let payload = {};
-    try { payload = JSON.parse(s.payload || "{}"); } catch { payload = {}; }
-    const key = `${s.cust_name} · ${s.loc_name}`;
-    if (!byLoc.has(key)) byLoc.set(key, {});
-    byLoc.get(key)[s.kind] = payload;
-  }
-  const line = (txt) => `<p style="margin:3px 0">${txt}</p>`;
-  const more = (n) => n > 0 ? `<p class="muted" style="margin:3px 0">and ${n} more</p>` : "";
-  const blocks = [];
-  for (const [locLabel, kinds] of byLoc) {
-    const contacts = (kinds.atera_contacts || {}).contacts || [];
-    const contracts = (kinds.atera_contracts || {}).contracts || [];
-    const invoices = (kinds.atera_invoices || {}).invoices || [];
-    const expenses = [];
-    if (!contacts.length && !contracts.length && !invoices.length) continue;
-    blocks.push(`<details style="margin-top:10px"><summary style="cursor:pointer;font-weight:600">${esc(locLabel)} <span class="muted" style="font-weight:400">(${contacts.length} contacts · ${contracts.length} contracts · ${invoices.length} invoices)</span></summary>
-      <div style="margin-top:8px">
-      ${contacts.length ? `<p style="margin:8px 0 2px"><b>Contacts</b></p>${contacts.map((c) => line(`${esc(c.name)}${c.title ? ` · ${esc(c.title)}` : ""}${c.email ? ` · ${esc(c.email)}` : ""}${c.phone ? ` · ${esc(c.phone)}` : ""}`)).join("")}` : ""}
-      ${contracts.length ? `<p style="margin:12px 0 2px"><b>Contracts</b></p>${contracts.map((c) => line(`${esc(c.name)}${c.type ? ` · ${esc(c.type)}` : ""}${c.start || c.end ? ` · ${day(c.start)} to ${day(c.end)}` : ""}${money(c.amount) ? ` · ${money(c.amount)}` : ""}`)).join("")}` : ""}
-      ${invoices.length ? `<p style="margin:12px 0 2px"><b>Invoices</b></p>${invoices.slice(0, 10).map((v) => line(`#${esc(String(v.number != null ? v.number : ""))}${v.date ? ` · ${day(v.date)}` : ""}${money(v.total) ? ` · ${money(v.total)}` : ""}${v.status ? ` · ${esc(v.status)}` : ""}`)).join("")}${more(invoices.length - 10)}` : ""}
-      </div></details>`);
-  }
-  let accountBlock = "";
-  try {
-    const row = await env.DB.prepare("SELECT value FROM system_state WHERE key = 'atera_account'").first();
-    const acc = row && row.value ? JSON.parse(row.value) : null;
-    if (acc && ((acc.products || []).length || (acc.expenses || []).length || (acc.customValues || []).length || (acc.kb || []).length || (acc.departments || []).length)) {
-      accountBlock = `<details style="margin-top:10px"><summary style="cursor:pointer;font-weight:600">Your Atera account <span class="muted" style="font-weight:400">(${(acc.products || []).length} products · ${(acc.expenses || []).length} expenses · ${(acc.customValues || []).length} custom values · ${(acc.kb || []).length} knowledge base · ${(acc.departments || []).length} departments)</span></summary>
-        <div style="margin-top:8px">
-        ${(acc.products || []).length ? `<p style="margin:8px 0 2px"><b>Products and rates</b></p>${(acc.products || []).map((p) => line(`${esc(p.name)}${money(p.price) ? ` · ${money(p.price)}` : ""}${p.unit ? ` · ${esc(p.unit)}` : ""}`)).join("")}` : ""}
-        ${(acc.expenses || []).length ? `<p style="margin:12px 0 2px"><b>Expenses</b></p>${(acc.expenses || []).map((x) => line(`${esc(x.name)}${money(x.amount) ? ` · ${money(x.amount)}` : ""}`)).join("")}` : ""}
-        ${(acc.customValues || []).length ? `<p style="margin:12px 0 2px"><b>Custom values</b></p>${(acc.customValues || []).slice(0, 25).map((v) => line(`${esc(v.name)}${v.value != null && v.value !== "" ? `: ${esc(String(v.value))}` : ""}`)).join("")}${more((acc.customValues || []).length - 25)}` : ""}
-        ${(acc.kb || []).length ? `<p style="margin:12px 0 2px"><b>Knowledge base</b></p>${(acc.kb || []).slice(0, 25).map((a) => line(esc(a.title))).join("")}${more((acc.kb || []).length - 25)}` : ""}
-        ${(acc.departments || []).length ? `<p style="margin:12px 0 2px"><b>Departments</b></p>${(acc.departments || []).map((d) => line(esc(d.name))).join("")}` : ""}
-        </div></details>`;
-    }
-  } catch { accountBlock = ""; }
-  if (!blocks.length && !accountBlock) return "";
-  return `<div class="card"><h3>Atera records</h3>
-    <p class="muted">Everything else Atera keeps, pulled once an hour: each office's contacts, contracts, invoices, and expenses from Atera, and your account's own products, custom values, knowledge base, and departments. Read-only; nothing here writes back to Atera.</p>
-    ${blocks.join("")}${accountBlock}</div>`;
 }
 
 export async function syncPage(env, request, user) {
@@ -1538,11 +1467,10 @@ export async function syncPage(env, request, user) {
       ${lastRunHtml(lastSophos, "Tenants")}</div>
     <div class="card"><h3>Atera</h3>
       <p class="muted">${env.ATERA_API_KEY
-        ? "An API key is saved, so the portal polls Atera on the same cycle and keeps each mapped location's computer records current: operating system, hardware, serial numbers, signed-in user, last reboot, waiting and installed Windows patches (refreshed hourly), and open Atera alerts. Monitoring devices registered in Atera (printers, NAS, UPS and the like) mirror into the same equipment lists. Once an hour it also pulls everything else Atera keeps for each customer: contacts, contracts, invoices, and expenses, plus your account's products and rates, custom values, knowledge base, and departments. Atera tickets are not pulled; the portal has its own. Software lists are not in the Atera API; they arrive by the scheduled script instead."
+        ? "An API key is saved, so the portal polls Atera on the same cycle and keeps each mapped location's computer records current: operating system, hardware, serial numbers, signed-in user, last reboot, waiting and installed Windows patches (refreshed hourly), and open Atera alerts. Monitoring devices registered in Atera (printers, NAS, UPS and the like) mirror into the same equipment lists. Atera tickets and business records (contracts, invoices, contacts) are not pulled; the portal keeps its own. Software lists are not in the Atera API; they arrive by the scheduled script instead."
         : "Not connected yet. In Atera, open Admin, then Data management, then API, and copy the API key. Save it in Cloudflare as the secret ATERA_API_KEY. After that the portal polls Atera on its own; you map each Atera customer to a location below."}</p>
       <form method="post" action="/admin/sync/run-atera"><button class="btn" type="submit">Sync now</button></form>
       ${lastRunHtml(lastAtera, "Customers")}</div>
-    ${await ateraRecordsHtml(env)}
     <div class="card"><h3>Which site is which office?</h3>
       <p class="muted">Devices are imported only after you map a site or tenant to a location. Devices from unmapped ones are counted in the sync summaries but never added.</p>
       ${unifiMap}${sophosMap}${ateraMap}</div>
