@@ -225,6 +225,14 @@ export async function buildGeniusContext(db, loc, options = {}) {
     sections.push("Open Atera alerts:\n" + alerts.slice(0, 20).map((a) =>
       `- ${text(a.title, 200)}${a.device ? ` on ${text(a.device, 100)}` : ""}${a.severity ? ` (${text(a.severity, 40)})` : ""}`).join("\n"));
   }
+  // People at this office, from Atera's contact list: names and
+  // roles only. Emails and phone numbers stay out of the model
+  // context, like every other exact identifier.
+  const contacts = (snaps.atera_contacts || {}).contacts || [];
+  if (contacts.length) {
+    sections.push("People at this office (from the office's contact list):\n" + contacts.slice(0, 25).map((c) =>
+      `- ${text(c.name, 120)}${c.title ? `, ${text(c.title, 80)}` : ""}`).join("\n"));
+  }
 
   try {
     const { results: tickets } = await db.prepare(
