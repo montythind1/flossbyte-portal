@@ -6,6 +6,7 @@ import { redirect, errorPage } from "./layout.js";
 import * as pub from "./pages-public.js";
 import * as client from "./pages-client.js";
 import { collectorReport } from "./collector.js";
+import { stripeWebhook } from "./stripe.js";
 import * as admin from "./pages-admin.js";
 import * as places from "./places.js";
 import { runUnifiSync } from "./unifi.js";
@@ -63,6 +64,7 @@ async function route(request, env) {
   if (path === "/reset" && method === "POST") return pub.resetRequestPost(env, request);
   if (path === "/invite/resend" && method === "POST") return pub.inviteResendPost(env, request);
   if (path === "/api/collector/report" && method === "POST") return collectorReport(env, request);
+  if (path === "/api/stripe/webhook" && method === "POST") return stripeWebhook(env, request);
   let m = path.match(/^\/invite\/([A-Za-z0-9_-]+)$/);
   if (m && method === "GET") return pub.invitePage(env, request, m[1]);
   if (m && method === "POST") return pub.invitePost(env, request, m[1]);
@@ -184,6 +186,8 @@ async function route(request, env) {
   if (path === "/app/invoices" && method === "GET") return redirect("/app/billing");
   m = path.match(/^\/app\/invoices\/(\d+)$/);
   if (m && method === "GET") return client.invoiceViewPage(env, request, user, Number(m[1]));
+  m = path.match(/^\/app\/invoices\/(\d+)\/pay$/);
+  if (m && method === "POST") return client.invoicePayPost(env, request, user, Number(m[1]));
   m = path.match(/^\/app\/quotes\/(\d+)$/);
   if (m && method === "GET") return client.quoteViewPage(env, request, user, Number(m[1]));
   m = path.match(/^\/app\/quotes\/(\d+)\/accept$/);

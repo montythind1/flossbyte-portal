@@ -11,6 +11,7 @@ import { splitName, joinName, normalizePhone } from "./auth.js";
 import { issueCollectorToken, collectorTokenState } from "./collector.js";
 import { buildGeniusContext, geniusAnswer, geniusFooter, isExactLookupQuestion, isLiveChatRequest } from "./genius.js";
 import { chatReady, getOpenThread, threadMessages, addChatMessage, startChat, endChat, renderChatMessages, notifyChatStarted, setTyping, clearTyping, getTyping } from "./chat.js";
+import { stripeOn, createInvoiceCheckout } from "./stripe.js";
 
 function orgOrigin(env) { return env.APP_ORIGIN || "https://portal.flossbyte.com"; }
 
@@ -2971,9 +2972,10 @@ async function invoicesSection(env, org) {
   const { results } = await env.DB.prepare(
     "SELECT * FROM invoices WHERE customer_id = ? AND status != 'void' ORDER BY created_at DESC").bind(org).all();
   const rows = (results || []).map((inv) => {
-    const pay = inv.status === "unpaid" && inv.pay_url
-      ? `<a class="btn small" href="${esc(inv.pay_url)}" target="_blank" rel="noopener">Pay</a>`
-      : inv.status === "unpaid" ? `<span class="muted">We'll email you a payment link.</span>` : "";
+    const pay = inv.status !== "unpaid" ? ""
+      : stripeOn(env) ? `<form method="post" action="/app/invoices/${inv.id}/pay" style="display:inline"><button class="btn small" type="submit">Pay</button></form>`
+      : inv.pay_url ? `<a class="btn small" href="${esc(inv.pay_url)}" target="_blank" rel="noopener">Pay</a>`
+      : `<span class="muted">We'll email you a payment link.</span>`;
     const note = inv.kind === "deposit"
       ? (inv.status === "unpaid" ? `<div class="muted">Work is scheduled once this deposit is paid.</div>` : `<div class="muted">Deposit received.</div>`) : "";
     const overdue = inv.status === "unpaid" && inv.due_date && inv.due_date < new Date().toISOString().slice(0, 10);
@@ -2993,9 +2995,10 @@ export async function invoiceViewPage(env, request, user, invoiceId) {
   const inv = await env.DB.prepare("SELECT * FROM invoices WHERE id = ? AND customer_id = ?").bind(invoiceId, org).first();
   if (!inv) return denied(user, 404);
   const cust = await env.DB.prepare("SELECT name FROM customers WHERE id = ?").bind(org).first();
-  const pay = inv.status === "unpaid" && inv.pay_url
-    ? `<p style="margin-top:16px"><a class="btn" href="${esc(inv.pay_url)}" target="_blank" rel="noopener">Pay ${fmtMoney(inv.amount_cents)}</a></p>`
-    : inv.status === "unpaid" ? `<p class="muted" style="margin-top:16px">We'll email you a payment link for this invoice. Questions: call (669) 237-2264.</p>` : "";
+  const pay = inv.status !== "unpaid" ? ""
+    : stripeOn(env) ? `<form method="post" action="/app/invoices/${inv.id}/pay" style="margin-top:16px"><button class="btn" type="submit">Pay ${fmtMoney(inv.amount_cents)} by card</button></form><p class="muted" style="margin-top:8px">Secure payment by Stripe. This invoice marks itself paid as soon as the payment lands.</p>`
+    : inv.pay_url ? `<p style="margin-top:16px"><a class="btn" href="${esc(inv.pay_url)}" target="_blank" rel="noopener">Pay ${fmtMoney(inv.amount_cents)}</a></p>`
+    : `<p class="muted" style="margin-top:16px">We'll email you a payment link for this invoice. Questions: call (669) 237-2264.</p>`;
   const rail = await railLocs(env, user);
   const body = `${orgRail(user, "billing", cust ? cust.name : "My Portal", rail)}<p><a href="/app/billing">&larr; Billing</a></p>
     <h1>INV-${1000 + inv.id}</h1>
@@ -3009,7 +3012,33 @@ export async function invoiceViewPage(env, request, user, invoiceId) {
       <tr><td class="muted">Status</td><td><span class="pill ${inv.status === "paid" ? "on" : ""}">${inv.status === "paid" ? "Paid" : inv.status === "void" ? "Void" : "Unpaid"}</span>${inv.status === "paid" && inv.paid_at ? ` ${esc(fmtDateUS(inv.paid_at))}${inv.paid_method ? " by " + esc(inv.paid_method) : ""}` : ""}</td></tr>
       ${inv.due_date ? `<tr><td class="muted">Due</td><td>${esc(fmtDateUS(inv.due_date))}${inv.status === "unpaid" && inv.due_date < new Date().toISOString().slice(0, 10) ? ` <span style="color:#b91c1c;font-weight:700">overdue</span>` : ""}</td></tr>` : ""}
       </tbody></table></div>${pay}</div>`;
-  return page({ title: `INV-${1000 + inv.id}`, user, body });
+  const qs = new URL(request.url).searchParams;
+  return page({ title: `INV-${1000 + inv.id}`, user, body,
+    flash: qs.get("paid") ? "Thanks, your payment went through. It shows as paid here as soon as Stripe confirms it, usually within a minute." : undefined,
+    error: qs.get("err") || undefined });
+}
+
+// POST /app/invoices/:id/pay — sends the customer to Stripe Checkout.
+// The invoice itself is marked paid later by the Stripe webhook; this
+// handler only opens the checkout. Falls back to a pasted payment link
+// when Stripe is not switched on.
+export async function invoicePayPost(env, request, user, invoiceId) {
+  const org = await clientOrgId(env, user);
+  if (org === null) return denied(user, 403);
+  const inv = await env.DB.prepare("SELECT * FROM invoices WHERE id = ? AND customer_id = ?").bind(invoiceId, org).first();
+  if (!inv) return denied(user, 404);
+  if (inv.status !== "unpaid") return redirect(`/app/invoices/${inv.id}`);
+  if (!stripeOn(env)) {
+    if (inv.pay_url) return Response.redirect(inv.pay_url, 302);
+    return redirect(`/app/invoices/${inv.id}?err=` + encodeURIComponent("Card payment is not switched on yet. Please call (669) 237-2264."));
+  }
+  const cust = await env.DB.prepare("SELECT name FROM customers WHERE id = ?").bind(org).first();
+  try {
+    const session = await createInvoiceCheckout(env, inv, cust ? cust.name : "", orgOrigin(env));
+    return Response.redirect(session.url, 303);
+  } catch {
+    return redirect(`/app/invoices/${inv.id}?err=` + encodeURIComponent("The card payment page could not open. Please try again, or call (669) 237-2264."));
+  }
 }
 
 export async function billingPage(env, request, user) {
