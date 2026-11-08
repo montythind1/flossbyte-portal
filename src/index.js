@@ -194,6 +194,8 @@ async function route(request, env) {
   if (m && method === "POST") return client.quoteAcceptPost(env, request, user, Number(m[1]));
   m = path.match(/^\/app\/quotes\/(\d+)\/decline$/);
   if (m && method === "POST") return client.quoteDeclinePost(env, request, user, Number(m[1]));
+  m = path.match(/^\/app\/quotes\/(\d+)\/plan-pay$/);
+  if (m && method === "POST") return client.quotePlanPayPost(env, request, user, Number(m[1]));
   m = path.match(/^\/app\/team\/(\d+)\/remove$/);
   if (m && method === "GET") return client.teamRemoveConfirmPage(env, request, user, Number(m[1]));
   if (m && method === "POST") return client.teamRemovePost(env, request, user, Number(m[1]));

@@ -11,7 +11,7 @@ import { splitName, joinName, normalizePhone } from "./auth.js";
 import { issueCollectorToken, collectorTokenState } from "./collector.js";
 import { buildGeniusContext, geniusAnswer, geniusFooter, isExactLookupQuestion, isLiveChatRequest } from "./genius.js";
 import { chatReady, getOpenThread, threadMessages, addChatMessage, startChat, endChat, renderChatMessages, notifyChatStarted, setTyping, clearTyping, getTyping } from "./chat.js";
-import { stripeOn, createInvoiceCheckout } from "./stripe.js";
+import { stripeOn, createInvoiceCheckout, createPlanCheckout, getPlanState } from "./stripe.js";
 
 function orgOrigin(env) { return env.APP_ORIGIN || "https://portal.flossbyte.com"; }
 
@@ -2895,8 +2895,18 @@ export async function quoteViewPage(env, request, user, quoteId) {
     <td class="num">${fmtMoney(i.unit_price_cents)}</td><td class="num">${fmtMoney(Math.round(i.qty * i.unit_price_cents))}</td></tr>`).join("");
   let statusBlock = "";
   if (quote.status === "accepted") {
+    let planNote = "";
+    let planForm = "";
+    if (quote.kind === "plan" && stripeOn(env)) {
+      const st = await getPlanState(env.DB, org);
+      if (st && st.status === "active") {
+        planNote = ` Monthly plan is active at ${fmtMoney(st.amountCents)}/mo.`;
+      } else {
+        planForm = `<form method="post" action="/app/quotes/${quote.id}/plan-pay" style="margin-top:10px"><button class="btn" type="submit">Set up monthly payment</button></form><p class="muted">You will enter your card on Stripe's secure page. It is charged monthly until you cancel with FlossByte.</p>`;
+      }
+    }
     statusBlock = `<div class="notice"><strong>Accepted</strong> by ${esc(quote.accepted_by || "")} on ${esc(fmtDateUS((quote.accepted_at || "")))}.
-      ${deposit > 0 ? `The deposit invoice is on your <a href="/app/billing">Billing</a> page.` : ""}</div>`;
+      ${deposit > 0 ? `The deposit invoice is on your <a href="/app/billing">Billing</a> page.` : ""}${planNote}</div>${planForm}`;
   } else if (quote.status === "declined") {
     statusBlock = `<div class="notice">This quote was declined. If that was a mistake, call FlossByte at (669) 237-2264.</div>`;
   } else if (user.role === "customer_admin") {
@@ -2954,6 +2964,13 @@ export async function quoteAcceptPost(env, request, user, quoteId) {
     });
     await alertFlossByte(env, "quote_accepted", mail);
   }
+  if (quote.kind === "plan" && stripeOn(env) && deposit === 0) {
+    try {
+      const c2 = await env.DB.prepare("SELECT name FROM customers WHERE id = ?").bind(org).first();
+      const s = await createPlanCheckout(env, quote, total, c2 ? c2.name : "", orgOrigin(env));
+      return Response.redirect(s.url, 303);
+    } catch { /* fall through to the normal redirect */ }
+  }
   return redirect(`/app/quotes/${quoteId}?msg=` + encodeURIComponent("Quote accepted. Thank you." + invoiceNote));
 }
 
@@ -2967,6 +2984,31 @@ export async function quoteDeclinePost(env, request, user, quoteId) {
     "UPDATE quotes SET status = 'declined', updated_at = datetime('now') WHERE id = ?").bind(quoteId).run();
   await audit(env.DB, user.id, "quote_decline", "quote", quoteId, null);
   return redirect("/app/billing?msg=" + encodeURIComponent("Quote declined."));
+}
+
+// POST /app/quotes/:id/plan-pay — sends the customer admin to a
+// subscription-mode Stripe Checkout for an accepted plan quote. The
+// plan's live state arrives later through the Stripe webhook; this
+// handler only opens the checkout. If a plan is already active there is
+// nothing to set up.
+export async function quotePlanPayPost(env, request, user, quoteId) {
+  const org = await clientOrgId(env, user);
+  if (org === null) return denied(user, 403);
+  if (user.role !== "customer_admin") return denied(user, 403);
+  const loaded = await loadQuote(env.DB, quoteId, org);
+  if (!loaded || loaded.quote.kind !== "plan" || loaded.quote.status !== "accepted") {
+    return redirect("/app/billing");
+  }
+  if (!stripeOn(env)) return redirect(`/app/quotes/${quoteId}`);
+  const st = await getPlanState(env.DB, org);
+  if (st && st.status === "active") return redirect("/app/billing");
+  const cust = await env.DB.prepare("SELECT name FROM customers WHERE id = ?").bind(org).first();
+  try {
+    const s = await createPlanCheckout(env, loaded.quote, loaded.total, cust ? cust.name : "", orgOrigin(env));
+    return Response.redirect(s.url, 303);
+  } catch {
+    return redirect(`/app/quotes/${quoteId}?err=` + encodeURIComponent("The payment page could not open. Please try again, or call (669) 237-2264."));
+  }
 }
 
 async function invoicesSection(env, org) {
@@ -3059,12 +3101,22 @@ export async function billingPage(env, request, user) {
     <div class="stat"><b>${fmtMoney(sums.outstanding)}</b><span>Outstanding</span></div>
     <div class="stat"><b>${sums.paid_count}</b><span>Invoices paid</span></div>
   </div>` : "";
+  const planState = await getPlanState(db, org).catch(() => null);
+  let planCard = "";
+  if (planState) {
+    const pill = planState.status === "active" ? `<span class="pill on">Active</span>`
+      : planState.status === "past_due" ? `<span class="pill off">Payment failed</span>`
+      : `<span class="pill">Canceled</span>`;
+    planCard = `<div class="card" style="padding:10px 14px;margin-top:16px"><h3 style="margin:2px 0 8px">Monthly plan</h3>
+    <p style="margin:0">${pill} <strong>${fmtMoney(planState.amountCents)}/mo</strong>${planState.lastPaidAt ? ` <span class="muted">Last paid ${esc(fmtDateUS(String(planState.lastPaidAt).slice(0, 10)))}</span>` : ""}</p>${planState.status === "past_due" ? `
+    <p class="muted" style="margin:8px 0 0">A monthly payment did not go through. Please call FlossByte at (669) 237-2264.</p>` : ""}</div>`;
+  }
   const rail = await railLocs(env, user);
   const quotesHtml = await quotesSection(env, org);
   const invoicesHtml = await invoicesSection(env, org);
   const body = `${orgRail(user, "billing", cust ? cust.name : "My Portal", rail)}<h1 style="margin-bottom:2px">Billing</h1>
     <p class="muted" style="margin:0 0 14px">${esc(cust ? cust.name : "")} · quotes and invoices for the whole organization</p>
-    ${strip}${quotesHtml}${invoicesHtml}`;
+    ${strip}${planCard}${quotesHtml}${invoicesHtml}`;
   const msg = new URL(request.url).searchParams.get("msg");
   return page({ title: "Billing", user, body, flash: msg || undefined, error: new URL(request.url).searchParams.get("err") || undefined });
 }

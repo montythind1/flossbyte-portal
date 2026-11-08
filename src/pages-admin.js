@@ -10,6 +10,7 @@ import { runSophosSync, lastSophosSync } from "./sophos.js";
 import { runAteraSync, lastAteraSync } from "./atera.js";
 import { chatReady, getThread, threadMessages, addChatMessage, endChat, briefHtml, renderChatMessages, relTimeChat, notifyCustomerReply, setTyping, clearTyping, getTyping } from "./chat.js";
 import { loadLinks, saveLinks, recordLink, macKey, srcKey } from "./links.js";
+import { getPlanState } from "./stripe.js";
 
 function origin(env) { return env.APP_ORIGIN || "https://portal.flossbyte.com"; }
 function q(request) { return new URL(request.url).searchParams; }
@@ -719,6 +720,10 @@ export async function customerPage(env, request, user, customerId) {
      FROM quotes q WHERE q.customer_id = ? ORDER BY q.updated_at DESC`).bind(customerId).all().catch(() => ({ results: [] }));
   const { results: invoiceList } = await db.prepare(
     "SELECT * FROM invoices WHERE customer_id = ? ORDER BY created_at DESC").bind(customerId).all().catch(() => ({ results: [] }));
+  const planState = await getPlanState(db, customerId).catch(() => null);
+  const planLine = planState
+    ? `<p class="muted" style="margin:0 0 10px">Stripe plan: <b>${esc(planState.status || "")}</b> · ${fmtMoney(planState.amountCents)}/mo · subscription ${esc(planState.sub || "")}</p>`
+    : "";
   const quoteRows = (quoteList || []).map((qt) => {
     const statusPill = qt.status === "accepted" ? `<span class="pill on">Accepted</span>`
       : qt.status === "sent" ? `<span class="pill">Sent</span>`
@@ -836,7 +841,7 @@ export async function customerPage(env, request, user, customerId) {
       <p style="margin-top:14px"><a class="btn small secondary" href="/admin/customers/${customerId}/users/new">+ Add user</a></p>
       <p class="muted">The invite email asks them to set a password and finish sign-in. Access starts only with this invite.</p></div>
     <div class="card tab-panel${tab === "billing" ? " active" : ""}" data-panel="billing">
-      <h3 style="margin-top:0">Quotes</h3>
+      ${planLine}<h3 style="margin-top:0">Quotes</h3>
       <div class="tscroll"><table class="stack"><thead><tr><th>Quote</th><th>Type</th><th class="num">Total</th><th>Deposit</th><th>Status</th><th></th></tr></thead>
       <tbody>${quoteRows || `<tr><td colspan="6" class="muted">No quotes yet. Build the first one below.</td></tr>`}</tbody></table></div>
       <h3 style="margin-top:22px">New quote</h3>
