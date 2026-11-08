@@ -8,7 +8,7 @@ import { resendInviteEmail } from "./pages-public.js";
 import { runUnifiSync, lastUnifiSync } from "./unifi.js";
 import { runSophosSync, lastSophosSync } from "./sophos.js";
 import { runAteraSync, lastAteraSync } from "./atera.js";
-import { chatReady, getThread, threadMessages, addChatMessage, endChat, briefHtml, renderChatMessages, relTimeChat, notifyCustomerReply } from "./chat.js";
+import { chatReady, getThread, threadMessages, addChatMessage, endChat, briefHtml, renderChatMessages, relTimeChat, notifyCustomerReply, setTyping, clearTyping, getTyping } from "./chat.js";
 
 function origin(env) { return env.APP_ORIGIN || "https://portal.flossbyte.com"; }
 function q(request) { return new URL(request.url).searchParams; }
@@ -2061,6 +2061,7 @@ export async function chatThreadPage(env, request, user, threadId) {
   ${briefHtml(t.genius_context)}
   <div class="card">
     <div class="chat" id="chat-msgs">${renderChatMessages(msgs, true)}</div>
+    <div id="chat-typing" class="typing-row" hidden></div>
     ${actions}
   </div>
   ${ended ? "" : `<script>
@@ -2080,8 +2081,10 @@ export async function chatThreadPage(env, request, user, threadId) {
           if (!d || !d.ok) return;
           if (d.status === 'ended') { location.reload(); return; }
           var appended = null;
+          var gotCust = false;
           (d.messages || []).forEach(function(m){
             last = Math.max(last, m.id);
+            if (m.kind === 'customer') gotCust = true;
             var div = document.createElement('div');
             if (m.kind === 'system') { div.className = 'muted'; div.style.cssText = 'text-align:center;font-size:12.5px;margin:10px 0'; div.textContent = '— ' + m.body + ' —'; }
             else { div.className = 'msg ' + (m.kind === 'customer' ? 'q' : 'a'); div.textContent = m.body; }
@@ -2089,6 +2092,17 @@ export async function chatThreadPage(env, request, user, threadId) {
             appended = div;
           });
           if (appended) sAbove(appended);
+          var tw = document.getElementById('chat-typing');
+          if (tw) {
+            if (d.typing && !gotCust) {
+              tw.hidden = false;
+              tw.textContent = '';
+              var sp = document.createElement('span');
+              sp.textContent = d.typing + ' is typing ';
+              tw.appendChild(sp);
+              for (var di = 0; di < 3; di++) { var dt = document.createElement('span'); dt.className = 'gdot'; tw.appendChild(dt); }
+            } else { tw.hidden = true; }
+          }
         }).catch(function(){});
     }
     setInterval(tick, 4000);
@@ -2111,6 +2125,13 @@ export async function chatThreadPage(env, request, user, threadId) {
             else { form.submit(); }
           })
           .catch(function(){ inp.disabled = false; btn.disabled = false; form.submit(); });
+      });
+      var lastPing = 0;
+      inp.addEventListener('input', function(){
+        var now = Date.now();
+        if (!inp.value.trim() || now - lastPing < 2500) return;
+        lastPing = now;
+        fetch('/admin/chats/${t.id}/typing', { method: 'POST', headers: { 'Accept': 'application/json' } }).catch(function(){});
       });
     }
   })();
@@ -2141,6 +2162,7 @@ async function postAdminChatMessage(env, user, t, body) {
     await env.DB.prepare("UPDATE chat_threads SET status = 'active' WHERE id = ?").bind(t.id).run();
   }
   const id = await addChatMessage(env.DB, t.id, "flossbyte", user.id, body);
+  await clearTyping(env.DB, t.id, "flossbyte");
   if (!hadAdminMsg) await notifyCustomerReply(env, t, user);
   return id;
 }
@@ -2201,6 +2223,15 @@ export async function chatAdminPoll(env, request, user, threadId) {
   const msgs = await threadMessages(env.DB, threadId, after);
   return new Response(JSON.stringify({
     ok: true, status: t.status,
+    typing: t.status === "ended" ? null : await getTyping(env.DB, threadId, "customer"),
     messages: msgs.map((m) => ({ id: m.id, kind: m.sender_kind, body: m.body })),
   }), { headers: { "Content-Type": "application/json" } });
+}
+
+export async function chatAdminTypingPost(env, request, user, threadId) {
+  const json = (obj, status = 200) => new Response(JSON.stringify(obj), { status, headers: { "Content-Type": "application/json" } });
+  const t = await getThread(env.DB, threadId).catch(() => null);
+  if (!t || t.status === "ended") return json({ ok: false }, 404);
+  await setTyping(env.DB, threadId, "flossbyte", user.name);
+  return json({ ok: true });
 }

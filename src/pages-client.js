@@ -10,7 +10,7 @@ import { sendEmail, quoteAcceptedNoticeEmail, ticketCreatedNoticeEmail, ticketRe
 import { splitName, joinName, normalizePhone } from "./auth.js";
 import { issueCollectorToken, collectorTokenState } from "./collector.js";
 import { buildGeniusContext, geniusAnswer, geniusFooter, isExactLookupQuestion, isLiveChatRequest } from "./genius.js";
-import { chatReady, getOpenThread, threadMessages, addChatMessage, startChat, endChat, renderChatMessages, notifyChatStarted } from "./chat.js";
+import { chatReady, getOpenThread, threadMessages, addChatMessage, startChat, endChat, renderChatMessages, notifyChatStarted, setTyping, clearTyping, getTyping } from "./chat.js";
 
 function orgOrigin(env) { return env.APP_ORIGIN || "https://portal.flossbyte.com"; }
 
@@ -1997,7 +1997,18 @@ export async function chatApiPost(env, request, user, locationId) {
   const body = String(f.get("body") || "").trim().slice(0, 2000);
   if (!body) return json({ ok: false }, 400);
   const id = await addChatMessage(env.DB, thread.id, "customer", user.id, body);
+  await clearTyping(env.DB, thread.id, "customer");
   return json({ ok: true, id });
+}
+
+export async function chatTypingPost(env, request, user, locationId) {
+  const json = (obj, status = 200) => new Response(JSON.stringify(obj), { status, headers: { "Content-Type": "application/json" } });
+  const { loc, error } = await guard(env, user, locationId);
+  if (error) return json({ ok: false }, 403);
+  const thread = await getOpenThread(env.DB, locationId, user.id);
+  if (!thread) return json({ ok: false }, 404);
+  await setTyping(env.DB, thread.id, "customer", user.name);
+  return json({ ok: true });
 }
 
 export async function chatEndPost(env, request, user, locationId) {
@@ -2027,6 +2038,7 @@ export async function chatPoll(env, request, user, locationId) {
   const msgs = await threadMessages(env.DB, thread.id, after);
   return new Response(JSON.stringify({
     ok: true, status: thread.status,
+    typing: thread.status === "ended" ? null : await getTyping(env.DB, thread.id, "flossbyte"),
     messages: msgs.map((m) => ({ id: m.id, kind: m.sender_kind, body: m.body })),
   }), { headers: { "Content-Type": "application/json" } });
 }
@@ -2379,7 +2391,8 @@ export async function askPage(env, request, user, locationId) {
   const streamInner = openThread
     ? `${history}
       <div class="gdivider">Live chat with FlossByte · Genius is paused</div>
-      <div class="gex" id="chat-msgs">${renderChatMessages(chatMsgs, false)}</div>`
+      <div class="gex" id="chat-msgs">${renderChatMessages(chatMsgs, false)}</div>
+      <div id="chat-typing" class="typing-row" hidden></div>`
     : history;
   const emptyState = !rows.length && !openThread ? `<div class="gempty">
       <div class="gmark">G</div>
@@ -2398,7 +2411,12 @@ export async function askPage(env, request, user, locationId) {
     : `<form class="gcomposer" id="composer-form" method="post" action="/app/locations/${locationId}/ask">
         <input id="composer-input" name="question" placeholder="Ask Genius about this office..." required autocomplete="off">
         <button class="sendbtn" id="send-btn" type="submit" aria-label="Ask Genius">${SEND_ICON}</button></form>`;
-  const underRow = chatOn && !openThread
+  const underRow = openThread
+    ? `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:10px">
+        <span class="muted">You're chatting with a person at FlossByte.</span>
+        <form method="post" action="/app/locations/${locationId}/chat/end" style="margin:0" onsubmit="return confirm('End this chat? The conversation is saved, and Genius becomes available again.')">
+          <button class="btn small secondary" type="submit">End chat</button></form></div>`
+    : chatOn
     ? `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:10px">
         <span class="muted">Need a person instead?</span>
         <form method="post" action="/app/locations/${locationId}/chat/start" style="margin:0">
@@ -2614,20 +2632,44 @@ export async function askPage(env, request, user, locationId) {
           .catch(function(){ location.reload(); });
       });
     }
+    var cinp = document.getElementById('composer-input');
+    var lastPing = 0;
+    if (cinp) {
+      cinp.addEventListener('input', function(){
+        var now = Date.now();
+        if (!cinp.value.trim() || now - lastPing < 2500) return;
+        lastPing = now;
+        fetch('/app/locations/' + loc + '/chat/typing', { method: 'POST', headers: { 'Accept': 'application/json' } }).catch(function(){});
+      });
+    }
     function tick(){
       fetch('/app/locations/' + loc + '/chat/poll?after=' + last, { headers: { 'Accept': 'application/json' } })
         .then(function(r){ return r.json(); })
         .then(function(d){
           if (!d || !d.ok) return;
           if (d.status === 'ended') { location.reload(); return; }
+          var gotFb = false;
           (d.messages || []).forEach(function(m){
             last = Math.max(last, m.id);
+            if (m.kind === 'flossbyte') gotFb = true;
             var div = document.createElement('div');
             if (m.kind === 'system') { div.className = 'muted'; div.style.cssText = 'text-align:center;font-size:12.5px;margin:10px 0'; div.textContent = '— ' + m.body + ' —'; }
             else { div.className = 'msg ' + (m.kind === 'customer' ? 'q' : 'a'); div.textContent = m.body; }
             box.appendChild(div);
             sAbove(div);
           });
+          var tw = document.getElementById('chat-typing');
+          if (tw) {
+            if (d.typing && !gotFb) {
+              tw.hidden = false;
+              tw.textContent = '';
+              var sp = document.createElement('span');
+              sp.textContent = d.typing + ' is typing ';
+              tw.appendChild(sp);
+              for (var di = 0; di < 3; di++) { var dt = document.createElement('span'); dt.className = 'gdot'; tw.appendChild(dt); }
+              sAbove(tw);
+            } else { tw.hidden = true; }
+          }
           if (d.status === 'active') { var st = document.getElementById('chat-status'); if (st && st.textContent.indexOf('Waiting') === 0) st.textContent = "You're chatting with a person at FlossByte."; }
         }).catch(function(){});
     }

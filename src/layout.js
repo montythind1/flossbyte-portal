@@ -234,6 +234,7 @@ main:has(.gfill-shell){max-width:none;padding:0}
 @media (max-width:900px){.gfill-shell{grid-template-rows:auto minmax(0,1fr);padding:28px 20px 10px;gap:14px}.gfill-shell .rail{height:auto;overflow-x:auto;overflow-y:hidden;border:1px solid var(--line);border-radius:12px;padding:8px}.gfill-main .gpage{padding:0}}
 @media (max-width:640px){.gfill-shell{height:calc(100vh - 56px);height:calc(100dvh - 56px)}}
 .gcomposer .btn{border-radius:10px;flex:0 0 auto}
+.typing-row{font-size:13px;color:var(--muted);padding:8px 2px 2px}
 .svc-row{display:flex;justify-content:space-between;align-items:center;gap:14px;padding:10px 0;border-bottom:1px solid #EEF2F7}
 .svc-txt{min-width:0}
 .svc-act{display:flex;align-items:center;gap:8px;flex:none;flex-wrap:wrap}

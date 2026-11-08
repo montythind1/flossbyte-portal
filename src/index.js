@@ -105,6 +105,8 @@ async function route(request, env) {
     if (m && method === "POST") return admin.chatTakePost(env, request, user, Number(m[1]));
     m = path.match(/^\/admin\/chats\/(\d+)\/api$/);
     if (m && method === "POST") return admin.chatAdminApiPost(env, request, user, Number(m[1]));
+    m = path.match(/^\/admin\/chats\/(\d+)\/typing$/);
+    if (m && method === "POST") return admin.chatAdminTypingPost(env, request, user, Number(m[1]));
     m = path.match(/^\/admin\/chats\/(\d+)\/message$/);
     if (m && method === "POST") return admin.chatAdminMessagePost(env, request, user, Number(m[1]));
     m = path.match(/^\/admin\/chats\/(\d+)\/end$/);
@@ -259,6 +261,8 @@ async function route(request, env) {
   if (m && method === "POST") return client.chatEndPost(env, request, user, Number(m[1]));
   m = path.match(/^\/app\/locations\/(\d+)\/chat\/poll$/);
   if (m && method === "GET") return client.chatPoll(env, request, user, Number(m[1]));
+  m = path.match(/^\/app\/locations\/(\d+)\/chat\/typing$/);
+  if (m && method === "POST") return client.chatTypingPost(env, request, user, Number(m[1]));
 
   return notFound(user);
 }

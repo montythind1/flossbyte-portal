@@ -63,6 +63,31 @@ export async function addChatMessage(db, threadId, senderKind, senderUserId, bod
   return r.meta.last_row_id;
 }
 
+// Typing presence, kept in the settings store (no table of its own):
+// a ping while a side types, read by the other side's poll, stale
+// after 7 seconds. Sending a message clears the sender's flag.
+export async function setTyping(db, threadId, side, name) {
+  const v = JSON.stringify({ name: name || "", at: Date.now() });
+  await db.prepare(
+    "INSERT INTO system_state (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+    .bind(`typing_${threadId}_${side}`, v).run();
+}
+
+export async function clearTyping(db, threadId, side) {
+  await db.prepare("DELETE FROM system_state WHERE key = ?").bind(`typing_${threadId}_${side}`).run();
+}
+
+export async function getTyping(db, threadId, side) {
+  try {
+    const row = await db.prepare("SELECT value FROM system_state WHERE key = ?")
+      .bind(`typing_${threadId}_${side}`).first();
+    if (!row) return null;
+    const v = JSON.parse(row.value || "{}");
+    if (!v.at || Date.now() - v.at > 7000) return null;
+    return v.name || (side === "flossbyte" ? "FlossByte" : "The customer");
+  } catch (e) { return null; }
+}
+
 async function systemMessage(db, threadId, text) {
   await db.prepare(
     "INSERT INTO chat_messages (thread_id, sender_kind, sender_user_id, body) VALUES (?, 'system', NULL, ?)")
