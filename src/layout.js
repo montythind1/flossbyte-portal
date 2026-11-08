@@ -78,6 +78,11 @@ details.addbox>summary::marker{content:""}
 .tab-btn{background:none;border:none;border-bottom:3px solid transparent;margin-bottom:-2px;padding:9px 14px;font-size:15px;font-weight:600;color:var(--muted);cursor:pointer;font-family:inherit}
 .tab-btn:hover{color:var(--ink)}
 .tab-btn.active{color:var(--teal);border-bottom-color:var(--teal)}
+.loctabs{display:flex;gap:2px;border-bottom:2px solid #E6EBF2;margin:4px 0 18px}
+.loctabs a{padding:9px 14px;font-weight:500;color:#5B6B82;border-bottom:3px solid transparent;margin-bottom:-2px;text-decoration:none;white-space:nowrap}
+.loctabs a.on{font-weight:700;color:#0A1628;border-bottom-color:#00BFA5}
+@media (max-width:680px){.loctabs a{flex:1 1 0;text-align:center;padding:8px 1px;font-size:13.5px}}
+@media (max-width:360px){.loctabs a{font-size:12.5px}}
 .tab-panel{display:none}
 .tab-panel.active{display:block}
 form.js-wizard .wstep{display:none}

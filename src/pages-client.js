@@ -178,8 +178,8 @@ function locNav(loc, active, fill) {
 function locTabs(loc, current) {
   const base = `/app/locations/${loc.id}`;
   const tab = (key, href, label) =>
-    `<a href="${href}" style="padding:9px 14px;font-weight:${current === key ? "700" : "500"};color:${current === key ? "#0A1628" : "#5B6B82"};border-bottom:3px solid ${current === key ? "#00BFA5" : "transparent"};margin-bottom:-2px;text-decoration:none;white-space:nowrap">${label}</a>`;
-  return `<div style="display:flex;gap:2px;border-bottom:2px solid #E6EBF2;margin:4px 0 18px;overflow-x:auto">${tab("network", base + "/network", "WiFi &amp; Internet")}${tab("equipment", base + "/equipment", "Equipment")}${tab("topology", base + "/topology", "Network map")}</div>`;
+    `<a href="${href}"${current === key ? ` class="on"` : ""}>${label}</a>`;
+  return `<div class="loctabs">${tab("network", base + "/network", "WiFi &amp; Internet")}${tab("equipment", base + "/equipment", "Equipment")}${tab("topology", base + "/topology", "Network map")}</div>`;
 }
 
 function orgRail(user, active, orgName, locs) {
