@@ -89,7 +89,7 @@ export async function customerAdminOrg(db, user) {
 // location means every location of the customer).
 export async function orgMembers(db, customerId) {
   const { results } = await db.prepare(
-    `SELECT DISTINCT u.id, u.name, u.email, u.role, u.status FROM user_access ua
+    `SELECT DISTINCT u.id, u.name, u.email, u.role, u.status, u.last_login_at FROM user_access ua
      JOIN users u ON u.id = ua.user_id WHERE ua.customer_id = ? ORDER BY u.name`)
     .bind(customerId).all();
   const members = [];

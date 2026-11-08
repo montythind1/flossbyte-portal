@@ -103,6 +103,7 @@ export async function loginPost(env, request) {
     return redirect("/login/mfa", { "Set-Cookie": `fb_mfa=${raw}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=600` });
   }
   await env.DB.prepare("UPDATE users SET last_login_at = datetime('now') WHERE id = ?").bind(user.id).run();
+  await audit(env.DB, user.id, "login", "user", user.id, null);
   const raw = await createSession(env.DB, user.id);
   const dest = user.kind === "flossbyte" ? (user.mfa_enabled ? "/admin" : "/mfa") : "/app";
   return redirect(dest, { "Set-Cookie": sessionCookie(raw) });
@@ -130,6 +131,7 @@ export async function loginMfaPost(env, request) {
   }
   await consumeAuthToken(env.DB, raw, "mfa");
   await env.DB.prepare("UPDATE users SET last_login_at = datetime('now') WHERE id = ?").bind(user.id).run();
+  await audit(env.DB, user.id, "login", "user", user.id, null);
   const session = await createSession(env.DB, user.id);
   const headers = new Headers({ Location: user.kind === "flossbyte" ? "/admin" : "/app" });
   headers.append("Set-Cookie", sessionCookie(session));

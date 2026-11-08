@@ -622,15 +622,16 @@ export async function teamPage(env, request, user) {
       <td>${m.role === "customer_admin" ? "Admin" : "User"}</td>
       <td>${esc(m.locations_label || "")}</td>
       <td><span class="pill ${m.status === "disabled" ? "off" : "on"}">${esc(m.status)}</span></td>
+      <td>${m.last_login_at ? esc(relTime(m.last_login_at)) : `<span class="muted">Never</span>`}</td>
       <td>${action}</td></tr>`;
     if (!isOpen) return main;
-    return main + `<tr id="edit-${m.id}"><td colspan="6" style="background:#F8FAFC">${teamEditFormHtml(editTarget, user)}</td></tr>`;
+    return main + `<tr id="edit-${m.id}"><td colspan="7" style="background:#F8FAFC">${teamEditFormHtml(editTarget, user)}</td></tr>`;
   }).join("");
   const rail = await railLocs(env, user);
   const body = `${orgRail(user, "team", cust ? cust.name : "My Portal", rail)}<h1>Team</h1>
     <p class="muted">People with a login for ${esc(cust ? cust.name : "your organization")}. Use Edit to change someone's name, phone, role, or which locations they can see; an email address can't be changed once a login is created. Removing someone signs them out right away and takes away everything they could see here. Tickets and documents they created stay on record.</p>
-    <div class="card" style="padding:8px 14px"><div class="tscroll"><table class="stack"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Sees</th><th>Status</th><th></th></tr></thead>
-    <tbody>${rows || `<tr><td colspan="6" class="muted">No logins yet.</td></tr>`}</tbody></table></div></div>`;
+    <div class="card" style="padding:8px 14px"><div class="tscroll"><table class="stack"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Sees</th><th>Status</th><th>Last login</th><th></th></tr></thead>
+    <tbody>${rows || `<tr><td colspan="7" class="muted">No logins yet.</td></tr>`}</tbody></table></div></div>`;
   const msg = new URL(request.url).searchParams.get("msg");
   return page({ title: "Team", user, body, flash: msg || undefined, error: new URL(request.url).searchParams.get("err") || undefined });
 }

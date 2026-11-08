@@ -164,7 +164,7 @@ const ACTION_LABEL = {
   product_request: "Requested a service", product_on: "Turned a product on", product_off: "Turned a product off",
   user_remove: "Removed a user", user_invite: "Invited a user", user_connect: "Connected a login to a client",
   user_update: "Updated a login's name",
-  invite_accepted: "Accepted an invite", invite_resent_admin: "Resent an admin invite", invite_resent_public: "Resent an invite",
+  invite_accepted: "Accepted an invite", login: "Signed in", invite_resent_admin: "Resent an admin invite", invite_resent_public: "Resent an invite",
   customer_create: "Created a client", customer_update: "Updated client details", customer_delete: "Deleted a client",
   location_create: "Added a location", sync_site_map: "Mapped a sync site", sync_map: "Mapped a sync site",
   admin_create: "Created an admin", admin_disable: "Disabled an admin", admin_enable: "Enabled an admin",
@@ -687,7 +687,7 @@ export async function customerPage(env, request, user, customerId) {
      LEFT JOIN customer_products cp ON cp.product = p.key AND cp.customer_id = ? AND cp.location_id IS NULL ORDER BY p.key`)
     .bind(customerId).all();
   const { results: members } = await db.prepare(
-    `SELECT DISTINCT u.id, u.name, u.email, u.status, u.role, ua.is_main_admin FROM user_access ua JOIN users u ON u.id = ua.user_id
+    `SELECT DISTINCT u.id, u.name, u.email, u.status, u.role, ua.is_main_admin, u.last_login_at FROM user_access ua JOIN users u ON u.id = ua.user_id
      WHERE ua.customer_id = ? ORDER BY u.name`).bind(customerId).all();
   const locRows = (locations || []).map((l) => `<tr><td><a href="/app/locations/${l.id}">${esc(l.name)}</a></td>
     <td>${esc([l.address, l.suite, l.city, l.state, l.zip].filter(Boolean).join(", "))}</td><td>${esc(l.status)}</td>
@@ -709,6 +709,7 @@ export async function customerPage(env, request, user, customerId) {
   }).join("");
   const memberRows = (members || []).map((m) => `<tr><td>${esc(m.name)}${m.is_main_admin ? ` <span class="pill on">Main admin</span>` : ""}</td><td>${esc(m.email)}</td>
     <td>${esc(m.role)}</td><td><span class="pill">${esc(m.status)}</span></td>
+    <td>${m.last_login_at ? esc(fmtDateUS(String(m.last_login_at).slice(0, 10))) : `<span class="muted">Never</span>`}</td>
     <td><a class="btn small secondary" href="/admin/customers/${customerId}/users/${m.id}/edit">Edit</a>${m.status === "invited" ? ` <form method="post" action="/admin/customers/${customerId}/users/${m.id}/resend" style="display:inline"><button class="btn small secondary" type="submit">Resend invite</button></form>` : ""}</td></tr>`).join("");
   // Quotes and invoices (migration 0008). Best-effort reads: if the tables
   // are not there yet the org page must still render.
@@ -831,7 +832,7 @@ export async function customerPage(env, request, user, customerId) {
       <div class="tscroll"><table class="stack"><thead><tr><th>Product</th><th>State</th><th>Change</th></tr></thead><tbody>${prodRows}</tbody></table></div>
       <p class="muted">Changes apply right away. When a service is off, the client sees it as locked on their side, and their only option there is a button to ask you to turn it on.</p></div>
     <div class="card tab-panel${tab === "users" ? " active" : ""}" data-panel="users">
-      <div class="tscroll"><table class="stack"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th></th></tr></thead><tbody>${memberRows || `<tr><td colspan="5" class="muted">No logins yet.</td></tr>`}</tbody></table></div>
+      <div class="tscroll"><table class="stack"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th>Last login</th><th></th></tr></thead><tbody>${memberRows || `<tr><td colspan="6" class="muted">No logins yet.</td></tr>`}</tbody></table></div>
       <p style="margin-top:14px"><a class="btn small secondary" href="/admin/customers/${customerId}/users/new">+ Add user</a></p>
       <p class="muted">The invite email asks them to set a password and finish sign-in. Access starts only with this invite.</p></div>
     <div class="card tab-panel${tab === "billing" ? " active" : ""}" data-panel="billing">
