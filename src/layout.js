@@ -189,6 +189,7 @@ details[open]>summary .chev{transform:rotate(90deg)}
 .rail-context .rc-t{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:13px}
 .rail-context .rc-s{display:none}
 .rail-sep{display:none}
+.rail-label{display:none}
 .rail-item{width:auto;flex:0 0 auto;white-space:nowrap;border:1px solid var(--line);border-radius:999px;padding:7px 13px}
 .rail-item.active{border-color:var(--teal)}
 .rail-back{display:flex;align-items:center;width:auto;flex:0 0 auto;white-space:nowrap;border:1px solid var(--line);border-radius:999px;padding:7px 13px;margin:0}
@@ -233,6 +234,10 @@ main:has(.gfill-shell){max-width:none;padding:0}
 @media (max-width:900px){.gfill-shell{grid-template-rows:auto minmax(0,1fr);padding:28px 20px 10px;gap:14px}.gfill-shell .rail{height:auto;overflow-x:auto;overflow-y:hidden;border:1px solid var(--line);border-radius:12px;padding:8px}.gfill-main .gpage{padding:0}}
 @media (max-width:640px){.gfill-shell{height:calc(100vh - 56px);height:calc(100dvh - 56px)}}
 .gcomposer .btn{border-radius:10px;flex:0 0 auto}
+.svc-row{display:flex;justify-content:space-between;align-items:center;gap:14px;padding:10px 0;border-bottom:1px solid #EEF2F7}
+.svc-txt{min-width:0}
+.svc-act{display:flex;align-items:center;gap:8px;flex:none;flex-wrap:wrap}
+@media (max-width:680px){.svc-row{flex-direction:column;align-items:stretch;gap:8px}}
 .gempty{text-align:center;padding:26px 8px 8px}
 .gmark{display:inline-flex;align-items:center;justify-content:center;width:46px;height:46px;border-radius:50%;background:var(--navy,#0A1628);color:#fff;font-family:'Plus Jakarta Sans',Inter,sans-serif;font-weight:800;font-size:20px}
 .gchips{display:grid;grid-template-columns:1fr 1fr;gap:8px;max-width:600px;margin:16px auto 4px;text-align:left}

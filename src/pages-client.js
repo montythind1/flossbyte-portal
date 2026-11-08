@@ -198,7 +198,7 @@ function orgRail(user, active, orgName, locs) {
   return `<div class="shell"><aside class="rail">
     <div class="rail-context"><div class="rc-t">${esc(orgName || "My Portal")}</div></div>
     ${item("practices", "/app", "Overview", "home")}${item("billing", "/app/billing", "Billing", "receipt")}
-    ${practiceLinks}${account}</aside><div class="shell-main">`;
+    ${practiceLinks}${account}</aside><div class="shell-main"><script>(function(){var r=document.querySelector('.rail');if(!r)return;var a=r.querySelector('.rail-item.active');if(!a)return;if(r.scrollWidth>r.clientWidth){r.scrollLeft=Math.max(0,a.offsetLeft+a.clientWidth/2-r.clientWidth/2);}})();</script>`;
 }
 
 // The locations a login can reach, shaped for the org rail shortcuts.
@@ -584,9 +584,9 @@ export async function servicesPage(env, request, user) {
     const avail = states.filter((p) => !p.enabled);
     const glabel = (t) => `<div style="font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);padding:12px 0 2px">${t}</div>`;
     const rowIn = (p) => `<div style="display:flex;justify-content:space-between;align-items:center;gap:14px;padding:9px 0;border-bottom:1px solid #EEF2F7"><span style="font-weight:600">${esc(p.name)}</span><span class="pill on">Included</span></div>`;
-    const rowOut = (p) => `<div style="display:flex;justify-content:space-between;align-items:center;gap:14px;padding:10px 0;border-bottom:1px solid #EEF2F7">
-      <div><div style="font-weight:600">${esc(p.name)}</div><div class="muted">${esc(PRODUCT_PLAIN[p.key] || p.description || "")}</div></div>
-      <div style="display:flex;align-items:center;gap:8px;flex:none"><span class="pill off">Not included</span>${requestForm(loc, p.key, true)}</div></div>`;
+    const rowOut = (p) => `<div class="svc-row">
+      <div class="svc-txt"><div style="font-weight:600">${esc(p.name)}</div><div class="muted">${esc(PRODUCT_PLAIN[p.key] || p.description || "")}</div></div>
+      <div class="svc-act"><span class="pill off">Not included</span>${requestForm(loc, p.key, true)}</div></div>`;
     const both = inc.length > 0 && avail.length > 0;
     card = `<div class="card">
       ${both ? glabel("Included") : ""}${inc.map(rowIn).join("")}
