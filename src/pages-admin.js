@@ -9,6 +9,7 @@ import { runUnifiSync, lastUnifiSync } from "./unifi.js";
 import { runSophosSync, lastSophosSync } from "./sophos.js";
 import { runAteraSync, lastAteraSync } from "./atera.js";
 import { chatReady, getThread, threadMessages, addChatMessage, endChat, briefHtml, renderChatMessages, relTimeChat, notifyCustomerReply, setTyping, clearTyping, getTyping } from "./chat.js";
+import { loadLinks, saveLinks, recordLink, macKey, srcKey } from "./links.js";
 
 function origin(env) { return env.APP_ORIGIN || "https://portal.flossbyte.com"; }
 function q(request) { return new URL(request.url).searchParams; }
@@ -1770,17 +1771,35 @@ export async function syncMergePost(env, request, user) {
     source = drop.source; externalId = drop.external_id;
   }
   const status = keep.status === "online" || drop.status !== "online" ? keep.status : drop.status;
+  // Field authority: each fact comes from the record that knows it
+  // best, not just from whichever record was kept. A UniFi-style name
+  // carrying its MAC suffix loses to the clean name; a generic
+  // "Connected device" type loses to a specific one; the address and
+  // last-seen come from whichever record was seen most recently.
+  const junkName = (n) => / [0-9a-f]{2}:[0-9a-f]{2}$/i.test(String(n || ""));
+  const name = junkName(keep.name) && drop.name && !junkName(drop.name) ? drop.name : keep.name;
+  const type = keep.type === "Connected device" && drop.type && drop.type !== "Connected device" ? drop.type : take(keep.type, drop.type);
+  const tsOf = (v) => {
+    if (!v) return 0;
+    let s = String(v).replace(" ", "T");
+    if (!/[zZ]|[+-]\d{2}:?\d{2}$/.test(s)) s += "Z";
+    const t = Date.parse(s);
+    return isNaN(t) ? 0 : t;
+  };
+  const dropFresher = tsOf(drop.last_seen_at) > tsOf(keep.last_seen_at);
+  const ip = (dropFresher ? drop.ip_address : keep.ip_address) || take(keep.ip_address, drop.ip_address);
+  const lastSeen = dropFresher ? drop.last_seen_at : keep.last_seen_at;
   await env.DB.prepare(
-    `UPDATE equipment SET vendor = ?, type = ?, model = ?, serial = ?, mac = ?, firmware = ?,
+    `UPDATE equipment SET name = ?, vendor = ?, type = ?, model = ?, serial = ?, mac = ?, firmware = ?,
        ip_address = ?, ip_mode = ?, license_expires = ?, warranty_expires = ?, notes = ?,
-       parent_mac = ?, source = ?, external_id = ?, status = ?, last_seen_at = COALESCE(?, last_seen_at),
+       parent_mac = ?, source = ?, external_id = ?, status = ?, last_seen_at = ?,
        updated_at = datetime('now') WHERE id = ?`)
-    .bind(take(keep.vendor, drop.vendor), take(keep.type, drop.type), take(keep.model, drop.model),
+    .bind(name, take(keep.vendor, drop.vendor), type, take(keep.model, drop.model),
       take(keep.serial, drop.serial), take(keep.mac, drop.mac), take(keep.firmware, drop.firmware),
-      take(keep.ip_address, drop.ip_address), take(keep.ip_mode, drop.ip_mode),
+      ip, take(keep.ip_mode, drop.ip_mode),
       take(keep.license_expires, drop.license_expires), take(keep.warranty_expires, drop.warranty_expires),
       take(keep.notes, drop.notes), take(keep.parent_mac, drop.parent_mac), source, externalId, status,
-      drop.last_seen_at, keep.id).run();
+      lastSeen, keep.id).run();
   // Anything plugged into the dropped record now hangs off the keeper.
   const keepMac = take(keep.mac, drop.mac);
   if (keepMac && drop.mac && String(keepMac).toLowerCase() !== String(drop.mac).toLowerCase()) {
@@ -1821,9 +1840,22 @@ export async function syncMergePost(env, request, user) {
       }
     }
   } catch { /* detail re-points on the next sync anyway */ }
+  // Durable identity links: every identity either record was known by
+  // (each sync's id, each NIC's MAC) now points at the keeper, so the
+  // dropped record's own sync finds the keeper on its next run instead
+  // of recreating the duplicate this merge just removed.
+  try {
+    const links = await loadLinks(env.DB, keep.location_id);
+    recordLink(links, keep.id, [
+      srcKey(keep.source, keep.external_id), macKey(keep.mac),
+      srcKey(drop.source, drop.external_id), macKey(drop.mac),
+      srcKey(source, externalId), macKey(keepMac),
+    ]);
+    await saveLinks(env.DB, keep.location_id, links);
+  } catch { /* links accelerate matching; the cascades still work without them */ }
   await env.DB.prepare("DELETE FROM equipment WHERE id = ?").bind(drop.id).run();
   await audit(env.DB, user.id, "equipment_merge", "location", keep.location_id, `Kept #${keep.id} (${keep.name}); merged in #${drop.id} (${drop.name})`);
-  return done(true, `Merged. "${drop.name}" is now part of "${keep.name}", one record with the best details from both.`);
+  return done(true, `Merged. "${drop.name}" is now part of "${name}", one record with the best details from both.`);
 }
 
 export async function syncDupDismissPost(env, request, user) {

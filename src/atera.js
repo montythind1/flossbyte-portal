@@ -20,6 +20,7 @@
 // refreshes at most once an hour even though the sync runs more often.
 
 import { normMac } from "./unifi.js";
+import { loadLinks, saveLinks, linkedRow, recordLink, macKey, srcKey } from "./links.js";
 
 function apiBase(env) { return env.ATERA_API_BASE || "https://app.atera.com"; }
 
@@ -268,6 +269,14 @@ export async function runAteraSync(env) {
 
   const seenByLocation = new Map(); // locationId -> Set(equipmentIds)
   const detailByLocation = new Map(); // locationId -> {byAgent: {}}
+  // Durable identity links (src/links.js): once an agent is matched to
+  // a record, later runs resolve it directly instead of re-guessing.
+  const linksByLocation = new Map();
+  const linksDirty = new Set();
+  const linksFor = async (locationId) => {
+    if (!linksByLocation.has(locationId)) linksByLocation.set(locationId, await loadLinks(db, locationId));
+    return linksByLocation.get(locationId);
+  };
 
   for (const g of groups.values()) {
     const locationId = mapping.get(g.key);
@@ -275,11 +284,13 @@ export async function runAteraSync(env) {
     if (!seenByLocation.has(locationId)) { seenByLocation.set(locationId, new Set()); detailByLocation.set(locationId, {}); }
     const seen = seenByLocation.get(locationId);
     const detail = detailByLocation.get(locationId);
+    const links = await linksFor(locationId);
 
     for (const a of g.agents) {
       const status = a.online ? "online" : "offline";
-      // Match: Atera id, then MAC, then serial, then name.
-      let row = await db.prepare(
+      // Match: durable link first, then Atera id, MAC, serial, name.
+      let row = await linkedRow(db, locationId, links, [srcKey("atera", String(a.agentId)), macKey(a.mac)]);
+      if (!row) row = await db.prepare(
         "SELECT * FROM equipment WHERE location_id = ? AND source = 'atera' AND external_id = ?")
         .bind(locationId, String(a.agentId)).first();
       if (!row && a.mac) row = await db.prepare("SELECT * FROM equipment WHERE location_id = ? AND mac = ? ORDER BY id LIMIT 1").bind(locationId, a.mac).first();
@@ -318,6 +329,7 @@ export async function runAteraSync(env) {
         summary.inserted++;
       }
       seen.add(equipmentId);
+      if (recordLink(links, equipmentId, [srcKey("atera", String(a.agentId)), macKey(a.mac)])) linksDirty.add(locationId);
 
       // Patches: from the hourly refresh when due, else the cache.
       let patches = patchCache[String(a.agentId)] || null;
@@ -374,9 +386,11 @@ export async function runAteraSync(env) {
     if (!locationId) { summary.monUnmapped += g.devices.length; continue; }
     if (!seenMonByLocation.has(locationId)) seenMonByLocation.set(locationId, new Set());
     const seenMon = seenMonByLocation.get(locationId);
+    const links = await linksFor(locationId);
     for (const d of g.devices) {
       const status = d.online ? "online" : "offline";
-      let row = await db.prepare("SELECT * FROM equipment WHERE location_id = ? AND source = 'atera-device' AND external_id = ?")
+      let row = await linkedRow(db, locationId, links, [srcKey("atera-device", String(d.id)), macKey(d.mac)]);
+      if (!row) row = await db.prepare("SELECT * FROM equipment WHERE location_id = ? AND source = 'atera-device' AND external_id = ?")
         .bind(locationId, String(d.id)).first();
       if (!row && d.mac) row = await db.prepare("SELECT * FROM equipment WHERE location_id = ? AND mac = ? ORDER BY id LIMIT 1").bind(locationId, d.mac).first();
       if (!row) row = await db.prepare("SELECT * FROM equipment WHERE location_id = ? AND LOWER(name) = LOWER(?) ORDER BY id LIMIT 1").bind(locationId, d.name).first();
@@ -398,6 +412,7 @@ export async function runAteraSync(env) {
           await db.prepare("UPDATE equipment SET name = ?, type = ? WHERE id = ?").bind(d.name, d.type, row.id).run();
         }
         seenMon.add(row.id);
+        if (recordLink(links, row.id, [srcKey("atera-device", String(d.id)), macKey(d.mac)])) linksDirty.add(locationId);
         summary.monDevices++;
       } else {
         const ins = await db.prepare(
@@ -405,6 +420,7 @@ export async function runAteraSync(env) {
            VALUES (?, 'Atera', ?, NULL, NULL, ?, ?, ?, ?, 'atera-device', ?, ?)`)
           .bind(locationId, d.type, status, d.name, d.mac || null, d.ip, String(d.id), d.lastSeen).run();
         seenMon.add(ins.meta.last_row_id);
+        if (recordLink(links, ins.meta.last_row_id, [srcKey("atera-device", String(d.id)), macKey(d.mac)])) linksDirty.add(locationId);
         summary.monDevices++;
       }
     }
@@ -474,6 +490,11 @@ export async function runAteraSync(env) {
   if (patchDue && summary.patchAgents > 0) {
     await setState(db, "atera_patches_at", new Date().toISOString());
     if (patchCacheDirty) await setState(db, "atera_patch_cache", JSON.stringify(patchCache));
+  }
+
+  // Persist any identity links learned this run.
+  for (const locationId of linksDirty) {
+    try { await saveLinks(db, locationId, linksByLocation.get(locationId)); } catch { /* best effort */ }
   }
 
   summary.ok = true;

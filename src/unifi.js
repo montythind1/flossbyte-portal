@@ -12,6 +12,7 @@
 // of every run is recorded in system_state for that page to show.
 
 import { sendEmail, wrap } from "./email.js";
+import { loadLinks, saveLinks, linkedRow, recordLink, macKey, srcKey } from "./links.js";
 
 const TYPE_LABELS = {
   uap: "Access point", usw: "Switch", ugw: "Gateway", uxg: "Gateway",
@@ -436,6 +437,13 @@ export async function runUnifiSync(env) {
 
     const seenByLocation = {};
     for (const locId of Object.values(locationBySite)) seenByLocation[locId] = new Set();
+    // Durable identity links (src/links.js), shared with the other syncs.
+    const linksByLocation = new Map();
+    const linksDirty = new Set();
+    const linksFor = async (locId) => {
+      if (!linksByLocation.has(locId)) linksByLocation.set(locId, await loadLinks(env.DB, locId));
+      return linksByLocation.get(locId);
+    };
 
     for (const d of devices) {
       let siteId = d.siteId || d.site_id || (d.site && d.site.id) || null;
@@ -455,7 +463,9 @@ export async function runUnifiSync(env) {
         status: deviceStatus(d),
         firmware: d.version || d.firmware ? String(d.version || d.firmware) : null,
       };
-      let row = await env.DB.prepare(
+      const links = await linksFor(locationId);
+      let row = await linkedRow(env.DB, locationId, links, [srcKey("unifi", externalId), macKey(mac)]);
+      if (!row) row = await env.DB.prepare(
         "SELECT * FROM equipment WHERE source = 'unifi' AND external_id = ?").bind(externalId).first();
       if (!row && mac) {
         row = await env.DB.prepare(
@@ -471,7 +481,20 @@ export async function runUnifiSync(env) {
       // store it when this run actually read it (never erase a known
       // address with an unread console's silence).
       const ipVal = hasIp && local && mac ? (local.ipByMac && local.ipByMac[mac]) || null : null;
-      if (row) {
+      if (row && row.source && row.source !== "unifi" && row.source !== "manual") {
+        // Another sync owns this record: contribute network facts only
+        // (presence, address, uplink), never rename, retype, or steal it.
+        const fbinds = [fields.status];
+        let fsql = "UPDATE equipment SET status = ?";
+        if (ipVal) { fsql += ", ip_address = ?"; fbinds.push(ipVal); }
+        if (hasParent) { fsql += ", parent_mac = COALESCE(?, parent_mac)"; fbinds.push(parentMac); }
+        fsql += ", last_seen_at = datetime('now'), updated_at = datetime('now') WHERE id = ?";
+        fbinds.push(row.id);
+        await env.DB.prepare(fsql).bind(...fbinds).run();
+        summary.updated++;
+        seenByLocation[locationId].add(row.id);
+        if (recordLink(links, row.id, [srcKey("unifi", externalId), macKey(mac)])) linksDirty.add(locationId);
+      } else if (row) {
         if (row.source !== "unifi") summary.claimed++;
         const binds = [locationId, fields.type, fields.model, fields.name, fields.serial,
           fields.status, fields.firmware, mac, externalId];
@@ -484,6 +507,7 @@ export async function runUnifiSync(env) {
         await env.DB.prepare(sql).bind(...binds).run();
         summary.updated++;
         seenByLocation[locationId].add(row.id);
+        if (recordLink(links, row.id, [srcKey("unifi", externalId), macKey(mac)])) linksDirty.add(locationId);
       } else {
         const cols = ["location_id", "vendor", "type", "model", "serial", "status", "firmware", "name", "mac", "source", "external_id"];
         const vals = ["?", "'UniFi'", "?", "?", "?", "?", "?", "?", "?", "'unifi'", "?"];
@@ -496,6 +520,7 @@ export async function runUnifiSync(env) {
           `INSERT INTO equipment (${cols.join(", ")}) VALUES (${vals.join(", ")})`).bind(...binds).run();
         summary.inserted++;
         seenByLocation[locationId].add(ins.meta.last_row_id);
+        if (recordLink(links, ins.meta.last_row_id, [srcKey("unifi", externalId), macKey(mac)])) linksDirty.add(locationId);
       }
     }
 
@@ -540,14 +565,29 @@ export async function runUnifiSync(env) {
           const parentMac = hasParent
             ? (c.uplinkDeviceId && local.uuidToMac[String(c.uplinkDeviceId)]) || consoleMacBySite[siteId] || null
             : null;
-          let row = await env.DB.prepare(
+          const links = await linksFor(locationId);
+          let row = await linkedRow(env.DB, locationId, links, [srcKey("unifi", externalId), macKey(mac)]);
+          if (!row) row = await env.DB.prepare(
             "SELECT * FROM equipment WHERE source = 'unifi-client' AND external_id = ?").bind(externalId).first();
           if (!row) {
             row = await env.DB.prepare(
               "SELECT * FROM equipment WHERE location_id = ? AND mac = ?").bind(locationId, mac).first();
           }
           const clientIp = hasIp ? (c.ipAddress || c.ip || null) : null;
-          if (row) {
+          if (row && row.source && row.source !== "unifi-client" && row.source !== "manual" && row.location_id === locationId) {
+            // Another sync owns this record: contribute network facts
+            // only (presence, address, uplink), never rename or steal.
+            const fbinds = [];
+            let fsql = "UPDATE equipment SET status = 'online'";
+            if (clientIp) { fsql += ", ip_address = ?"; fbinds.push(String(clientIp)); }
+            if (hasParent) { fsql += ", parent_mac = COALESCE(?, parent_mac)"; fbinds.push(parentMac); }
+            fsql += ", last_seen_at = datetime('now'), updated_at = datetime('now') WHERE id = ?";
+            fbinds.push(row.id);
+            await env.DB.prepare(fsql).bind(...fbinds).run();
+            summary.clientsUpdated++;
+            seen.add(row.id);
+            if (recordLink(links, row.id, [srcKey("unifi", externalId), macKey(mac)])) linksDirty.add(locationId);
+          } else if (row) {
             const binds = [locationId, name, mac, externalId];
             let sql = `UPDATE equipment SET location_id = ?, vendor = 'UniFi', type = 'Connected device', name = ?,
               status = 'online', mac = ?, source = 'unifi-client', external_id = ?`;
@@ -558,6 +598,7 @@ export async function runUnifiSync(env) {
             await env.DB.prepare(sql).bind(...binds).run();
             summary.clientsUpdated++;
             seen.add(row.id);
+            if (recordLink(links, row.id, [srcKey("unifi", externalId), macKey(mac)])) linksDirty.add(locationId);
           } else {
             const cols = ["location_id", "vendor", "type", "model", "serial", "status", "firmware", "name", "mac", "source", "external_id"];
             const vals = ["?", "'UniFi'", "'Connected device'", "NULL", "NULL", "'online'", "NULL", "?", "?", "'unifi-client'", "?"];
@@ -569,6 +610,7 @@ export async function runUnifiSync(env) {
               `INSERT INTO equipment (${cols.join(", ")}) VALUES (${vals.join(", ")})`).bind(...binds).run();
             summary.clientsAdded++;
             seen.add(ins.meta.last_row_id);
+            if (recordLink(links, ins.meta.last_row_id, [srcKey("unifi", externalId), macKey(mac)])) linksDirty.add(locationId);
           }
         }
       }
@@ -590,6 +632,10 @@ export async function runUnifiSync(env) {
       }
     } catch (err) {
       summary.clientsError = String(err && err.message || err);
+    }
+    // Persist any identity links learned this run.
+    for (const locId of linksDirty) {
+      try { await saveLinks(env.DB, locId, linksByLocation.get(locId)); } catch { /* best effort */ }
     }
     // Network snapshots (migration 0011): store the latest reads per
     // mapped location for the Network page. A section that failed to

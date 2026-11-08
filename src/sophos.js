@@ -14,6 +14,7 @@
 // license to the firewall's serial number.
 
 import { normMac } from "./unifi.js";
+import { loadLinks, saveLinks, linkedRow, recordLink, macKey, srcKey } from "./links.js";
 
 function idBase(env) { return env.SOPHOS_ID_BASE || "https://id.sophos.com"; }
 function apiBase(env) { return env.SOPHOS_API_BASE || "https://api.central.sophos.com"; }
@@ -148,9 +149,18 @@ export async function runSophosSync(env) {
     for (const r of mapRows || []) locationByTenant[r.site_id] = r.location_id;
     const seenByLocation = {};
     for (const locId of Object.values(locationByTenant)) seenByLocation[locId] = new Set();
+    // Durable identity links (src/links.js), shared with the other syncs.
+    const linksByLocation = new Map();
+    const linksDirty = new Set();
+    const linksFor = async (locId) => {
+      if (!linksByLocation.has(locId)) linksByLocation.set(locId, await loadLinks(env.DB, locId));
+      return linksByLocation.get(locId);
+    };
 
     const upsert = async (locationId, device) => {
-      let row = await env.DB.prepare(
+      const links = await linksFor(locationId);
+      let row = await linkedRow(env.DB, locationId, links, [srcKey("sophos", device.externalId), macKey(device.mac)]);
+      if (!row) row = await env.DB.prepare(
         "SELECT * FROM equipment WHERE source = 'sophos' AND external_id = ?").bind(device.externalId).first();
       if (!row && device.mac) {
         row = await env.DB.prepare(
@@ -160,7 +170,17 @@ export async function runSophosSync(env) {
         row = await env.DB.prepare(
           "SELECT * FROM equipment WHERE location_id = ? AND serial = ?").bind(locationId, device.serial).first();
       }
-      if (row) {
+      if (row && row.source && row.source !== "sophos" && row.source !== "manual") {
+        // Another sync owns this record: contribute Sophos facts only
+        // (presence, license expiry), never rename, retype, or steal it.
+        await env.DB.prepare(
+          `UPDATE equipment SET status = ?, license_expires = COALESCE(?, license_expires),
+             last_seen_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`)
+          .bind(device.status, device.licenseExpires, row.id).run();
+        summary.updated++;
+        seenByLocation[locationId].add(row.id);
+        if (recordLink(links, row.id, [srcKey("sophos", device.externalId), macKey(device.mac)])) linksDirty.add(locationId);
+      } else if (row) {
         if (row.source !== "sophos") summary.claimed++;
         await env.DB.prepare(
           `UPDATE equipment SET location_id = ?, vendor = 'Sophos', type = ?, model = ?, name = ?,
@@ -172,6 +192,7 @@ export async function runSophosSync(env) {
             device.externalId, row.id).run();
         summary.updated++;
         seenByLocation[locationId].add(row.id);
+        if (recordLink(links, row.id, [srcKey("sophos", device.externalId), macKey(device.mac)])) linksDirty.add(locationId);
       } else {
         const ins = await env.DB.prepare(
           `INSERT INTO equipment (location_id, vendor, type, model, serial, status, firmware, license_expires, name, mac, source, external_id, last_seen_at)
@@ -181,6 +202,7 @@ export async function runSophosSync(env) {
             device.externalId).run();
         summary.inserted++;
         seenByLocation[locationId].add(ins.meta.last_row_id);
+        if (recordLink(links, ins.meta.last_row_id, [srcKey("sophos", device.externalId), macKey(device.mac)])) linksDirty.add(locationId);
       }
     };
 
@@ -245,6 +267,10 @@ export async function runSophosSync(env) {
           summary.offlined++;
         }
       }
+    }
+    // Persist any identity links learned this run.
+    for (const locId of linksDirty) {
+      try { await saveLinks(env.DB, locId, linksByLocation.get(locId)); } catch { /* best effort */ }
     }
     summary.ok = true;
     summary.message = "Sync complete.";
