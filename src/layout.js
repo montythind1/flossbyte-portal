@@ -230,7 +230,7 @@ main:has(.gfill-shell){max-width:none;padding:0}
 .gfill-shell .rail{position:static;height:100%;overflow-y:auto;border-radius:0;border-top:none;border-bottom:none;border-left:none}
 .gfill-main{min-height:0;display:flex;flex-direction:column}
 .gfill-main .gpage{flex:1 1 auto;height:auto !important;min-height:0;padding:14px 20px 10px}
-@media (max-width:900px){.gfill-shell{grid-template-rows:auto minmax(0,1fr);padding:12px 20px 10px;gap:12px}.gfill-shell .rail{height:auto;overflow-x:auto;overflow-y:hidden;border:1px solid var(--line);border-radius:12px;padding:8px}.gfill-main .gpage{padding:0}}
+@media (max-width:900px){.gfill-shell{grid-template-rows:auto minmax(0,1fr);padding:28px 20px 10px;gap:14px}.gfill-shell .rail{height:auto;overflow-x:auto;overflow-y:hidden;border:1px solid var(--line);border-radius:12px;padding:8px}.gfill-main .gpage{padding:0}}
 @media (max-width:640px){.gfill-shell{height:calc(100vh - 56px);height:calc(100dvh - 56px)}}
 .gcomposer .btn{border-radius:10px;flex:0 0 auto}
 .gempty{text-align:center;padding:26px 8px 8px}

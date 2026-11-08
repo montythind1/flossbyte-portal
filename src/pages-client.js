@@ -168,7 +168,7 @@ function locNav(loc, active, fill) {
     ${item("overview", base, "Overview", "grid")}
     <a class="rail-item${["network", "equipment", "topology"].includes(active) ? " active" : ""}" href="${base}/network">${icon("topology")}Office IT</a>
     ${item("tickets", base + "/tickets", "Tickets", "ticket")}${item("documents", base + "/documents", "Documents", "folder")}
-    ${item("ask", base + "/ask", "Genius", "chat")}</aside><div class="shell-main${fill ? " gfill-main" : ""}">`;
+    ${item("ask", base + "/ask", "Genius", "chat")}</aside><div class="shell-main${fill ? " gfill-main" : ""}"><script>(function(){var r=document.querySelector('.rail');if(!r)return;var a=r.querySelector('.rail-item.active');if(!a)return;if(r.scrollWidth>r.clientWidth){r.scrollLeft=Math.max(0,a.offsetLeft+a.clientWidth/2-r.clientWidth/2);}})();</script>`;
 }
 
 // Top tabs inside the Network section: the sidebar picks the place,
