@@ -4,6 +4,7 @@ import { page, redirect, esc, icon, fmtDateUS, withStatus } from "./layout.js";
 import { createAuthToken, revokeAllSessions, verifyPassword, normalizePhone, splitName, joinName } from "./auth.js";
 import { audit, isSuperAdmin, grantUserAccess, findCustomerByContactEmail, isValidEmail } from "./access.js";
 import { sendEmail, wrap, inviteEmail, newCustomerNoticeEmail, ownershipTransferEmail, quoteSentEmail } from "./email.js";
+import { sendInvoiceIssued, sendInvoiceReminder, sendQuoteReminder } from "./reminders.js";
 import { resendInviteEmail } from "./pages-public.js";
 import { runUnifiSync, lastUnifiSync } from "./unifi.js";
 import { runSophosSync, lastSophosSync } from "./sophos.js";
@@ -161,7 +162,7 @@ const ACTION_LABEL = {
   equipment_edit: "Edited equipment", equipment_delete: "Deleted equipment", equipment_merge: "Merged duplicate equipment", document_upload: "Uploaded a document",
   quote_accept: "Accepted a quote", quote_create: "Created a quote", quote_send: "Sent a quote",
   quote_decline: "Declined a quote", quote_delete: "Deleted a quote",
-  invoice_create: "Created an invoice", invoice_paid: "Marked an invoice paid", invoice_void: "Voided an invoice", stripe_error: "Stripe payment error",
+  invoice_create: "Created an invoice", invoice_paid: "Marked an invoice paid", invoice_void: "Voided an invoice", stripe_error: "Stripe payment error", reminder_sent: "Sent a reminder",
   product_request: "Requested a service", product_on: "Turned a product on", product_off: "Turned a product off",
   user_remove: "Removed a user", user_invite: "Invited a user", user_connect: "Connected a login to a client",
   user_update: "Updated a login's name",
@@ -733,7 +734,7 @@ export async function customerPage(env, request, user, customerId) {
       actions = `<form method="post" action="/admin/customers/${customerId}/quotes/${qt.id}/send" style="display:inline"><button class="btn small" type="submit">Send to customer</button></form>
         <form method="post" action="/admin/customers/${customerId}/quotes/${qt.id}/delete" style="display:inline"><button class="btn small danger" type="submit">Delete</button></form>`;
     } else if (qt.status === "sent") {
-      actions = `<span class="muted">Waiting for the client</span>`;
+      actions = `<span class="muted">Waiting for the client</span> <form method="post" action="/admin/customers/${customerId}/quotes/${qt.id}/remind" style="display:inline"><button class="btn small secondary" type="submit">Send reminder</button></form>`;
     } else if (qt.status === "accepted") {
       actions = `<span class="muted">Accepted ${fmtDateUS(qt.accepted_at || "")}${qt.accepted_by ? " by " + esc(qt.accepted_by) : ""}. Invoiced ${fmtMoney(qt.invoiced_cents)} of ${fmtMoney(qt.total_cents)}.</span>`
         + (qt.invoiced_cents < qt.total_cents ? ` <form method="post" action="/admin/customers/${customerId}/quotes/${qt.id}/final" style="display:inline"><button class="btn small" type="submit">Invoice the rest</button></form>` : "");
@@ -748,6 +749,7 @@ export async function customerPage(env, request, user, customerId) {
            <input name="method" placeholder="Method (card, check)" style="max-width:150px">
            <button class="btn small" type="submit">Mark paid</button></form>
          <form method="post" action="/admin/customers/${customerId}/invoices/${inv.id}/void" style="display:inline"><button class="btn small danger" type="submit">Void</button></form>
+         <form method="post" action="/admin/customers/${customerId}/invoices/${inv.id}/remind" style="display:inline"><button class="btn small secondary" type="submit">Send reminder</button></form>
          ${inv.pay_url ? `<a class="btn small secondary" href="${esc(inv.pay_url)}" target="_blank" rel="noopener">Pay link</a>` : ""}`
       : inv.status === "paid" ? `<span class="muted">Paid ${fmtDateUS(inv.paid_at || "")}${inv.paid_method ? " (" + esc(inv.paid_method) + ")" : ""}</span>` : `<span class="muted">Void</span>`;
     return `<tr><td>INV-${1000 + inv.id}</td><td>${esc(inv.title)}</td>
@@ -922,6 +924,12 @@ export async function quoteActionPost(env, request, user, customerId, quoteId, a
     }
     return redirect(`/admin/customers/${customerId}?tab=billing&msg=` + encodeURIComponent("Quote sent. The customer can review and accept it in the portal."));
   }
+  if (action === "remind") {
+    if (quote.status !== "sent") return redirect(`/admin/customers/${customerId}?tab=billing&err=` + encodeURIComponent("Only a sent quote can be reminded."));
+    if (!await sendQuoteReminder(env, quote, false)) return redirect(`/admin/customers/${customerId}?tab=billing&err=` + encodeURIComponent("No email address on file for this customer."));
+    await audit(db, user.id, "reminder_sent", "quote", quoteId, "Manual reminder");
+    return redirect(`/admin/customers/${customerId}?tab=billing&msg=` + encodeURIComponent("Reminder sent to the customer."));
+  }
   if (action === "delete") {
     if (quote.status !== "draft") return redirect(`/admin/customers/${customerId}?tab=billing&err=` + encodeURIComponent("Only a draft quote can be deleted."));
     await db.prepare("DELETE FROM quote_items WHERE quote_id = ?").bind(quoteId).run();
@@ -939,10 +947,12 @@ export async function quoteActionPost(env, request, user, customerId, quoteId, a
     const remaining = (totals ? totals.total_cents : 0) - (totals ? totals.invoiced_cents : 0);
     if (remaining <= 0) return redirect(`/admin/customers/${customerId}?tab=billing&err=` + encodeURIComponent("This quote is already fully invoiced."));
     const isFinal = totals && totals.deposits > 0;
-    await db.prepare(
+    const finRes = await db.prepare(
       "INSERT INTO invoices (customer_id, quote_id, title, kind, amount_cents, created_by) VALUES (?, ?, ?, ?, ?, ?)")
       .bind(customerId, quoteId, isFinal ? `${quote.title}: final balance` : quote.title, isFinal ? "final" : "standard", remaining, user.id).run();
     await audit(db, user.id, "invoice_create", "quote", quoteId, `${quote.title} balance ${remaining}`);
+    const finInv = await db.prepare("SELECT * FROM invoices WHERE id = ?").bind(finRes.meta.last_row_id).first().catch(() => null);
+    if (finInv) await sendInvoiceIssued(env, finInv).catch(() => {});
     return redirect(`/admin/customers/${customerId}?tab=billing&msg=` + encodeURIComponent("Invoice created for the remaining balance."));
   }
   return redirect(`/admin/customers/${customerId}?tab=billing`);
@@ -959,6 +969,8 @@ export async function invoiceCreatePost(env, request, user, customerId) {
     "INSERT INTO invoices (customer_id, title, kind, amount_cents, due_date, pay_url, created_by) VALUES (?, ?, 'standard', ?, ?, ?, ?)")
     .bind(customerId, title, amount, due || null, /^https?:\/\//i.test(payUrl) ? payUrl : null, user.id).run();
   await audit(env.DB, user.id, "invoice_create", "invoice", res.meta.last_row_id, title);
+  const newInv = await env.DB.prepare("SELECT * FROM invoices WHERE id = ?").bind(res.meta.last_row_id).first().catch(() => null);
+  if (newInv) await sendInvoiceIssued(env, newInv).catch(() => {});
   return redirect(`/admin/customers/${customerId}?tab=billing&msg=` + encodeURIComponent("Invoice created."));
 }
 
@@ -978,6 +990,15 @@ export async function invoiceActionPost(env, request, user, customerId, invoiceI
     await db.prepare("UPDATE invoices SET status = 'void', updated_at = datetime('now') WHERE id = ?").bind(invoiceId).run();
     await audit(db, user.id, "invoice_void", "invoice", invoiceId, inv.title);
     return redirect(`/admin/customers/${customerId}?tab=billing&msg=` + encodeURIComponent("Invoice voided."));
+  }
+  if (action === "remind") {
+    if (inv.status !== "unpaid") return redirect(`/admin/customers/${customerId}?tab=billing&err=` + encodeURIComponent("Only an unpaid invoice can be reminded."));
+    const today = new Date().toISOString().slice(0, 10);
+    const late = inv.due_date ? Math.floor((Date.parse(today + "T00:00:00Z") - Date.parse(inv.due_date + "T00:00:00Z")) / 86400000) : -1;
+    const kind = !inv.due_date || late < 0 ? "reminder" : late === 0 ? "due" : "overdue";
+    if (!await sendInvoiceReminder(env, inv, kind, Math.max(late, 0))) return redirect(`/admin/customers/${customerId}?tab=billing&err=` + encodeURIComponent("No email address on file for this customer."));
+    await audit(env.DB, user.id, "reminder_sent", "invoice", invoiceId, "Manual reminder");
+    return redirect(`/admin/customers/${customerId}?tab=billing&msg=` + encodeURIComponent("Reminder sent to the customer."));
   }
   return redirect(`/admin/customers/${customerId}?tab=billing`);
 }

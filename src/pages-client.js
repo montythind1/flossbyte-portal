@@ -12,6 +12,7 @@ import { issueCollectorToken, collectorTokenState } from "./collector.js";
 import { buildGeniusContext, geniusAnswer, geniusFooter, isExactLookupQuestion, isLiveChatRequest } from "./genius.js";
 import { chatReady, getOpenThread, threadMessages, addChatMessage, startChat, endChat, renderChatMessages, notifyChatStarted, setTyping, clearTyping, getTyping } from "./chat.js";
 import { stripeOn, createInvoiceCheckout, createPlanCheckout, getPlanState, cardFeeCents } from "./stripe.js";
+import { sendInvoiceIssued } from "./reminders.js";
 
 function orgOrigin(env) { return env.APP_ORIGIN || "https://portal.flossbyte.com"; }
 
@@ -2951,9 +2952,11 @@ export async function quoteAcceptPost(env, request, user, quoteId) {
   const deposit = Math.round(total * (quote.deposit_percent || 0) / 100);
   let invoiceNote = "";
   if (deposit > 0) {
-    await env.DB.prepare(
+    const depRes = await env.DB.prepare(
       "INSERT INTO invoices (customer_id, quote_id, title, kind, amount_cents, created_by) VALUES (?, ?, ?, 'deposit', ?, ?)")
       .bind(org, quoteId, `${quote.title}: deposit (${quote.deposit_percent}%)`, deposit, user.id).run();
+    const depInv = await env.DB.prepare("SELECT * FROM invoices WHERE id = ?").bind(depRes.meta.last_row_id).first().catch(() => null);
+    if (depInv) await sendInvoiceIssued(env, depInv).catch(() => {});
     invoiceNote = " The deposit invoice is on your Billing page; work is scheduled once it is paid.";
   }
   await audit(env.DB, user.id, "quote_accept", "quote", quoteId, `signed by ${signer}`);

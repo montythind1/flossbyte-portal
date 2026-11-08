@@ -155,6 +155,51 @@ export function quoteSentEmail(env, { name, quoteTitle, link }) {
   };
 }
 
+export function invoiceIssuedEmail(env, { name, invoiceNo, title, amount, dueDate, isDeposit, link }) {
+  return {
+    subject: `Invoice ${invoiceNo} from FlossByte: ${title}`,
+    html: wrap("Your FlossByte invoice is ready", `
+      <p>Hi ${name},</p>
+      <p>${isDeposit ? `The deposit invoice for <strong>${title}</strong> is ready in your portal. Your project is scheduled once the deposit is paid.` : `A new invoice, <strong>${title}</strong>, is ready in your portal.`}</p>
+      <p>Amount: <strong>${amount}</strong>${dueDate ? `<br>Due: ${dueDate}` : ""}</p>
+      ${button(link, "View and pay")}
+      ${linkFallback(link)}
+      <p ${MUTED_P}>You can pay by card or by bank right on that page. Questions: call us at (669) 237-2264 or reply to hello@flossbyte.com.</p>`),
+    text: `Hi ${name}, FlossByte invoice ${invoiceNo} for ${title} (${amount}) is ready in your portal: ${link}`,
+  };
+}
+
+export function invoiceReminderEmail(env, { name, invoiceNo, title, amount, kind, daysLate, dueDate, link }) {
+  const lead = kind === "overdue"
+    ? `<p>Invoice <strong>${invoiceNo}</strong> for ${title} was due${dueDate ? " on " + dueDate : ""} and is now <strong>${daysLate} day${daysLate === 1 ? "" : "s"} past due</strong>. The balance is <strong>${amount}</strong>.</p><p>If something looks off, call us at (669) 237-2264 and we will sort it out. Otherwise, the invoice is ready to pay in your portal:</p>`
+    : kind === "due"
+      ? `<p>Invoice <strong>${invoiceNo}</strong> for ${title} is due today. The balance is <strong>${amount}</strong>. You can pay it in your portal:</p>`
+      : `<p>A quick reminder about invoice <strong>${invoiceNo}</strong> for ${title}. The balance is <strong>${amount}</strong>${dueDate ? `, due ${dueDate}` : ""}. You can pay it any time in your portal:</p>`;
+  return {
+    subject: kind === "overdue" ? `Past due: invoice ${invoiceNo} from FlossByte` : `Reminder: invoice ${invoiceNo} from FlossByte`,
+    html: wrap("Invoice reminder", `
+      <p>Hi ${name},</p>
+      ${lead}
+      ${button(link, "View and pay")}
+      ${linkFallback(link)}
+      <p ${MUTED_P}>You can pay by card or by bank on that page. Already paid? You can ignore this; a payment can take a day to show. Questions: call us at (669) 237-2264.</p>`),
+    text: `Hi ${name}, a reminder about FlossByte invoice ${invoiceNo} for ${title} (${amount}): ${link}`,
+  };
+}
+
+export function quoteReminderEmail(env, { name, quoteTitle, total, second, link }) {
+  return {
+    subject: second ? `Still open: your FlossByte quote, ${quoteTitle}` : "A quick follow-up on your FlossByte quote",
+    html: wrap("Your quote is still waiting", `
+      <p>Hi ${name},</p>
+      <p>${second ? `Your FlossByte quote <strong>${quoteTitle}</strong> (${total}) is still open. Reviewing it only takes a minute, and accepting it in the portal is what gets the work scheduled.` : `Just following up on your FlossByte quote <strong>${quoteTitle}</strong> (${total}). It is waiting in your portal whenever you are ready:`}</p>
+      ${button(link, "Review the quote")}
+      ${linkFallback(link)}
+      <p ${MUTED_P}>Want changes, or a time to talk it through? Call us at (669) 237-2264 or reply to hello@flossbyte.com.</p>`),
+    text: `Hi ${name}, following up on your FlossByte quote "${quoteTitle}" (${total}): ${link}`,
+  };
+}
+
 export function ticketCreatedNoticeEmail(env, { customerName, locationName, title, priority, authorName, link }) {
   return {
     subject: `New ticket: ${title} (${customerName})`,

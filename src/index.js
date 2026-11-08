@@ -7,6 +7,7 @@ import * as pub from "./pages-public.js";
 import * as client from "./pages-client.js";
 import { collectorReport } from "./collector.js";
 import { stripeWebhook } from "./stripe.js";
+import { runBillingReminders } from "./reminders.js";
 import * as admin from "./pages-admin.js";
 import * as places from "./places.js";
 import { runUnifiSync } from "./unifi.js";
@@ -34,6 +35,9 @@ export default {
     // Monthly Office IT report on the 1st; the sender itself records
     // the month marker, so extra hourly runs in between are no-ops.
     if (new Date().getUTCDate() === 1) jobs.push(admin.sendMonthlyReports(env, false));
+    // Daily billing reminders (invoice issued/due/overdue, quote
+    // follow-ups); the sweep records a day marker, so it runs once.
+    jobs.push(runBillingReminders(env));
     ctx.waitUntil(Promise.allSettled(jobs));
   },
 };
@@ -158,11 +162,11 @@ async function route(request, env) {
     if (m && method === "POST") return admin.checklistDismissPost(env, request, user, Number(m[1]));
     m = path.match(/^\/admin\/customers\/(\d+)\/quotes$/);
     if (m && method === "POST") return admin.quoteCreatePost(env, request, user, Number(m[1]));
-    m = path.match(/^\/admin\/customers\/(\d+)\/quotes\/(\d+)\/(send|delete|final)$/);
+    m = path.match(/^\/admin\/customers\/(\d+)\/quotes\/(\d+)\/(send|delete|final|remind)$/);
     if (m && method === "POST") return admin.quoteActionPost(env, request, user, Number(m[1]), Number(m[2]), m[3]);
     m = path.match(/^\/admin\/customers\/(\d+)\/invoices$/);
     if (m && method === "POST") return admin.invoiceCreatePost(env, request, user, Number(m[1]));
-    m = path.match(/^\/admin\/customers\/(\d+)\/invoices\/(\d+)\/(paid|void)$/);
+    m = path.match(/^\/admin\/customers\/(\d+)\/invoices\/(\d+)\/(paid|void|remind)$/);
     if (m && method === "POST") return admin.invoiceActionPost(env, request, user, Number(m[1]), Number(m[2]), m[3]);
     return notFound(user);
   }
