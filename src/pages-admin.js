@@ -1482,24 +1482,24 @@ async function ateraRecordsHtml(env) {
     const contacts = (kinds.atera_contacts || {}).contacts || [];
     const contracts = (kinds.atera_contracts || {}).contracts || [];
     const invoices = (kinds.atera_invoices || {}).invoices || [];
-    const expenses = (kinds.atera_expenses || {}).expenses || [];
-    if (!contacts.length && !contracts.length && !invoices.length && !expenses.length) continue;
-    blocks.push(`<details style="margin-top:10px"><summary style="cursor:pointer;font-weight:600">${esc(locLabel)} <span class="muted" style="font-weight:400">(${contacts.length} contacts · ${contracts.length} contracts · ${invoices.length} invoices · ${expenses.length} expenses)</span></summary>
+    const expenses = [];
+    if (!contacts.length && !contracts.length && !invoices.length) continue;
+    blocks.push(`<details style="margin-top:10px"><summary style="cursor:pointer;font-weight:600">${esc(locLabel)} <span class="muted" style="font-weight:400">(${contacts.length} contacts · ${contracts.length} contracts · ${invoices.length} invoices)</span></summary>
       <div style="margin-top:8px">
       ${contacts.length ? `<p style="margin:8px 0 2px"><b>Contacts</b></p>${contacts.map((c) => line(`${esc(c.name)}${c.title ? ` · ${esc(c.title)}` : ""}${c.email ? ` · ${esc(c.email)}` : ""}${c.phone ? ` · ${esc(c.phone)}` : ""}`)).join("")}` : ""}
       ${contracts.length ? `<p style="margin:12px 0 2px"><b>Contracts</b></p>${contracts.map((c) => line(`${esc(c.name)}${c.type ? ` · ${esc(c.type)}` : ""}${c.start || c.end ? ` · ${day(c.start)} to ${day(c.end)}` : ""}${money(c.amount) ? ` · ${money(c.amount)}` : ""}`)).join("")}` : ""}
       ${invoices.length ? `<p style="margin:12px 0 2px"><b>Invoices</b></p>${invoices.slice(0, 10).map((v) => line(`#${esc(String(v.number != null ? v.number : ""))}${v.date ? ` · ${day(v.date)}` : ""}${money(v.total) ? ` · ${money(v.total)}` : ""}${v.status ? ` · ${esc(v.status)}` : ""}`)).join("")}${more(invoices.length - 10)}` : ""}
-      ${expenses.length ? `<p style="margin:12px 0 2px"><b>Expenses</b></p>${expenses.slice(0, 10).map((x) => line(`${esc(x.name)}${x.date ? ` · ${day(x.date)}` : ""}${money(x.amount) ? ` · ${money(x.amount)}` : ""}`)).join("")}${more(expenses.length - 10)}` : ""}
       </div></details>`);
   }
   let accountBlock = "";
   try {
     const row = await env.DB.prepare("SELECT value FROM system_state WHERE key = 'atera_account'").first();
     const acc = row && row.value ? JSON.parse(row.value) : null;
-    if (acc && ((acc.products || []).length || (acc.customValues || []).length || (acc.kb || []).length || (acc.departments || []).length)) {
-      accountBlock = `<details style="margin-top:10px"><summary style="cursor:pointer;font-weight:600">Your Atera account <span class="muted" style="font-weight:400">(${(acc.products || []).length} products · ${(acc.customValues || []).length} custom values · ${(acc.kb || []).length} knowledge base · ${(acc.departments || []).length} departments)</span></summary>
+    if (acc && ((acc.products || []).length || (acc.expenses || []).length || (acc.customValues || []).length || (acc.kb || []).length || (acc.departments || []).length)) {
+      accountBlock = `<details style="margin-top:10px"><summary style="cursor:pointer;font-weight:600">Your Atera account <span class="muted" style="font-weight:400">(${(acc.products || []).length} products · ${(acc.expenses || []).length} expenses · ${(acc.customValues || []).length} custom values · ${(acc.kb || []).length} knowledge base · ${(acc.departments || []).length} departments)</span></summary>
         <div style="margin-top:8px">
         ${(acc.products || []).length ? `<p style="margin:8px 0 2px"><b>Products and rates</b></p>${(acc.products || []).map((p) => line(`${esc(p.name)}${money(p.price) ? ` · ${money(p.price)}` : ""}${p.unit ? ` · ${esc(p.unit)}` : ""}`)).join("")}` : ""}
+        ${(acc.expenses || []).length ? `<p style="margin:12px 0 2px"><b>Expenses</b></p>${(acc.expenses || []).map((x) => line(`${esc(x.name)}${money(x.amount) ? ` · ${money(x.amount)}` : ""}`)).join("")}` : ""}
         ${(acc.customValues || []).length ? `<p style="margin:12px 0 2px"><b>Custom values</b></p>${(acc.customValues || []).slice(0, 25).map((v) => line(`${esc(v.name)}${v.value != null && v.value !== "" ? `: ${esc(String(v.value))}` : ""}`)).join("")}${more((acc.customValues || []).length - 25)}` : ""}
         ${(acc.kb || []).length ? `<p style="margin:12px 0 2px"><b>Knowledge base</b></p>${(acc.kb || []).slice(0, 25).map((a) => line(esc(a.title))).join("")}${more((acc.kb || []).length - 25)}` : ""}
         ${(acc.departments || []).length ? `<p style="margin:12px 0 2px"><b>Departments</b></p>${(acc.departments || []).map((d) => line(esc(d.name))).join("")}` : ""}

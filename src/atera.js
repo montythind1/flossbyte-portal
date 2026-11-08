@@ -563,6 +563,14 @@ export async function runAteraExtra(env) {
     for (const p of paths) { try { return await listAll(env, p); } catch (e) { err = e; } }
     throw err || new Error("Atera did not answer.");
   };
+  const tryPathsPlain = async (paths) => {
+    let err = null;
+    for (const p of paths) {
+      try { const data = await apiGet(env, p); return Array.isArray(data) ? data : (data.items || data.data || []); } catch (e) { err = e; }
+      try { return await listAll(env, p); } catch (e) { err = e; }
+    }
+    throw err || new Error("Atera did not answer.");
+  };
   const waiting = new Set();
   const perCustomer = async (kind, paths, shape, cap) => {
     try {
@@ -606,32 +614,27 @@ export async function runAteraExtra(env) {
     end: isoDate(pick(o, "EndDate", "End")),
     amount: pick(o, "Amount", "Value", "Price"),
   }), 50);
-  await perCustomer("invoices", ["/api/v3/invoices"], (o) => ({
+  await perCustomer("invoices", ["/api/v3/billing/invoices", "/api/v3/invoices"], (o) => ({
     __cid: pick(o, "CustomerID", "CustomerId"),
     number: pick(o, "InvoiceNumber", "InvoiceID", "InvoiceId", "Number"),
     date: isoDate(pick(o, "InvoiceDate", "Date", "CreatedDate")),
     total: pick(o, "Total", "TotalAmount", "Amount"),
     status: pick(o, "Status", "InvoiceStatus"),
   }), 50);
-  await perCustomer("expenses", ["/api/v3/expenses"], (o) => ({
-    __cid: pick(o, "CustomerID", "CustomerId"),
-    name: String(pick(o, "Description", "ExpenseName", "Name") || "Expense"),
-    date: isoDate(pick(o, "Date", "ExpenseDate", "CreatedDate")),
-    amount: pick(o, "Amount", "Cost", "Price"),
-  }), 100);
-  const account = { products: [], customValues: [], kb: [], departments: [] };
-  const accountKind = async (key, paths, shape, cap) => {
+  const account = { products: [], expenses: [], customValues: [], kb: [], departments: [] };
+  const accountKind = async (key, paths, shape, cap, plain) => {
     try {
-      const raw = await tryPaths(paths);
+      const raw = plain ? await tryPathsPlain(paths) : await tryPaths(paths);
       answered++;
       account[key] = raw.map(shape).filter(Boolean).slice(0, cap);
       extra[key] = account[key].length;
     } catch (e) { extraErrors[key] = String(e.message || e).slice(0, 90); }
   };
-  await accountKind("products", ["/api/v3/products"], (o) => ({ name: String(pick(o, "ProductName", "Name") || "Product"), price: pick(o, "Price", "Rate", "Amount"), unit: pick(o, "Unit", "Type") }), 200);
-  await accountKind("customValues", ["/api/v3/customvalues", "/api/v3/custom-values"], (o) => ({ name: String(pick(o, "FieldName", "Name", "CustomFieldName") || "Custom value"), value: pick(o, "Value", "CustomValue", "FieldValue") }), 200);
-  await accountKind("kb", ["/api/v3/knowledgebase", "/api/v3/kb"], (o) => ({ title: String(pick(o, "Title", "ArticleTitle", "Name") || "Article") }), 200);
-  await accountKind("departments", ["/api/v3/departments"], (o) => ({ name: String(pick(o, "DepartmentName", "Name") || "Department") }), 100);
+  await accountKind("products", ["/api/v3/rates/products", "/api/v3/products"], (o) => ({ name: String(pick(o, "ProductName", "Name") || "Product"), price: pick(o, "Price", "Rate", "Amount"), unit: pick(o, "Unit", "Type") }), 200);
+  await accountKind("expenses", ["/api/v3/rates/expenses", "/api/v3/expenses"], (o) => ({ name: String(pick(o, "Description", "ExpenseName", "Name") || "Expense"), amount: pick(o, "Amount", "Cost", "Price") }), 200);
+  await accountKind("customValues", ["/api/v3/customvalues/customfields", "/api/v3/customvalues", "/api/v3/custom-values"], (o) => ({ name: String(pick(o, "FieldName", "Name", "CustomFieldName") || "Custom value"), value: pick(o, "Value", "CustomValue", "FieldValue") }), 200, true);
+  await accountKind("kb", ["/api/v3/knowledgebases", "/api/v3/knowledgebase", "/api/v3/kb"], (o) => ({ title: String(pick(o, "Title", "ArticleTitle", "Name") || "Article") }), 200);
+  await accountKind("departments", ["/api/v3/departments"], (o) => ({ name: String(pick(o, "DepartmentName", "Name") || "Department") }), 100, true);
   extra.waitingCustomers = waiting.size;
   if (answered > 0) {
     account.at = new Date().toISOString();
