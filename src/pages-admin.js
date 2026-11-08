@@ -161,7 +161,7 @@ const ACTION_LABEL = {
   equipment_edit: "Edited equipment", equipment_delete: "Deleted equipment", equipment_merge: "Merged duplicate equipment", document_upload: "Uploaded a document",
   quote_accept: "Accepted a quote", quote_create: "Created a quote", quote_send: "Sent a quote",
   quote_decline: "Declined a quote", quote_delete: "Deleted a quote",
-  invoice_create: "Created an invoice", invoice_paid: "Marked an invoice paid", invoice_void: "Voided an invoice",
+  invoice_create: "Created an invoice", invoice_paid: "Marked an invoice paid", invoice_void: "Voided an invoice", stripe_error: "Stripe payment error",
   product_request: "Requested a service", product_on: "Turned a product on", product_off: "Turned a product off",
   user_remove: "Removed a user", user_invite: "Invited a user", user_connect: "Connected a login to a client",
   user_update: "Updated a login's name",

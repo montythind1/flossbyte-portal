@@ -68,7 +68,8 @@ export async function createInvoiceCheckout(env, inv, orgName, origin, method) {
   });
   const data = await res.json().catch(() => null);
   if (!res.ok || !data || !data.url) {
-    throw new Error(`Stripe answered ${res.status} when starting checkout`);
+    const why = (data && data.error && data.error.message) || "";
+    throw new Error(`Stripe answered ${res.status} when starting checkout${why ? ": " + why : ""}`);
   }
   return data;
 }
@@ -164,7 +165,8 @@ export async function createPlanCheckout(env, quote, totalCents, orgName, origin
   });
   const data = await res.json().catch(() => null);
   if (!res.ok || !data || !data.url) {
-    throw new Error(`Stripe answered ${res.status} when starting plan checkout`);
+    const why = (data && data.error && data.error.message) || "";
+    throw new Error(`Stripe answered ${res.status} when starting plan checkout${why ? ": " + why : ""}`);
   }
   return data;
 }

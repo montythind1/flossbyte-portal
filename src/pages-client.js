@@ -3003,7 +3003,8 @@ export async function quotePlanPayPost(env, request, user, quoteId) {
   try {
     const s = await createPlanCheckout(env, loaded.quote, loaded.total, cust ? cust.name : "", orgOrigin(env), method);
     return Response.redirect(s.url, 303);
-  } catch {
+  } catch (e) {
+    await audit(env.DB, null, "stripe_error", "quote", quoteId, String((e && e.message) || e)).catch(() => {});
     return redirect(`/app/quotes/${quoteId}?err=` + encodeURIComponent("The payment page could not open. Please try again, or call (669) 237-2264."));
   }
 }
@@ -3044,7 +3045,7 @@ export async function invoiceViewPage(env, request, user, invoiceId) {
     <h1>INV-${1000 + inv.id}</h1>
     <p class="muted">${esc(inv.title)}</p>
     <p><button class="btn small secondary" type="button" onclick="window.print()">Print / save as PDF</button></p>
-    <div class="card"><div class="tscroll"><table>
+    <div class="card"><div class="tscroll"><table class="stack">
       <tbody>
       <tr><td class="muted">Billed to</td><td>${esc(cust ? cust.name : "")}</td></tr>
       <tr><td class="muted">Type</td><td>${esc(INVOICE_KIND[inv.kind] || "Invoice")}</td></tr>
@@ -3078,7 +3079,8 @@ export async function invoicePayPost(env, request, user, invoiceId) {
   try {
     const session = await createInvoiceCheckout(env, inv, cust ? cust.name : "", orgOrigin(env), method);
     return Response.redirect(session.url, 303);
-  } catch {
+  } catch (e) {
+    await audit(env.DB, null, "stripe_error", "invoice", inv.id, String((e && e.message) || e)).catch(() => {});
     return redirect(`/app/invoices/${inv.id}?err=` + encodeURIComponent("The payment page could not open. Please try again, or call (669) 237-2264."));
   }
 }
