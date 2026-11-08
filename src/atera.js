@@ -505,125 +505,18 @@ export async function runAteraSync(env) {
     }
   } catch { summary.alertsError = "Alerts could not be read this run."; }
 
-  // Everything else Atera keeps, apart from tickets (Montek,
-  // 2026-11-07: pull all of Atera's data into the portal, tickets
-  // aside). These collections change rarely, so the round runs
-  // hourly like the patch pass. Every collection is independent:
-  // one Atera refuses records its error and the rest still land.
+  // The rest of Atera's data (contacts, contracts, invoices, and
+  // the rest) is pulled by runAteraExtra on its own hourly cron:
+  // riding inside this sync exhausted the per-invocation subrequest
+  // budget in production (every collection failed with "Too many
+  // subrequests"). Between rounds, surface the last known results.
   try {
-    const lastExtraRaw = await getState(db, "atera_extra_at");
-    const extraDue = !lastExtraRaw || (Date.now() - new Date(lastExtraRaw).getTime() > 50 * 60 * 1000);
-    if (extraDue) {
-      const extra = { contacts: 0, contracts: 0, invoices: 0, expenses: 0, products: 0, customValues: 0, kb: 0, departments: 0, waitingCustomers: 0 };
-      const extraErrors = {};
-      let answered = 0;
-      // Locations each Atera customer is mapped to (a customer can
-      // cover several offices through its site groups).
-      const locsByCustomer = new Map();
-      for (const [k, loc] of mapping) {
-        const m = String(k).match(/^cust:([^:]+)/);
-        if (!m) continue;
-        if (!locsByCustomer.has(m[1])) locsByCustomer.set(m[1], new Set());
-        locsByCustomer.get(m[1]).add(loc);
-      }
-      const tryPaths = async (paths) => {
-        let err = null;
-        for (const p of paths) { try { return await listAll(env, p); } catch (e) { err = e; } }
-        throw err || new Error("Atera did not answer.");
-      };
-      const waiting = new Set();
-      const perCustomer = async (kind, paths, shape, cap) => {
-        try {
-          const raw = await tryPaths(paths);
-          answered++;
-          const byCustomer = new Map();
-          for (const item of raw) {
-            const shaped = shape(item);
-            if (!shaped) continue;
-            const cid = shaped.__cid != null ? String(shaped.__cid) : null;
-            delete shaped.__cid;
-            if (!cid) continue;
-            if (!byCustomer.has(cid)) byCustomer.set(cid, []);
-            byCustomer.get(cid).push(shaped);
-          }
-          const written = new Set();
-          for (const [cid, list] of byCustomer) {
-            const locs = locsByCustomer.get(cid);
-            if (!locs) { waiting.add(cid); continue; }
-            extra[kind] += Math.min(list.length, cap);
-            for (const loc of locs) {
-              try { await saveSnapshot(db, loc, "atera_" + kind, { [kind]: list.slice(0, cap) }); written.add(loc); } catch { /* 0011 */ }
-            }
-          }
-          // Offices whose customer returned nothing get an empty
-          // record so stale data never lingers.
-          for (const loc of mapping.values()) {
-            if (!written.has(loc)) { try { await saveSnapshot(db, loc, "atera_" + kind, { [kind]: [] }); } catch { /* 0011 */ } }
-          }
-        } catch (e) { extraErrors[kind] = String(e.message || e).slice(0, 90); }
-      };
-      const personName = (o) => pick(o, "FullName", "ContactName", "Name") || [pick(o, "FirstName"), pick(o, "LastName")].filter(Boolean).join(" ") || null;
-      await perCustomer("contacts", ["/api/v3/contacts"], (o) => {
-        const name = personName(o);
-        if (!name) return null;
-        return { __cid: pick(o, "CustomerID", "CustomerId"), name: String(name), email: pick(o, "Email", "EmailAddress"), phone: pick(o, "Phone", "PhoneNumber", "MobilePhone", "CellPhone"), title: pick(o, "Title", "JobTitle", "Position") };
-      }, 200);
-      await perCustomer("contracts", ["/api/v3/contracts"], (o) => ({
-        __cid: pick(o, "CustomerID", "CustomerId"),
-        name: String(pick(o, "ContractName", "Name", "Title") || "Contract"),
-        type: pick(o, "ContractType", "Type"),
-        start: isoDate(pick(o, "StartDate", "Start")),
-        end: isoDate(pick(o, "EndDate", "End")),
-        amount: pick(o, "Amount", "Value", "Price"),
-      }), 50);
-      await perCustomer("invoices", ["/api/v3/invoices"], (o) => ({
-        __cid: pick(o, "CustomerID", "CustomerId"),
-        number: pick(o, "InvoiceNumber", "InvoiceID", "InvoiceId", "Number"),
-        date: isoDate(pick(o, "InvoiceDate", "Date", "CreatedDate")),
-        total: pick(o, "Total", "TotalAmount", "Amount"),
-        status: pick(o, "Status", "InvoiceStatus"),
-      }), 50);
-      await perCustomer("expenses", ["/api/v3/expenses"], (o) => ({
-        __cid: pick(o, "CustomerID", "CustomerId"),
-        name: String(pick(o, "Description", "ExpenseName", "Name") || "Expense"),
-        date: isoDate(pick(o, "Date", "ExpenseDate", "CreatedDate")),
-        amount: pick(o, "Amount", "Cost", "Price"),
-      }), 100);
-      // Account-level collections belong to FlossByte's Atera
-      // account rather than to one customer; they are kept together.
-      const account = { products: [], customValues: [], kb: [], departments: [] };
-      const accountKind = async (key, paths, shape, cap) => {
-        try {
-          const raw = await tryPaths(paths);
-          answered++;
-          account[key] = raw.map(shape).filter(Boolean).slice(0, cap);
-          extra[key] = account[key].length;
-        } catch (e) { extraErrors[key] = String(e.message || e).slice(0, 90); }
-      };
-      await accountKind("products", ["/api/v3/products"], (o) => ({ name: String(pick(o, "ProductName", "Name") || "Product"), price: pick(o, "Price", "Rate", "Amount"), unit: pick(o, "Unit", "Type") }), 200);
-      await accountKind("customValues", ["/api/v3/customvalues", "/api/v3/custom-values"], (o) => ({ name: String(pick(o, "FieldName", "Name", "CustomFieldName") || "Custom value"), value: pick(o, "Value", "CustomValue", "FieldValue") }), 200);
-      await accountKind("kb", ["/api/v3/knowledgebase", "/api/v3/kb"], (o) => ({ title: String(pick(o, "Title", "ArticleTitle", "Name") || "Article") }), 200);
-      await accountKind("departments", ["/api/v3/departments"], (o) => ({ name: String(pick(o, "DepartmentName", "Name") || "Department") }), 100);
-      extra.waitingCustomers = waiting.size;
-      summary.extra = extra;
-      if (Object.keys(extraErrors).length) summary.extraErrors = extraErrors;
-      if (answered > 0) {
-        account.at = new Date().toISOString();
-        await setState(db, "atera_account", JSON.stringify(account));
-        await setState(db, "atera_extra_at", new Date().toISOString());
-        await setState(db, "atera_extra_last", JSON.stringify({ extra, extraErrors, at: new Date().toISOString() }));
-      }
-    } else {
-      // Between hourly rounds, keep showing the last known counts.
-      const lastExtra = await getState(db, "atera_extra_last");
-      if (lastExtra) {
-        try {
-          const parsed = JSON.parse(lastExtra);
-          if (parsed && parsed.extra) { summary.extra = parsed.extra; if (parsed.extraErrors && Object.keys(parsed.extraErrors).length) summary.extraErrors = parsed.extraErrors; }
-        } catch { /* keep the summary lean */ }
-      }
+    const lastExtra = await getState(db, "atera_extra_last");
+    if (lastExtra) {
+      const parsed = JSON.parse(lastExtra);
+      if (parsed && parsed.extra) { summary.extra = parsed.extra; if (parsed.extraErrors && Object.keys(parsed.extraErrors).length) summary.extraErrors = parsed.extraErrors; }
     }
-  } catch { /* the extra round never fails the sync */ }
+  } catch { /* the summary stays lean */ }
 
   // The hourly marker is set only when patch state actually came back
   // for at least one agent, so a run with nothing mapped yet does not
@@ -640,4 +533,113 @@ export async function runAteraSync(env) {
 
   summary.ok = true;
   return finish(`Atera sync complete. ${summary.inserted + summary.updated} computers mirrored, ${summary.unmappedDevices} waiting on mapping.${summary.monDevices ? ` ${summary.monDevices} monitoring devices mirrored.` : ""}`);
+}
+
+// Everything else Atera keeps, apart from tickets (Montek,
+// 2026-11-07: pull all of Atera's data into the portal, tickets
+// aside). This runs as its OWN scheduled invocation (hourly cron in
+// wrangler.toml): inside the main sync it died on the per-invocation
+// subrequest limit, because the three syncs share one budget.
+// Every collection is independent: one Atera refuses records its
+// error in 'atera_extra_last' and the rest still land.
+export async function runAteraExtra(env) {
+  const db = env.DB;
+  if (!env.ATERA_API_KEY) return { ok: false, message: "No Atera API key is saved yet." };
+  const { results: mapRows } = await db.prepare(
+    "SELECT site_id, location_id FROM sync_sites WHERE provider = 'atera' AND location_id IS NOT NULL").all().catch(() => ({ results: [] }));
+  const mapping = new Map((mapRows || []).map((r) => [r.site_id, r.location_id]));
+  const extra = { contacts: 0, contracts: 0, invoices: 0, expenses: 0, products: 0, customValues: 0, kb: 0, departments: 0, waitingCustomers: 0 };
+  const extraErrors = {};
+  let answered = 0;
+  const locsByCustomer = new Map();
+  for (const [k, loc] of mapping) {
+    const m = String(k).match(/^cust:([^:]+)/);
+    if (!m) continue;
+    if (!locsByCustomer.has(m[1])) locsByCustomer.set(m[1], new Set());
+    locsByCustomer.get(m[1]).add(loc);
+  }
+  const tryPaths = async (paths) => {
+    let err = null;
+    for (const p of paths) { try { return await listAll(env, p); } catch (e) { err = e; } }
+    throw err || new Error("Atera did not answer.");
+  };
+  const waiting = new Set();
+  const perCustomer = async (kind, paths, shape, cap) => {
+    try {
+      const raw = await tryPaths(paths);
+      answered++;
+      const byCustomer = new Map();
+      for (const item of raw) {
+        const shaped = shape(item);
+        if (!shaped) continue;
+        const cid = shaped.__cid != null ? String(shaped.__cid) : null;
+        delete shaped.__cid;
+        if (!cid) continue;
+        if (!byCustomer.has(cid)) byCustomer.set(cid, []);
+        byCustomer.get(cid).push(shaped);
+      }
+      const written = new Set();
+      for (const [cid, list] of byCustomer) {
+        const locs = locsByCustomer.get(cid);
+        if (!locs) { waiting.add(cid); continue; }
+        extra[kind] += Math.min(list.length, cap);
+        for (const loc of locs) {
+          try { await saveSnapshot(db, loc, "atera_" + kind, { [kind]: list.slice(0, cap) }); written.add(loc); } catch { /* 0011 */ }
+        }
+      }
+      for (const loc of mapping.values()) {
+        if (!written.has(loc)) { try { await saveSnapshot(db, loc, "atera_" + kind, { [kind]: [] }); } catch { /* 0011 */ } }
+      }
+    } catch (e) { extraErrors[kind] = String(e.message || e).slice(0, 90); }
+  };
+  const personName = (o) => pick(o, "FullName", "ContactName", "Name") || [pick(o, "FirstName"), pick(o, "LastName")].filter(Boolean).join(" ") || null;
+  await perCustomer("contacts", ["/api/v3/contacts"], (o) => {
+    const name = personName(o);
+    if (!name) return null;
+    return { __cid: pick(o, "CustomerID", "CustomerId"), name: String(name), email: pick(o, "Email", "EmailAddress"), phone: pick(o, "Phone", "PhoneNumber", "MobilePhone", "CellPhone"), title: pick(o, "Title", "JobTitle", "Position") };
+  }, 200);
+  await perCustomer("contracts", ["/api/v3/contracts"], (o) => ({
+    __cid: pick(o, "CustomerID", "CustomerId"),
+    name: String(pick(o, "ContractName", "Name", "Title") || "Contract"),
+    type: pick(o, "ContractType", "Type"),
+    start: isoDate(pick(o, "StartDate", "Start")),
+    end: isoDate(pick(o, "EndDate", "End")),
+    amount: pick(o, "Amount", "Value", "Price"),
+  }), 50);
+  await perCustomer("invoices", ["/api/v3/invoices"], (o) => ({
+    __cid: pick(o, "CustomerID", "CustomerId"),
+    number: pick(o, "InvoiceNumber", "InvoiceID", "InvoiceId", "Number"),
+    date: isoDate(pick(o, "InvoiceDate", "Date", "CreatedDate")),
+    total: pick(o, "Total", "TotalAmount", "Amount"),
+    status: pick(o, "Status", "InvoiceStatus"),
+  }), 50);
+  await perCustomer("expenses", ["/api/v3/expenses"], (o) => ({
+    __cid: pick(o, "CustomerID", "CustomerId"),
+    name: String(pick(o, "Description", "ExpenseName", "Name") || "Expense"),
+    date: isoDate(pick(o, "Date", "ExpenseDate", "CreatedDate")),
+    amount: pick(o, "Amount", "Cost", "Price"),
+  }), 100);
+  const account = { products: [], customValues: [], kb: [], departments: [] };
+  const accountKind = async (key, paths, shape, cap) => {
+    try {
+      const raw = await tryPaths(paths);
+      answered++;
+      account[key] = raw.map(shape).filter(Boolean).slice(0, cap);
+      extra[key] = account[key].length;
+    } catch (e) { extraErrors[key] = String(e.message || e).slice(0, 90); }
+  };
+  await accountKind("products", ["/api/v3/products"], (o) => ({ name: String(pick(o, "ProductName", "Name") || "Product"), price: pick(o, "Price", "Rate", "Amount"), unit: pick(o, "Unit", "Type") }), 200);
+  await accountKind("customValues", ["/api/v3/customvalues", "/api/v3/custom-values"], (o) => ({ name: String(pick(o, "FieldName", "Name", "CustomFieldName") || "Custom value"), value: pick(o, "Value", "CustomValue", "FieldValue") }), 200);
+  await accountKind("kb", ["/api/v3/knowledgebase", "/api/v3/kb"], (o) => ({ title: String(pick(o, "Title", "ArticleTitle", "Name") || "Article") }), 200);
+  await accountKind("departments", ["/api/v3/departments"], (o) => ({ name: String(pick(o, "DepartmentName", "Name") || "Department") }), 100);
+  extra.waitingCustomers = waiting.size;
+  if (answered > 0) {
+    account.at = new Date().toISOString();
+    await setState(db, "atera_account", JSON.stringify(account));
+    await setState(db, "atera_extra_at", new Date().toISOString());
+    await setState(db, "atera_extra_last", JSON.stringify({ extra, extraErrors, at: new Date().toISOString() }));
+  } else if (Object.keys(extraErrors).length) {
+    await setState(db, "atera_extra_last", JSON.stringify({ extra, extraErrors, at: new Date().toISOString() }));
+  }
+  return { ok: answered > 0, extra, extraErrors };
 }

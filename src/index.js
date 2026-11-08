@@ -10,7 +10,7 @@ import * as admin from "./pages-admin.js";
 import * as places from "./places.js";
 import { runUnifiSync } from "./unifi.js";
 import { runSophosSync } from "./sophos.js";
-import { runAteraSync } from "./atera.js";
+import { runAteraSync, runAteraExtra } from "./atera.js";
 
 function notFound(user) {
   const res = errorPage({ title: "Not found", message: "That page does not exist.", user });
@@ -29,6 +29,10 @@ export default {
   // Hourly device sync (cron in wrangler.toml). Each sync records its own
   // outcome for the Device sync page and never throws past this handler.
   async scheduled(event, env, ctx) {
+    // The hourly cron pulls the rest of Atera's data on its own: the
+    // three syncs together use most of one invocation's subrequest
+    // budget, and the extra Atera round starved inside them.
+    if (event.cron === "7 * * * *") { ctx.waitUntil(runAteraExtra(env)); return; }
     const jobs = [runUnifiSync(env), runSophosSync(env), runAteraSync(env)];
     // Monthly Office IT report on the 1st; the sender itself records
     // the month marker, so extra hourly runs in between are no-ops.
