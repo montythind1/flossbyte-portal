@@ -17,15 +17,27 @@ function apiBase(env) {
   return String(env.STRIPE_API_BASE || "https://api.stripe.com").replace(/\/+$/, "");
 }
 
+// Card payments carry a disclosed 3% processing fee, added as its own
+// line on Stripe's page (Montek, 2026-11-08). Bank (ACH) payments never
+// carry it. 3% of the face amount stays under Stripe's actual cost on
+// the charged total (2.9% of the larger amount plus 30 cents) and under
+// the card networks' 3% surcharge ceiling.
+export function cardFeeCents(amountCents) {
+  return Math.round(Number(amountCents || 0) * 0.03);
+}
+
 // Starts a Stripe Checkout session for one unpaid invoice and returns the
 // session (its .url is where the customer is sent to pay). The invoice id
 // rides in the session metadata and as the client reference, which is how
 // the webhook later knows which invoice a payment belongs to. The
 // idempotency key is per invoice, amount, and day, so a double click
 // reuses the same session instead of opening two checkouts.
-export async function createInvoiceCheckout(env, inv, orgName, origin) {
+export async function createInvoiceCheckout(env, inv, orgName, origin, method) {
+  const byCard = method !== "bank";
+  const fee = byCard ? cardFeeCents(inv.amount_cents) : 0;
   const params = new URLSearchParams();
   params.set("mode", "payment");
+  params.set("payment_method_types[0]", byCard ? "card" : "us_bank_account");
   params.set("success_url", `${origin}/app/invoices/${inv.id}?paid=1`);
   params.set("cancel_url", `${origin}/app/invoices/${inv.id}`);
   params.set("client_reference_id", String(inv.id));
@@ -34,7 +46,14 @@ export async function createInvoiceCheckout(env, inv, orgName, origin) {
   params.set("line_items[0][price_data][unit_amount]", String(inv.amount_cents));
   params.set("line_items[0][price_data][product_data][name]", `INV-${1000 + inv.id} - ${inv.title}`);
   if (orgName) params.set("line_items[0][price_data][product_data][description]", orgName);
+  if (fee > 0) {
+    params.set("line_items[1][quantity]", "1");
+    params.set("line_items[1][price_data][currency]", "usd");
+    params.set("line_items[1][price_data][unit_amount]", String(fee));
+    params.set("line_items[1][price_data][product_data][name]", "Card processing fee (3%)");
+  }
   params.set("metadata[invoice_id]", String(inv.id));
+  params.set("metadata[pay_method]", byCard ? "card" : "bank");
   params.set("payment_intent_data[metadata][invoice_id]", String(inv.id));
   const day = new Date().toISOString().slice(0, 10);
   const res = await fetch(`${apiBase(env)}/v1/checkout/sessions`, {
@@ -42,7 +61,7 @@ export async function createInvoiceCheckout(env, inv, orgName, origin) {
     headers: {
       Authorization: `Bearer ${env.STRIPE_SECRET_KEY}`,
       "Content-Type": "application/x-www-form-urlencoded",
-      "Idempotency-Key": `flossbyte-inv-${inv.id}-${inv.amount_cents}-${day}`,
+      "Idempotency-Key": `flossbyte-inv-${inv.id}-${inv.amount_cents}-${byCard ? "card" : "bank"}-${day}`,
       "User-Agent": "FlossBytePortal/1.0",
     },
     body: params.toString(),
@@ -104,9 +123,12 @@ async function findOrgBySubscription(db, subId) {
 // The org and quote ids ride in both the session metadata and the
 // subscription metadata, so later subscription events can be matched
 // back to the plan even without the session.
-export async function createPlanCheckout(env, quote, totalCents, orgName, origin) {
+export async function createPlanCheckout(env, quote, totalCents, orgName, origin, method) {
+  const byCard = method !== "bank";
+  const fee = byCard ? cardFeeCents(totalCents) : 0;
   const params = new URLSearchParams();
   params.set("mode", "subscription");
+  params.set("payment_method_types[0]", byCard ? "card" : "us_bank_account");
   params.set("success_url", `${origin}/app/billing?plan=started`);
   params.set("cancel_url", `${origin}/app/quotes/${quote.id}`);
   params.set("line_items[0][quantity]", "1");
@@ -115,17 +137,27 @@ export async function createPlanCheckout(env, quote, totalCents, orgName, origin
   params.set("line_items[0][price_data][product_data][name]", quote.title);
   if (orgName) params.set("line_items[0][price_data][product_data][description]", orgName);
   params.set("line_items[0][price_data][recurring][interval]", "month");
+  if (fee > 0) {
+    params.set("line_items[1][quantity]", "1");
+    params.set("line_items[1][price_data][currency]", "usd");
+    params.set("line_items[1][price_data][unit_amount]", String(fee));
+    params.set("line_items[1][price_data][product_data][name]", "Card processing fee (3%)");
+    params.set("line_items[1][price_data][recurring][interval]", "month");
+  }
   params.set("metadata[portal_customer_id]", String(quote.customer_id));
   params.set("metadata[quote_id]", String(quote.id));
+  params.set("metadata[pay_method]", byCard ? "card" : "bank");
+  params.set("metadata[plan_amount_cents]", String(totalCents));
   params.set("subscription_data[metadata][portal_customer_id]", String(quote.customer_id));
   params.set("subscription_data[metadata][quote_id]", String(quote.id));
+  params.set("subscription_data[metadata][pay_method]", byCard ? "card" : "bank");
   const day = new Date().toISOString().slice(0, 10);
   const res = await fetch(`${apiBase(env)}/v1/checkout/sessions`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${env.STRIPE_SECRET_KEY}`,
       "Content-Type": "application/x-www-form-urlencoded",
-      "Idempotency-Key": `flossbyte-plan-${quote.id}-${totalCents}-${day}`,
+      "Idempotency-Key": `flossbyte-plan-${quote.id}-${totalCents}-${byCard ? "card" : "bank"}-${day}`,
       "User-Agent": "FlossBytePortal/1.0",
     },
     body: params.toString(),
@@ -232,7 +264,8 @@ export async function stripeWebhook(env, request) {
           sub: obj.subscription || null,
           cus: obj.customer || null,
           status: "active",
-          amountCents: Number(obj.amount_total || 0),
+          amountCents: Number((obj.metadata && obj.metadata.plan_amount_cents) || obj.amount_total || 0),
+          payMethod: (obj.metadata && obj.metadata.pay_method) || null,
           quoteId: Number((obj.metadata && obj.metadata.quote_id) || 0) || null,
           at: new Date().toISOString(),
         });
@@ -246,10 +279,18 @@ export async function stripeWebhook(env, request) {
       if (invoiceId) {
         const inv = await env.DB.prepare("SELECT * FROM invoices WHERE id = ?")
           .bind(invoiceId).first().catch(() => null);
-        if (inv && inv.status === "unpaid" && Number(s.amount_total) === Number(inv.amount_cents)) {
+        // A card payment's total is the invoice amount plus the 3% fee;
+        // a bank payment's total is the amount itself. Sessions opened
+        // before the fee existed match on the plain amount, so both
+        // totals are accepted, and the recorded method follows the
+        // session's own pay_method tag.
+        const payMethod = (s.metadata && s.metadata.pay_method) || "";
+        const expected = Number(inv ? inv.amount_cents : 0) + (payMethod === "bank" ? 0 : cardFeeCents(inv ? inv.amount_cents : 0));
+        if (inv && inv.status === "unpaid" &&
+            (Number(s.amount_total) === expected || Number(s.amount_total) === Number(inv.amount_cents))) {
           await env.DB.prepare(
             "UPDATE invoices SET status = 'paid', paid_at = datetime('now'), paid_method = ?, updated_at = datetime('now') WHERE id = ?")
-            .bind("card (Stripe)", invoiceId).run();
+            .bind(payMethod === "bank" ? "bank (Stripe)" : "card (Stripe)", invoiceId).run();
           await audit(env.DB, null, "invoice_paid", "invoice", invoiceId,
             "Stripe payment " + (s.payment_intent || ""));
         }
@@ -267,8 +308,9 @@ export async function stripeWebhook(env, request) {
           const title = `Monthly plan - ${MONTHS[when.getUTCMonth()]} ${when.getUTCFullYear()}`;
           await env.DB.prepare(
             `INSERT INTO invoices (customer_id, quote_id, title, kind, amount_cents, status, paid_at, paid_method, created_by)
-             VALUES (?, ?, ?, 'standard', ?, 'paid', datetime('now'), 'card (Stripe plan)', NULL)`)
-            .bind(found.orgId, found.state.quoteId || null, title, Number(obj.amount_paid || 0)).run();
+             VALUES (?, ?, ?, 'standard', ?, 'paid', datetime('now'), ?, NULL)`)
+            .bind(found.orgId, found.state.quoteId || null, title, Number(obj.amount_paid || 0),
+              found.state.payMethod === "bank" ? "bank (Stripe plan)" : "card (Stripe plan)").run();
           await setState(env.DB, dedupKey, new Date().toISOString());
         }
         await savePlanState(env.DB, found.orgId, {

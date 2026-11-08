@@ -11,7 +11,7 @@ import { splitName, joinName, normalizePhone } from "./auth.js";
 import { issueCollectorToken, collectorTokenState } from "./collector.js";
 import { buildGeniusContext, geniusAnswer, geniusFooter, isExactLookupQuestion, isLiveChatRequest } from "./genius.js";
 import { chatReady, getOpenThread, threadMessages, addChatMessage, startChat, endChat, renderChatMessages, notifyChatStarted, setTyping, clearTyping, getTyping } from "./chat.js";
-import { stripeOn, createInvoiceCheckout, createPlanCheckout, getPlanState } from "./stripe.js";
+import { stripeOn, createInvoiceCheckout, createPlanCheckout, getPlanState, cardFeeCents } from "./stripe.js";
 
 function orgOrigin(env) { return env.APP_ORIGIN || "https://portal.flossbyte.com"; }
 
@@ -2900,9 +2900,9 @@ export async function quoteViewPage(env, request, user, quoteId) {
     if (quote.kind === "plan" && stripeOn(env)) {
       const st = await getPlanState(env.DB, org);
       if (st && st.status === "active") {
-        planNote = ` Monthly plan is active at ${fmtMoney(st.amountCents)}/mo.`;
+        planNote = ` Monthly plan is active at ${fmtMoney(st.amountCents)}/mo${st.payMethod ? `, paying by ${st.payMethod === "bank" ? "bank" : "card"}` : ""}.`;
       } else {
-        planForm = `<form method="post" action="/app/quotes/${quote.id}/plan-pay" style="margin-top:10px"><button class="btn" type="submit">Set up monthly payment</button></form><p class="muted">You will enter your card on Stripe's secure page. It is charged monthly until you cancel with FlossByte.</p>`;
+        planForm = `<form method="post" action="/app/quotes/${quote.id}/plan-pay" style="margin-top:10px"><button class="btn" type="submit" name="method" value="bank">Set up monthly payment by bank (no fee)</button> <button class="btn secondary" type="submit" name="method" value="card">Set up by card (+3% fee)</button></form><p class="muted">You will enter your details on Stripe's secure page, charged monthly until you cancel with FlossByte. Bank payment has no fee; card payments add a 3% processing fee, shown on the payment page.</p>`;
       }
     }
     statusBlock = `<div class="notice"><strong>Accepted</strong> by ${esc(quote.accepted_by || "")} on ${esc(fmtDateUS((quote.accepted_at || "")))}.
@@ -2964,14 +2964,9 @@ export async function quoteAcceptPost(env, request, user, quoteId) {
     });
     await alertFlossByte(env, "quote_accepted", mail);
   }
-  if (quote.kind === "plan" && stripeOn(env) && deposit === 0) {
-    try {
-      const c2 = await env.DB.prepare("SELECT name FROM customers WHERE id = ?").bind(org).first();
-      const s = await createPlanCheckout(env, quote, total, c2 ? c2.name : "", orgOrigin(env));
-      return Response.redirect(s.url, 303);
-    } catch { /* fall through to the normal redirect */ }
-  }
-  return redirect(`/app/quotes/${quoteId}?msg=` + encodeURIComponent("Quote accepted. Thank you." + invoiceNote));
+  const planNote = quote.kind === "plan" && stripeOn(env) && deposit === 0
+    ? " One more step: set up the monthly payment on this page." : "";
+  return redirect(`/app/quotes/${quoteId}?msg=` + encodeURIComponent("Quote accepted. Thank you." + invoiceNote + planNote));
 }
 
 export async function quoteDeclinePost(env, request, user, quoteId) {
@@ -3003,8 +2998,10 @@ export async function quotePlanPayPost(env, request, user, quoteId) {
   const st = await getPlanState(env.DB, org);
   if (st && st.status === "active") return redirect("/app/billing");
   const cust = await env.DB.prepare("SELECT name FROM customers WHERE id = ?").bind(org).first();
+  const pf = await request.formData().catch(() => null);
+  const method = pf && String(pf.get("method") || "") === "card" ? "card" : "bank";
   try {
-    const s = await createPlanCheckout(env, loaded.quote, loaded.total, cust ? cust.name : "", orgOrigin(env));
+    const s = await createPlanCheckout(env, loaded.quote, loaded.total, cust ? cust.name : "", orgOrigin(env), method);
     return Response.redirect(s.url, 303);
   } catch {
     return redirect(`/app/quotes/${quoteId}?err=` + encodeURIComponent("The payment page could not open. Please try again, or call (669) 237-2264."));
@@ -3016,7 +3013,7 @@ async function invoicesSection(env, org) {
     "SELECT * FROM invoices WHERE customer_id = ? AND status != 'void' ORDER BY created_at DESC").bind(org).all();
   const rows = (results || []).map((inv) => {
     const pay = inv.status !== "unpaid" ? ""
-      : stripeOn(env) ? `<form method="post" action="/app/invoices/${inv.id}/pay" style="display:inline"><button class="btn small" type="submit">Pay</button></form>`
+      : stripeOn(env) ? `<a class="btn small" href="/app/invoices/${inv.id}">Pay</a>`
       : inv.pay_url ? `<a class="btn small" href="${esc(inv.pay_url)}" target="_blank" rel="noopener">Pay</a>`
       : `<span class="muted">We'll email you a payment link.</span>`;
     const note = inv.kind === "deposit"
@@ -3039,7 +3036,7 @@ export async function invoiceViewPage(env, request, user, invoiceId) {
   if (!inv) return denied(user, 404);
   const cust = await env.DB.prepare("SELECT name FROM customers WHERE id = ?").bind(org).first();
   const pay = inv.status !== "unpaid" ? ""
-    : stripeOn(env) ? `<form method="post" action="/app/invoices/${inv.id}/pay" style="margin-top:16px"><button class="btn" type="submit">Pay ${fmtMoney(inv.amount_cents)} by card</button></form><p class="muted" style="margin-top:8px">Secure payment by Stripe. This invoice marks itself paid as soon as the payment lands.</p>`
+    : stripeOn(env) ? `<form method="post" action="/app/invoices/${inv.id}/pay" style="margin-top:16px"><button class="btn" type="submit" name="method" value="card">Pay ${fmtMoney(inv.amount_cents)} by card</button> <button class="btn secondary" type="submit" name="method" value="bank">Pay by bank (no fee)</button></form><p class="muted" style="margin-top:8px">Secure payment by Stripe. Card payments add a 3% processing fee (${fmtMoney(cardFeeCents(inv.amount_cents))}), shown on the payment page before you pay. Bank payment has no fee. This invoice marks itself paid as soon as the payment lands.</p>`
     : inv.pay_url ? `<p style="margin-top:16px"><a class="btn" href="${esc(inv.pay_url)}" target="_blank" rel="noopener">Pay ${fmtMoney(inv.amount_cents)}</a></p>`
     : `<p class="muted" style="margin-top:16px">We'll email you a payment link for this invoice. Questions: call (669) 237-2264.</p>`;
   const rail = await railLocs(env, user);
@@ -3073,14 +3070,16 @@ export async function invoicePayPost(env, request, user, invoiceId) {
   if (inv.status !== "unpaid") return redirect(`/app/invoices/${inv.id}`);
   if (!stripeOn(env)) {
     if (inv.pay_url) return Response.redirect(inv.pay_url, 302);
-    return redirect(`/app/invoices/${inv.id}?err=` + encodeURIComponent("Card payment is not switched on yet. Please call (669) 237-2264."));
+    return redirect(`/app/invoices/${inv.id}?err=` + encodeURIComponent("Online payment is not switched on yet. Please call (669) 237-2264."));
   }
   const cust = await env.DB.prepare("SELECT name FROM customers WHERE id = ?").bind(org).first();
+  const pf = await request.formData().catch(() => null);
+  const method = pf && String(pf.get("method") || "") === "bank" ? "bank" : "card";
   try {
-    const session = await createInvoiceCheckout(env, inv, cust ? cust.name : "", orgOrigin(env));
+    const session = await createInvoiceCheckout(env, inv, cust ? cust.name : "", orgOrigin(env), method);
     return Response.redirect(session.url, 303);
   } catch {
-    return redirect(`/app/invoices/${inv.id}?err=` + encodeURIComponent("The card payment page could not open. Please try again, or call (669) 237-2264."));
+    return redirect(`/app/invoices/${inv.id}?err=` + encodeURIComponent("The payment page could not open. Please try again, or call (669) 237-2264."));
   }
 }
 
