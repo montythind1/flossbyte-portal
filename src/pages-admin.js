@@ -4,7 +4,7 @@ import { page, redirect, esc, icon, fmtDateUS, withStatus } from "./layout.js";
 import { createAuthToken, revokeAllSessions, verifyPassword, normalizePhone, splitName, joinName } from "./auth.js";
 import { audit, isSuperAdmin, grantUserAccess, findCustomerByContactEmail, isValidEmail } from "./access.js";
 import { sendEmail, wrap, inviteEmail, newCustomerNoticeEmail, ownershipTransferEmail, quoteSentEmail } from "./email.js";
-import { sendInvoiceIssued, sendInvoiceReminder, sendQuoteReminder } from "./reminders.js";
+import { sendInvoiceIssued, sendInvoiceReminder, sendQuoteReminder, getReminderSettings } from "./reminders.js";
 import { resendInviteEmail } from "./pages-public.js";
 import { runUnifiSync, lastUnifiSync } from "./unifi.js";
 import { runSophosSync, lastSophosSync } from "./sophos.js";
@@ -162,7 +162,7 @@ const ACTION_LABEL = {
   equipment_edit: "Edited equipment", equipment_delete: "Deleted equipment", equipment_merge: "Merged duplicate equipment", document_upload: "Uploaded a document",
   quote_accept: "Accepted a quote", quote_create: "Created a quote", quote_send: "Sent a quote",
   quote_decline: "Declined a quote", quote_delete: "Deleted a quote",
-  invoice_create: "Created an invoice", invoice_paid: "Marked an invoice paid", invoice_void: "Voided an invoice", stripe_error: "Stripe payment error", reminder_sent: "Sent a reminder",
+  invoice_create: "Created an invoice", invoice_paid: "Marked an invoice paid", invoice_void: "Voided an invoice", stripe_error: "Stripe payment error", reminder_sent: "Sent a reminder", reminder_settings: "Changed reminder settings",
   product_request: "Requested a service", product_on: "Turned a product on", product_off: "Turned a product off",
   user_remove: "Removed a user", user_invite: "Invited a user", user_connect: "Connected a login to a client",
   user_update: "Updated a login's name",
@@ -1478,6 +1478,7 @@ export async function syncPage(env, request, user) {
   const mutedRow = await env.DB.prepare("SELECT value FROM system_state WHERE key = 'alerts_muted_until'").first().catch(() => null);
   const mutedUntil = mutedRow && mutedRow.value && new Date(mutedRow.value).getTime() > Date.now() ? mutedRow.value : "";
   const lastReportRow = await env.DB.prepare("SELECT value FROM system_state WHERE key = 'last_monthly_report'").first().catch(() => null);
+  const remCfg = await getReminderSettings(env.DB);
   const lastReport = lastReportRow ? lastReportRow.value : "";
   const body = `${adminNav("sync")}<h1>Device sync</h1>
     <div class="card"><h3>UniFi</h3>
@@ -1513,8 +1514,20 @@ export async function syncPage(env, request, user) {
       </form>
       <p class="muted" style="margin-top:16px">On the 1st of each month, every practice's main admin gets an Office IT report by email: internet uptime, what changed, tickets opened and closed, and what expires next.${lastReport ? ` Last sent for ${esc(lastReport)}.` : ""}</p>
       <form method="post" action="/admin/sync/report"><button class="btn small" type="submit">Send the report to all practices now</button></form>
+    </div>
+    <div class="card"><h3>Billing reminders</h3>
+      <p class="muted">Quotes and invoices chase themselves by email. An invoice is also emailed the day it is created and again on its due date; the overdue reminders below are counted in days after the due date. Set any number to 0 to turn that one reminder off. Reminders stop on their own when a quote is answered or an invoice is paid.</p>
+      <form method="post" action="/admin/sync/reminders">
+        <div class="row" style="gap:16px;flex-wrap:wrap">
+          <label>Quote follow-up 1<br><span class="row" style="gap:6px"><input type="number" name="quote1" min="0" max="90" value="${remCfg.quote1}" style="max-width:84px"><span class="muted">days after sending</span></span></label>
+          <label>Quote follow-up 2<br><span class="row" style="gap:6px"><input type="number" name="quote2" min="0" max="90" value="${remCfg.quote2}" style="max-width:84px"><span class="muted">days after sending</span></span></label>
+          <label>Overdue reminder 1<br><span class="row" style="gap:6px"><input type="number" name="od1" min="0" max="90" value="${remCfg.od1}" style="max-width:84px"><span class="muted">days past due</span></span></label>
+          <label>Overdue reminder 2<br><span class="row" style="gap:6px"><input type="number" name="od2" min="0" max="90" value="${remCfg.od2}" style="max-width:84px"><span class="muted">days past due</span></span></label>
+        </div>
+        <p style="margin-top:14px"><button class="btn small" type="submit">Save reminder settings</button></p>
+      </form>
     </div>`;
-  return page({ title: "Device sync", user, body, flash: q(request).get("msg") || undefined });
+  return page({ title: "Device sync", user, body, flash: q(request).get("msg") || undefined, error: q(request).get("err") || undefined });
 }
 
 export async function syncMutePost(env, request, user) {
@@ -1535,6 +1548,27 @@ export async function syncReportPost(env, request, user) {
   const r = await sendMonthlyReports(env, true);
   await audit(env.DB, user.id, "monthly_report_send", "sync", null, `sent ${r.sent}`);
   return redirect("/admin/sync?msg=" + encodeURIComponent(`Monthly Office IT report sent to ${r.sent} practice inbox${r.sent === 1 ? "" : "es"}.`));
+}
+
+export async function syncRemindersPost(env, request, user) {
+  const f = await request.formData();
+  const num = (n) => {
+    const v = parseInt(String(f.get(n) || ""), 10);
+    return Number.isFinite(v) ? Math.min(90, Math.max(0, v)) : null;
+  };
+  const quote1 = num("quote1"), quote2 = num("quote2"), od1 = num("od1"), od2 = num("od2");
+  if ([quote1, quote2, od1, od2].some((v) => v === null)) {
+    return redirect("/admin/sync?err=" + encodeURIComponent("Reminder days have to be whole numbers between 0 and 90."));
+  }
+  if ((quote1 > 0 && quote2 > 0 && quote2 <= quote1) || (od1 > 0 && od2 > 0 && od2 <= od1)) {
+    return redirect("/admin/sync?err=" + encodeURIComponent("The second reminder has to be later than the first, or 0 to turn it off."));
+  }
+  await env.DB.prepare(
+    "INSERT INTO system_state (key, value) VALUES ('reminder_settings', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+    .bind(JSON.stringify({ quote1, quote2, od1, od2 })).run();
+  await audit(env.DB, user.id, "reminder_settings", "sync", null,
+    `Quote follow-ups at ${quote1} and ${quote2} days; overdue at ${od1} and ${od2} days`);
+  return redirect("/admin/sync?msg=" + encodeURIComponent("Reminder settings saved."));
 }
 
 // The monthly Office IT report: one email per practice, to its main

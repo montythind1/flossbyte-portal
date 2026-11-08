@@ -129,6 +129,7 @@ async function route(request, env) {
     if (path === "/admin/sync/dup-dismiss" && method === "POST") return admin.syncDupDismissPost(env, request, user);
     if (path === "/admin/sync/mute" && method === "POST") return admin.syncMutePost(env, request, user);
     if (path === "/admin/sync/report" && method === "POST") return admin.syncReportPost(env, request, user);
+    if (path === "/admin/sync/reminders" && method === "POST") return admin.syncRemindersPost(env, request, user);
     m = path.match(/^\/admin\/transfer\/(\d+)$/);
     if (m && method === "GET") return admin.transferPage(env, request, user, Number(m[1]));
     if (m && method === "POST") return admin.transferPost(env, request, user, Number(m[1]));

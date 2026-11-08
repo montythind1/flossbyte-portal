@@ -36,6 +36,23 @@ async function stageOf(db, key) {
   try { return JSON.parse((await getState(db, key)) || "{}"); } catch { return {}; }
 }
 
+// Reminder timing, configurable on the Device sync page and stored as
+// one JSON row. Each value is a day count; 0 turns that reminder off.
+export async function getReminderSettings(db) {
+  const dflt = { quote1: 3, quote2: 7, od1: 3, od2: 7 };
+  let raw = null;
+  try { raw = JSON.parse((await getState(db, "reminder_settings")) || "null"); } catch { raw = null; }
+  const pick = (v, d) => {
+    const n = parseInt(v, 10);
+    return Number.isFinite(n) ? Math.min(90, Math.max(0, n)) : d;
+  };
+  if (!raw || typeof raw !== "object") return dflt;
+  return {
+    quote1: pick(raw.quote1, dflt.quote1), quote2: pick(raw.quote2, dflt.quote2),
+    od1: pick(raw.od1, dflt.od1), od2: pick(raw.od2, dflt.od2),
+  };
+}
+
 // The org contact is the reminder address (the same inbox that gets the
 // quote email); fall back to the main admin login when no contact
 // email is on file.
@@ -109,13 +126,14 @@ export async function runBillingReminders(env) {
   if ((await getState(db, "reminders_last_run")) === today) return;
   await setState(db, "reminders_last_run", today);
   const now = dayNum(today);
+  const cfg = await getReminderSettings(db);
 
   const { results: quotes } = await db.prepare(
     "SELECT * FROM quotes WHERE status = 'sent' AND sent_at IS NOT NULL").all().catch(() => ({ results: [] }));
   for (const q of quotes || []) {
     try {
       const age = now - dayNum(q.sent_at);
-      const due = age >= 7 ? 2 : age >= 3 ? 1 : 0;
+      const due = cfg.quote2 > 0 && age >= cfg.quote2 ? 2 : cfg.quote1 > 0 && age >= cfg.quote1 ? 1 : 0;
       const key = `rem_quote_${q.id}`;
       const st = await stageOf(db, key);
       if (due > (st.stage || 0) && await sendQuoteReminder(env, q, due === 2)) {
@@ -123,7 +141,7 @@ export async function runBillingReminders(env) {
         st.at = new Date().toISOString();
         await setState(db, key, JSON.stringify(st));
         await audit(db, null, "reminder_sent", "quote", q.id,
-          due === 2 ? "Quote follow-up (7 days)" : "Quote follow-up (3 days)");
+          due === 2 ? `Quote follow-up (${cfg.quote2} days)` : `Quote follow-up (${cfg.quote1} days)`);
       }
     } catch { /* one bad row never stops the sweep */ }
   }
@@ -148,7 +166,13 @@ export async function runBillingReminders(env) {
       }
       if (inv.due_date && !issuedNow) {
         const late = now - dayNum(inv.due_date);
-        const due = late >= 7 ? 4 : late >= 3 ? 3 : late >= 0 ? 2 : 0;
+        // Stage 2 is the due-date reminder: it fires on the due date
+        // itself (one day of grace for a missed run). After that, only
+        // the configured overdue stages fire; 0 turns a stage off.
+        const due = late < 0 ? 0
+          : cfg.od2 > 0 && late >= cfg.od2 ? 4
+          : cfg.od1 > 0 && late >= cfg.od1 ? 3
+          : late <= 1 ? 2 : 0;
         if (due > stage && await sendInvoiceReminder(env, inv, due === 2 ? "due" : "overdue", Math.max(late, 0))) {
           const st2 = await stageOf(db, key);
           st2.stage = due;
