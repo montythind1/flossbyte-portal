@@ -3,7 +3,7 @@
 import { page, redirect, esc, icon, fmtDateUS, withStatus } from "./layout.js";
 import { createAuthToken, revokeAllSessions, verifyPassword, normalizePhone, splitName, joinName } from "./auth.js";
 import { audit, isSuperAdmin, grantUserAccess, findCustomerByContactEmail, isValidEmail, productEnabled, geniusEnabled } from "./access.js";
-import { onOtpToggledOn, onInvoicePaid } from "./projects.js";
+import { onOtpToggledOn, onInvoicePaid, ensureProjectForLocation } from "./projects.js";
 import { sendEmail, wrap, inviteEmail, newCustomerNoticeEmail, ownershipTransferEmail, quoteSentEmail } from "./email.js";
 import { sendInvoiceIssued, sendInvoiceReminder, sendQuoteReminder, getReminderSettings } from "./reminders.js";
 import { resendInviteEmail } from "./pages-public.js";
@@ -473,6 +473,15 @@ export async function createCustomerPost(env, request, user) {
     await env.DB.prepare(
       "INSERT INTO customer_products (customer_id, location_id, product, enabled, plan_note) VALUES (?, NULL, ?, ?, ?)")
       .bind(customerId, p.key, enabled, null).run();
+  }
+  // If the wizard turned One-Time Project on, each office gets its
+  // project record now, so the tracker exists from day one. (The
+  // Products-tab toggle creates it via onOtpToggledOn; the wizard
+  // writes product rows directly.) No activation email here: that
+  // email belongs to toggle transitions, and the read paths converge
+  // on the same ensure if this is ever missed.
+  for (const idx of Object.keys(locIdByIndex)) {
+    await ensureProjectForLocation(env.DB, customerId, locIdByIndex[idx]);
   }
   // The customer admin from step 1 becomes the organization's one main
   // admin: a customer_admin login with access to every location, flagged

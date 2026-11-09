@@ -88,6 +88,32 @@ export async function getOrCreateProject(db, loc) {
   return getProjectRow(db, loc.id);
 }
 
+// A project record must exist whenever One-Time Project is on for an
+// office, however the switch got turned on. The Products-tab toggle
+// creates it (onOtpToggledOn), but the create-organization wizard
+// writes the product rows directly and never did, which left
+// wizard-created offices with the switch on and no tracker anywhere.
+// This is the converging half, in the ensureGeniusProduct spirit:
+// called on the reads where a missing record is visible (the office
+// rail, the project page) and at wizard completion, it inserts a
+// fresh row only when the switch is effectively on for the office
+// and no row exists. An existing row, finished or not, is returned
+// untouched, and no row is ever created while the switch is off.
+// It sends no email: the activation email belongs to real toggle
+// transitions only.
+export async function ensureProjectForLocation(db, customerId, locationId) {
+  try {
+    await ensureProjectSchema(db);
+    const existing = await getProjectRow(db, locationId);
+    if (existing) return existing;
+    if (!(await productEnabled(db, customerId, locationId, "one_time_project"))) return null;
+    const loc = await db.prepare("SELECT id, customer_id FROM locations WHERE id = ? AND customer_id = ?")
+      .bind(locationId, customerId).first().catch(() => null);
+    if (!loc) return null;
+    return getOrCreateProject(db, loc);
+  } catch { return null; }
+}
+
 // Days of post-install support remaining once work is marked complete:
 // the full X on the completion day itself, counting down to zero.
 export function supportRemaining(project) {

@@ -15,7 +15,7 @@ import { stripeOn, createInvoiceCheckout, createPlanCheckout, getPlanState, card
 import { sendInvoiceIssued } from "./reminders.js";
 import { loadLinks } from "./links.js";
 import {
-  getProjectRow, getOrCreateProject, resolveBoundQuote, projectMoney, depositState,
+  getProjectRow, getOrCreateProject, ensureProjectForLocation, resolveBoundQuote, projectMoney, depositState,
   deriveStage, projectSteps, projectName, supportRemaining, supportEndDate, projectExpired,
   finalizeProject, otpProjectActive, geniusAvailable, onQuoteAccepted, sendProjectStageEmail,
 } from "./projects.js";
@@ -178,8 +178,11 @@ async function locNav(db, loc, active, fill) {
   // (otpProjectActive), or it is finished, stored or by the calendar
   // (an expired window is finished in effect; the project page
   // finalizes it on view), so the finished record stays one tap away.
-  // An office where the switch was flipped off mid-project, or that
-  // never had a project, gets no item.
+  // An office where the switch was flipped off mid-project gets no
+  // item. The record itself is ensured first, so an office whose
+  // switch came on without the toggle path (the create-organization
+  // wizard writes product rows directly) still gets its tracker.
+  await ensureProjectForLocation(db, loc.customer_id, loc.id);
   const proj = await getProjectRow(db, loc.id);
   const showProject = !!proj && (!!proj.finished || projectExpired(proj) ||
     (await otpProjectActive(db, loc.customer_id, loc.id)));
@@ -1034,6 +1037,10 @@ function nextStepLine(stage, ctx) {
 async function projectPageView(env, request, user, loc, prod) {
   const db = env.DB;
   const on = await productEnabled(db, loc.customer_id, loc.id, "one_time_project");
+  // Converge before loading: an office whose switch is on must have
+  // its project record (and its tracker) even if the switch came on
+  // through a path that never created one, like the org wizard.
+  await ensureProjectForLocation(db, loc.customer_id, loc.id);
   let project = await getProjectRow(db, loc.id);
   if (!on && !(project && project.finished)) return await lockedTile(env, user, loc, prod.name, prod.key);
   if (on && !project) project = await getOrCreateProject(db, loc);
