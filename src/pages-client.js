@@ -368,11 +368,17 @@ export async function productRequestPost(env, request, user, locationId) {
     await alertFlossByte(env, "product_request", mail);
     // Audience 2: the organization's own customer admins get a plain
     // confirmation. Best-effort: a failure here never blocks the
-    // request itself or the FlossByte notice above.
+    // request itself or the FlossByte notice above. "Customer admin"
+    // here uses the same definition as access.js: anyone with the
+    // role who is not disabled. An invited admin (the state the
+    // organization wizard and Add user leave a new admin in until
+    // they set a password) still has a working inbox and is exactly
+    // who should hear that their office requested a service; the old
+    // status = 'active' filter silently sent them nothing.
     try {
       const { results: cAdmins } = await env.DB.prepare(
         `SELECT DISTINCT u.name, u.email FROM user_access ua JOIN users u ON u.id = ua.user_id
-         WHERE ua.customer_id = ? AND u.kind = 'customer' AND u.role = 'customer_admin' AND u.status = 'active'`)
+         WHERE ua.customer_id = ? AND u.kind = 'customer' AND u.role = 'customer_admin' AND u.status != 'disabled'`)
         .bind(loc.customer_id).all();
       for (const ca of cAdmins || []) {
         const cMail = productRequestCustomerEmail(env, {
