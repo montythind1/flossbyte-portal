@@ -48,6 +48,13 @@ export async function ensureProjectSchema(db) {
                        "sow_accepted_at TEXT", "sow_accepted_by TEXT"]) {
       try { await db.prepare(`ALTER TABLE quotes ADD COLUMN ${col}`).run(); } catch { /* already there */ }
     }
+    // Customer date proposals live on the project row: up to three
+    // suggested dates (JSON array of YYYY-MM-DD strings), a free-text
+    // note, and who sent them. A proposal is a suggestion only; the
+    // confirmed date stays in scheduled_date, which only FlossByte sets.
+    for (const col of ["proposed_dates TEXT", "proposed_note TEXT", "proposed_by TEXT", "proposed_at TEXT"]) {
+      try { await db.prepare(`ALTER TABLE projects ADD COLUMN ${col}`).run(); } catch { /* already there */ }
+    }
     projectSchemaEnsured = true;
   } catch { /* schema not there yet (pre-migration env): retry on the next request */ }
 }
@@ -573,6 +580,7 @@ export async function onOtpToggledOn(env, customerId, locationId, actorId) {
       await db.prepare(
         `UPDATE projects SET finished = 0, finished_at = NULL, quote_id = NULL, name = NULL,
          scheduled_date = NULL, in_progress_at = NULL, work_complete_date = NULL,
+         proposed_dates = NULL, proposed_note = NULL, proposed_by = NULL, proposed_at = NULL,
          support_days = 30, updated_at = datetime('now') WHERE id = ?`).bind(proj.id).run();
       await audit(db, actorId || null, "project_restart", "project", proj.id, `location ${loc.id}`);
     }

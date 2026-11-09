@@ -322,6 +322,32 @@ export function projectStageEmail(env, { name, locationName, headline, linesHtml
   };
 }
 
+// FlossByte-side notice when a customer suggests dates for their
+// One-Time Project. Suggestions only: the body says plainly that
+// FlossByte confirms the final date, and the button lands on the
+// project page, whose controls card shows the proposal right above
+// the Scheduled date field. Display values are escaped by the
+// caller (same convention as projectStageEmail).
+export function projectDatesEmail(env, { projectName, customerName, locationName, dates, note, proposedBy, updated, link }) {
+  const heading = updated ? "Date suggestions updated" : "Date suggestions for a project";
+  const row = (label, value) => `<tr><td style="padding:5px 16px 5px 0;color:#5B6B82;white-space:nowrap;vertical-align:top">${label}</td><td style="padding:5px 0;font-weight:600">${value}</td></tr>`;
+  const dateList = dates && dates.length ? dates.join(", ") : "No specific dates, see the note";
+  return {
+    subject: `Date suggestions: ${projectName} — ${locationName}`,
+    html: wrap(heading, `
+      <p><strong>${customerName}</strong> / ${locationName}</p>
+      <p>${updated ? "The customer updated the dates they suggested" : "The customer suggested dates"} for <strong>${projectName}</strong>. These are suggestions only; the confirmed date is set by FlossByte on the project page.</p>
+      <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:6px 0 2px">
+        ${row("Suggested:", dateList)}
+        ${note ? row("Note:", note) : ""}
+        ${row("Sent by:", proposedBy)}
+      </table>
+      ${button(link, "Open the project")}
+      ${linkFallback(link)}`),
+    text: `${customerName} / ${locationName}: ${updated ? "updated date suggestions" : "date suggestions"} for ${projectName}. Suggested: ${dateList}.${note ? ` Note: ${note}.` : ""} Sent by ${proposedBy}. These are suggestions only; confirm the final date on the project page: ${link}`,
+  };
+}
+
 export function quoteAcceptedNoticeEmail(env, { customerName, quoteTitle, acceptedBy, total }) {
   return {
     subject: `Quote accepted: ${customerName}`,
