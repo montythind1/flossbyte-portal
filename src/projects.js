@@ -329,13 +329,24 @@ export function quoteCopyHtml(quote, items, total, customerName) {
     ? `<p>Accepted by ${esc(quote.accepted_by || "")} on ${esc(fmtDateUS(quote.accepted_at || ""))}.${quote.qdoc_accepted_at ? " The attached quote document was accepted with this quote." : ""}${quote.sow_accepted_at ? " The attached Statement of Work was accepted with this quote." : ""}</p>` : "";
   const deposit = Number(quote.deposit_percent || 0) > 0
     ? `<p class="muted">Deposit: ${quote.deposit_percent}% (${fmtMoney(Math.round(total * quote.deposit_percent / 100))}) due on acceptance.</p>` : "";
+  // Same two-mode rules as the quote page: the items table renders
+  // only when the quote has line items, a $0 total is never printed,
+  // and a document quote with no typed lines says plainly that the
+  // full quote is in the attached quote document filed with this copy.
+  const hasItems = (items || []).length > 0;
+  const tableBlock = hasItems
+    ? `<table><thead><tr><th>Description</th><th class="num">Qty</th><th class="num">Price</th><th class="num">Amount</th></tr></thead>
+    <tbody>${rows}</tbody></table>`
+    : quote.qdoc_r2_key
+      ? `<p>The full quote is in the attached quote document: ${esc(quote.qdoc_name || "Quote.pdf")}. That document is filed in Documents together with this copy.</p>`
+      : "";
+  const totalLine = total > 0 ? `<p><strong>Total: ${fmtMoney(total)}</strong></p>` : "";
   return docShell(`Quote: ${quote.title}`, `
     <h1>${esc(quote.title)}</h1>
     <p class="muted">Quote from FlossByte for ${esc(customerName || "")}. Filed in the portal when the quote was accepted.</p>
     ${accepted}
-    <table><thead><tr><th>Description</th><th class="num">Qty</th><th class="num">Price</th><th class="num">Amount</th></tr></thead>
-    <tbody>${rows}</tbody></table>
-    <p><strong>Total: ${fmtMoney(total)}</strong></p>${deposit}
+    ${tableBlock}
+    ${totalLine}${deposit}
     ${quote.terms ? `<h3>Terms</h3><pre>${esc(quote.terms)}</pre>` : ""}`);
 }
 
