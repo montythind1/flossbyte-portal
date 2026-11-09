@@ -1052,14 +1052,14 @@ async function projectPageView(env, request, user, loc, prod) {
   const loaded = project ? await resolveBoundQuote(db, project) : null;
   const quote = loaded ? loaded.quote : null;
   const money = quote ? await projectMoney(db, quote.id) : null;
-  const stage = deriveStage(project, quote, money);
+  const stage = deriveStage(project, quote, money, loaded ? loaded.total : undefined);
   const name = projectName(project, quote);
-  const steps = projectSteps(project, quote, money, stage);
+  const steps = projectSteps(project, quote, money, stage, loaded ? loaded.total : undefined);
   const pct = loaded && loaded.total > 0 && money ? Math.round(100 * money.paidSum / loaded.total) : 0;
 
   let moneyCard = "";
   if (loaded) {
-    const dep = depositState(quote, money);
+    const dep = depositState(quote, money, loaded.total);
     const depInv = money ? money.deposit : null;
     const depRow = dep === "none" ? ""
       : `<tr><td class="muted">Deposit</td><td>${depInv ? `${fmtMoney(depInv.amount_cents)} <span class="pill ${depInv.status === "paid" ? "on" : "warn"}">${depInv.status === "paid" ? "Paid" : "Unpaid"}</span>${depInv.due_date ? `<div class="muted">Due ${esc(fmtDateUS(depInv.due_date))}</div>` : ""}<div><a href="/app/invoices/${depInv.id}">View deposit invoice INV-${1000 + depInv.id}</a></div>` : ""}</td></tr>`;
@@ -3477,7 +3477,7 @@ export async function quoteViewPage(env, request, user, quoteId) {
       <form method="post" action="/app/quotes/${quote.id}/accept">
         <label>Your full name <span class="req">*</span></label><input name="signer_name" required>
         <p><label style="display:flex;gap:8px;align-items:flex-start"><input type="checkbox" name="agree" value="yes" required style="width:auto;margin-top:4px">
-        <span>I agree to the terms below and accept this quote${acceptSuffix} for our organization.</span></label></p>
+        <span>${quote.terms ? `I agree to the terms above and accept this quote${acceptSuffix} for our organization.` : `I accept this quote${acceptSuffix} for our organization.`}</span></label></p>
         <button class="btn" type="submit">Accept quote</button></form>
       <form method="post" action="/app/quotes/${quote.id}/decline" style="margin-top:10px">
         <button class="btn small secondary" type="submit">Decline</button></form></div>`;
@@ -3487,19 +3487,33 @@ export async function quoteViewPage(env, request, user, quoteId) {
   const sowBlock = quote.sow_r2_key ? `<div class="card"><h3 style="margin-top:0">Statement of Work</h3>
     <p style="margin:0 0 10px">This quote has a Statement of Work attached: <strong>${esc(quote.sow_name || "Statement of Work.pdf")}</strong>.${quote.sow_accepted_at ? ` It was accepted by ${esc(quote.sow_accepted_by || "")} on ${esc(fmtDateUS(quote.sow_accepted_at))}, together with the quote.` : " Accepting the quote accepts the SOW with it."}</p>
     <p style="margin:0"><a class="btn small secondary" href="/app/quotes/${quote.id}/sow" target="_blank" rel="noopener">View the SOW</a></p></div>` : "";
+  // Two clean modes: a quote with an attached quote document is a
+  // document quote (the PDF is the quote, or carries the detail
+  // behind typed lines); without one it is an itemized quote. A $0
+  // total is never printed, and an empty items table never renders.
+  const hasItems = items.length > 0;
   const docBlock = quote.qdoc_r2_key ? `<div class="card"><h3 style="margin-top:0">Quote document</h3>
-    <p style="margin:0 0 10px">The full quote document is attached: <strong>${esc(quote.qdoc_name || "Quote.pdf")}</strong>. It carries the detail behind the summary line on this page.${quote.qdoc_accepted_at ? ` It was accepted by ${esc(quote.qdoc_accepted_by || "")} on ${esc(fmtDateUS(quote.qdoc_accepted_at))}, together with the quote.` : " Accepting the quote accepts the quote document with it."}</p>
+    <p style="margin:0 0 10px">${hasItems
+      ? `The full quote document is attached: <strong>${esc(quote.qdoc_name || "Quote.pdf")}</strong>. It carries the detail behind the summary line on this page.`
+      : `The full quote is in the attached document: <strong>${esc(quote.qdoc_name || "Quote.pdf")}</strong>.`}${quote.qdoc_accepted_at ? ` It was accepted by ${esc(quote.qdoc_accepted_by || "")} on ${esc(fmtDateUS(quote.qdoc_accepted_at))}, together with the quote.` : " Accepting the quote accepts the quote document with it."}</p>
     <p style="margin:0"><a class="btn small secondary" href="/app/quotes/${quote.id}/quote-doc" target="_blank" rel="noopener">View the quote document</a></p></div>` : "";
+  const kindLabel = quote.kind === "plan" ? "Service plan" : "Project";
+  const subtitle = total > 0
+    ? `${kindLabel} quote from FlossByte. Total <strong>${fmtMoney(total)}</strong>${deposit > 0 ? `, with a ${quote.deposit_percent}% deposit of <strong>${fmtMoney(deposit)}</strong> due on acceptance and ${fmtMoney(total - deposit)} after that.` : "."}`
+    : quote.qdoc_r2_key
+      ? `${kindLabel} quote from FlossByte. The full quote is in the attached document.`
+      : `${kindLabel} quote from FlossByte.`;
+  const itemsBlock = hasItems ? `<div class="card" style="padding:8px 14px"><div class="tscroll"><table class="stack"><thead><tr><th>Description</th><th class="num">Qty</th><th class="num">Price</th><th class="num">Amount</th></tr></thead>
+    <tbody>${itemRows}</tbody></table></div></div>` : "";
   const rail = await railLocs(env, user);
   const body = `${orgRail(user, "billing", "My Portal", rail)}<p><a href="/app/billing">&larr; Billing</a></p><h1>${esc(quote.title)}</h1>
-    <p class="muted">${quote.kind === "plan" ? "Service plan" : "Project"} quote from FlossByte. Total <strong>${fmtMoney(total)}</strong>${deposit > 0 ? `, with a ${quote.deposit_percent}% deposit of <strong>${fmtMoney(deposit)}</strong> due on acceptance and ${fmtMoney(total - deposit)} after that.` : "."}</p>
+    <p class="muted">${subtitle}</p>
     <p><button class="btn small secondary" type="button" onclick="window.print()">Print / save as PDF</button></p>
+    ${itemsBlock}
     ${docBlock}
     ${sowBlock}
-    ${statusBlock}
-    <div class="card" style="padding:8px 14px"><div class="tscroll"><table class="stack"><thead><tr><th>Description</th><th class="num">Qty</th><th class="num">Price</th><th class="num">Amount</th></tr></thead>
-    <tbody>${itemRows}</tbody></table></div></div>
-    ${quote.terms ? `<div class="card"><h3>Terms</h3><div style="white-space:pre-wrap">${esc(quote.terms)}</div></div>` : ""}`;
+    ${quote.terms ? `<div class="card"><h3>Terms</h3><div style="white-space:pre-wrap">${esc(quote.terms)}</div></div>` : ""}
+    ${statusBlock}`;
   const msg = new URL(request.url).searchParams.get("msg");
   return page({ title: quote.title, user, body, flash: msg || undefined, error: new URL(request.url).searchParams.get("err") || undefined });
 }

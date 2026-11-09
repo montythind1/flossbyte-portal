@@ -206,11 +206,16 @@ export async function projectMoney(db, quoteId) {
 }
 
 // 'none' when the quote carries no deposit, 'waiting' while money is
-// still owed on it, 'paid' once a deposit invoice shows paid.
-export function depositState(quote, money) {
+// still owed on it, 'paid' once a deposit invoice shows paid. A
+// deposit that computes to $0 (a $0-total quote) is no deposit at
+// all: no invoice can exist for it, so the project must not wait
+// on one forever.
+export function depositState(quote, money, total) {
   if (!quote || quote.status !== "accepted") return "none";
-  if (!money || (!money.deposit && !(Number(quote.deposit_percent || 0) > 0))) return "none";
-  if (money && money.anyDepositPaid) return "paid";
+  if (!money) return "none";
+  if (money.deposit) return money.anyDepositPaid ? "paid" : "waiting";
+  if (!(Number(quote.deposit_percent || 0) > 0)) return "none";
+  if (total !== undefined && Math.round(total * Number(quote.deposit_percent || 0) / 100) <= 0) return "none";
   return "waiting";
 }
 
@@ -218,7 +223,7 @@ export function depositState(quote, money) {
 // Auto stages read the quote and its invoices; manual stages read the
 // admin-set fields on the project row. One key out, used for the
 // next-step line and the admin controls alike.
-export function deriveStage(project, quote, money) {
+export function deriveStage(project, quote, money, total) {
   if (!quote) return "pre";
   if (quote.status === "declined") return "declined";
   if (project && project.finished) return "finished";
@@ -226,7 +231,7 @@ export function deriveStage(project, quote, money) {
   if (project && project.in_progress_at) return "in_progress";
   if (project && project.scheduled_date) return "scheduled";
   if (quote.status === "accepted") {
-    const dep = depositState(quote, money);
+    const dep = depositState(quote, money, total);
     if (dep === "waiting") return "waiting_deposit";
     if (dep === "paid") return "deposit_paid";
     return "accepted";
@@ -237,7 +242,7 @@ export function deriveStage(project, quote, money) {
 // The bar: one entry per stage with a state of done, current, or
 // todo. Deposit stages only exist when the quote actually carries a
 // deposit. A declined quote ends the bar where it stands.
-export function projectSteps(project, quote, money, stage) {
+export function projectSteps(project, quote, money, stage, total) {
   if (!quote) return [];
   if (quote.status === "declined") {
     return [
@@ -246,7 +251,7 @@ export function projectSteps(project, quote, money, stage) {
       { label: "Declined", state: "declined" },
     ];
   }
-  const dep = depositState(quote, money);
+  const dep = depositState(quote, money, total);
   const accepted = quote.status === "accepted";
   const steps = [
     { label: "Quote sent", done: true },
@@ -444,7 +449,7 @@ export async function onQuoteAccepted(env, quoteId, signerName) {
     }
     if (project && projectLoc) {
       const money = await projectMoney(db, quoteId);
-      const dep = depositState(loaded.quote, money);
+      const dep = depositState(loaded.quote, money, loaded.total);
       const depAmount = money && money.deposit ? fmtMoney(money.deposit.amount_cents)
         : fmtMoney(Math.round(loaded.total * (Number(loadedQuote.deposit_percent || 0)) / 100));
       const acceptedParts = ["the quote"];

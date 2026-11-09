@@ -1043,6 +1043,15 @@ export async function quoteActionPost(env, request, user, customerId, quoteId, a
   if (!quote) return redirect(`/admin/customers/${customerId}?tab=billing&btab=quotes&err=` + encodeURIComponent("Quote not found."));
   if (action === "send") {
     if (quote.status !== "draft") return redirect(`/admin/customers/${customerId}?tab=billing&btab=quotes&err=` + encodeURIComponent("Only a draft can be sent."));
+    // A deposit percent on a $0 total can never be collected: the
+    // deposit would work out to $0. Block the send so the admin
+    // fixes the quote first, one summary line with the total or a
+    // deposit of 0.
+    if (Number(quote.deposit_percent || 0) > 0) {
+      const { results: qItems } = await db.prepare("SELECT qty, unit_price_cents FROM quote_items WHERE quote_id = ?").bind(quoteId).all();
+      const qTotal = (qItems || []).reduce((s, i) => s + Math.round(i.qty * i.unit_price_cents), 0);
+      if (qTotal <= 0) return redirect(`/admin/customers/${customerId}?tab=billing&btab=quotes&err=` + encodeURIComponent(`This quote has no total, so the ${quote.deposit_percent}% deposit cannot be worked out. Add a line with the total, or set the deposit to 0, then send.`));
+    }
     await db.prepare("UPDATE quotes SET status = 'sent', sent_at = datetime('now'), updated_at = datetime('now') WHERE id = ?").bind(quoteId).run();
     await audit(db, user.id, "quote_send", "quote", quoteId, quote.title);
     const cust = await db.prepare("SELECT contact_name, contact_email FROM customers WHERE id = ?").bind(customerId).first();
