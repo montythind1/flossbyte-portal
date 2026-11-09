@@ -824,10 +824,11 @@ export async function customerPage(env, request, user, customerId) {
       <td><span class="pill ${inv.status === "paid" ? "on" : inv.status === "void" ? "off" : ""}">${esc(inv.status)}</span></td>
       <td>${esc(fmtDateUS(inv.due_date))}</td><td>${actions}</td></tr>`;
   }).join("");
-  const itemRow = `<div class="row" style="gap:8px;margin-top:6px">
+  const itemRow = `<div class="row" data-item-row style="gap:8px;margin-top:6px;align-items:flex-end">
       <span style="flex:3;min-width:160px"><input name="item_desc" placeholder="Description"></span>
       <span style="flex:1;min-width:70px"><input name="item_qty" type="number" step="any" min="0" placeholder="Qty"></span>
-      <span style="flex:1;min-width:90px"><input name="item_price" type="number" step="0.01" min="0" placeholder="Price $"></span></div>`;
+      <span style="flex:1;min-width:90px"><input name="item_price" type="number" step="0.01" min="0" placeholder="Price $"></span>
+      <span><button class="btn small secondary" type="button" data-remove-item>Remove</button></span></div>`;
   const tabParam = q(request).get("tab");
   const tab = ["organization", "locations", "products", "users", "billing", "manage"].includes(tabParam) ? tabParam : "organization";
   // Billing splits into Quotes and Invoices sub-tabs (Montek,
@@ -839,23 +840,47 @@ export async function customerPage(env, request, user, customerId) {
   const btabParam = q(request).get("btab");
   const btab = ["quotes", "invoices"].includes(btabParam) ? btabParam : "quotes";
   const billingSwitcher = `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:16px"><span class="muted" style="font-weight:600">Show:</span><a class="btn small ${btab === "quotes" ? "" : "secondary"}" href="/admin/customers/${customerId}?tab=billing&btab=quotes" style="text-decoration:none">Quotes</a><a class="btn small ${btab === "invoices" ? "" : "secondary"}" href="/admin/customers/${customerId}?tab=billing&btab=invoices" style="text-decoration:none">Invoices</a></div>`;
-  const quotesSection = `<h3 style="margin-top:0">Quotes</h3>
-      <div class="tscroll"><table class="stack"><thead><tr><th>Quote</th><th>Type</th><th class="num">Total</th><th>Deposit</th><th>Status</th><th></th></tr></thead>
-      <tbody>${quoteRows || `<tr><td colspan="6" class="muted">No quotes yet. Build the first one below.</td></tr>`}</tbody></table></div>
-      <h3 style="margin-top:22px">New quote</h3>
-      <form method="post" action="/admin/customers/${customerId}/quotes">
+  // The New quote form: two line-item rows to start, more added with
+  // the button (cloned from the template, the wizard's pattern), each
+  // row removable down to one, and a live total that follows the
+  // typing. The server still reads the same item_desc / item_qty /
+  // item_price fields and ignores blank rows, so the initially
+  // rendered rows also submit fine with no JavaScript at all. Once
+  // the organization has quotes, the form folds behind a "+ New
+  // quote" panel (the folded add-form pattern) instead of sitting
+  // open under the list; with no quotes yet it starts open, under
+  // the "Build the first one below" empty state.
+  const newQuoteForm = `<form method="post" action="/admin/customers/${customerId}/quotes">
         <label>Quote title <span class="req">*</span></label><input name="title" required placeholder="For example: Network refresh, Phase 1">
         <div class="row"><span style="flex:1;min-width:160px"><label>Type</label>
           <select id="quoteKind" name="kind"><option value="project">One-time project</option><option value="plan">Service plan (MSP)</option></select></span>
           <span style="flex:1;min-width:120px"><label>Deposit % due on acceptance</label><input name="deposit_percent" type="number" min="0" max="100" step="1" value="0"></span></div>
         <label style="margin-top:10px">Line items</label>
-        ${itemRow.repeat(6)}
+        <div id="quoteItems">${itemRow.repeat(2)}</div>
+        <template id="quoteItemTemplate">${itemRow}</template>
+        <p style="margin-top:10px"><button class="btn small secondary" type="button" id="addQuoteItem">+ Add line item</button></p>
+        <p style="margin-top:6px">Total: <strong id="quoteTotalLive">$0.00</strong></p>
         <label style="margin-top:12px">Terms shown on the quote</label>
         <textarea id="quoteTerms" name="terms" rows="3">${esc(PROJECT_TERMS)}</textarea>
         <p style="margin-top:12px"><button class="btn" type="submit">Save draft quote</button></p>
       </form>
       <p class="muted">Drafts are not visible to the client. When you send, the client gets an email and can review and accept in the portal. Accepting creates the deposit invoice automatically when a deposit is set.</p>
-      <script>(function(){var k=document.getElementById('quoteKind'),t=document.getElementById('quoteTerms');if(!k||!t)return;var T=${JSON.stringify({ project: PROJECT_TERMS, plan: PLAN_TERMS })};k.addEventListener('change',function(){if(t.value===T.project||t.value===T.plan){t.value=T[k.value]||t.value;}});})();</script>`;
+      <script>(function(){var k=document.getElementById('quoteKind'),t=document.getElementById('quoteTerms');if(k&&t){var T=${JSON.stringify({ project: PROJECT_TERMS, plan: PLAN_TERMS })};k.addEventListener('change',function(){if(t.value===T.project||t.value===T.plan){t.value=T[k.value]||t.value;}});}
+      var box=document.getElementById('quoteItems'),add=document.getElementById('addQuoteItem'),tpl=document.getElementById('quoteItemTemplate'),tot=document.getElementById('quoteTotalLive');if(!box)return;
+      function rows(){return box.querySelectorAll('[data-item-row]');}
+      function sync(){var cents=0;rows().forEach(function(r){var q=parseFloat(r.querySelector('[name=item_qty]').value)||0;var p=parseFloat(r.querySelector('[name=item_price]').value)||0;cents+=Math.round(q*Math.round(p*100));});if(tot)tot.textContent='$'+(cents/100).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});var rs=rows();rs.forEach(function(r){var b=r.querySelector('[data-remove-item]');if(b)b.style.display=rs.length>1?'':'none';});}
+      box.addEventListener('input',sync);
+      box.addEventListener('click',function(e){var b=e.target.closest('[data-remove-item]');if(!b)return;var r=b.closest('[data-item-row]');if(r&&rows().length>1){r.remove();sync();}});
+      if(add&&tpl)add.addEventListener('click',function(){box.appendChild(tpl.content.cloneNode(true));sync();});
+      sync();})();</script>`;
+  const hasQuotes = (quoteList || []).length > 0;
+  const newQuoteBlock = hasQuotes
+    ? `<details style="margin-top:22px"><summary class="btn small secondary" style="cursor:pointer;display:inline-block">+ New quote</summary><h3 style="margin-top:16px">New quote</h3>${newQuoteForm}</details>`
+    : `<h3 style="margin-top:22px">New quote</h3>${newQuoteForm}`;
+  const quotesSection = `<h3 style="margin-top:0">Quotes</h3>
+      <div class="tscroll"><table class="stack"><thead><tr><th>Quote</th><th>Type</th><th class="num">Total</th><th>Deposit</th><th>Status</th><th></th></tr></thead>
+      <tbody>${quoteRows || `<tr><td colspan="6" class="muted">No quotes yet. Build the first one below.</td></tr>`}</tbody></table></div>
+      ${newQuoteBlock}`;
   const invoicesSection = `<h3 style="margin-top:0">Invoices</h3>
       <div class="tscroll"><table class="stack"><thead><tr><th>Number</th><th>Invoice</th><th>Type</th><th class="num">Amount</th><th>Status</th><th>Due</th><th></th></tr></thead>
       <tbody>${invoiceRows || `<tr><td colspan="7" class="muted">No invoices yet.</td></tr>`}</tbody></table></div>
