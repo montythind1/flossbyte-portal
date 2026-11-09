@@ -725,34 +725,42 @@ export async function customerPage(env, request, user, customerId) {
         <input type="hidden" name="product" value="${esc(p.key)}">
         <button class="btn small ${enabled ? "danger" : ""}" name="enabled" value="${enabled ? "0" : "1"}" type="submit">${enabled ? "Turn off" : "Turn on"}</button></form></td></tr>`;
   }).join("");
-  // Per-office switches: same products, one block per office. The
-  // state shown is the office's effective state, resolved exactly the
-  // way the portal resolves it (the office's own row wins, then the
-  // All offices row, then the product default), and the button posts
-  // to the same toggle endpoint with the office's location_id, so
-  // every side effect (project creation, activation email, Genius and
-  // Managed IT resolution) is the existing one.
-  const { results: locProdRows } = await db.prepare(
-    "SELECT location_id, product, enabled FROM customer_products WHERE customer_id = ? AND location_id IS NOT NULL")
-    .bind(customerId).all().catch(() => ({ results: [] }));
-  const locProdSet = new Set((locProdRows || []).map((r) => `${Number(r.location_id)}:${r.product}`));
-  const locProdBlocks = [];
-  for (const l of locations || []) {
+  // Office selector: the same chip switcher the customer Services
+  // page uses (?office=id), with "All offices" as the first chip.
+  // One selection shows at a time. All offices shows the org-wide
+  // switches above; an office shows that office's switches with its
+  // effective state, resolved exactly the way the portal resolves it
+  // (the office's own row wins, then the All offices row, then the
+  // product default). Each button posts to the same toggle endpoint
+  // with the office's location_id, so every side effect (project
+  // creation, activation email, Genius and Managed IT resolution) is
+  // the existing one, and the toggle redirects back with the same
+  // office still selected.
+  const officeWanted = parseInt(new URL(request.url).searchParams.get("office") || "", 10);
+  const selLoc = (locations || []).find((l) => l.id === officeWanted) || null;
+  const officeSwitcher = (locations && locations.length)
+    ? `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:16px"><span class="muted" style="font-weight:600">Office:</span><a class="btn small ${selLoc ? "secondary" : ""}" href="/admin/customers/${customerId}?tab=products" style="text-decoration:none">All offices</a>${(locations || []).map((l) => `<a class="btn small ${selLoc && l.id === selLoc.id ? "" : "secondary"}" href="/admin/customers/${customerId}?tab=products&office=${l.id}" style="text-decoration:none">${esc(l.name)}</a>`).join("")}</div>`
+    : "";
+  let selLocRows = "";
+  if (selLoc) {
+    const { results: ownRows } = await db.prepare(
+      "SELECT product FROM customer_products WHERE customer_id = ? AND location_id = ?")
+      .bind(customerId, selLoc.id).all().catch(() => ({ results: [] }));
+    const ownSet = new Set((ownRows || []).map((r) => r.product));
     const rows = [];
     for (const p of products || []) {
       const on = p.key === "genius"
-        ? await geniusEnabled(db, customerId, l.id)
-        : await productEnabled(db, customerId, l.id, p.key);
-      const ownRow = locProdSet.has(`${Number(l.id)}:${p.key}`);
+        ? await geniusEnabled(db, customerId, selLoc.id)
+        : await productEnabled(db, customerId, selLoc.id, p.key);
+      const ownRow = ownSet.has(p.key);
       rows.push(`<tr><td><strong>${esc(p.name)}</strong><div class="muted">${esc(p.description || "")}</div></td>
         <td><span class="pill ${on ? "on" : "off"}">${on ? "On" : "Off"}</span>${ownRow ? "" : `<div class="muted">From All offices</div>`}</td>
         <td><form method="post" action="/admin/customers/${customerId}/products" class="row">
           <input type="hidden" name="product" value="${esc(p.key)}">
-          <input type="hidden" name="location_id" value="${l.id}">
+          <input type="hidden" name="location_id" value="${selLoc.id}">
           <button class="btn small ${on ? "danger" : ""}" name="enabled" value="${on ? "0" : "1"}" type="submit">${on ? "Turn off" : "Turn on"}</button></form></td></tr>`);
     }
-    locProdBlocks.push(`<h3 style="margin:22px 0 8px">${esc(l.name)}</h3>
-      <div class="tscroll"><table class="stack"><thead><tr><th>Product</th><th>State</th><th>Change</th></tr></thead><tbody>${rows.join("")}</tbody></table></div>`);
+    selLocRows = rows.join("");
   }
   const memberRows = (members || []).map((m) => `<tr><td>${esc(m.name)}${m.is_main_admin ? ` <span class="pill on">Main admin</span>` : ""}</td><td>${esc(m.email)}</td>
     <td>${esc(m.role)}</td><td><span class="pill">${esc(m.status)}</span></td>
@@ -885,10 +893,10 @@ export async function customerPage(env, request, user, customerId) {
     <script src="/assets/address-lookup.js"></script>
     <script src="/assets/phone-format.js"></script>
     <div class="card tab-panel${tab === "products" ? " active" : ""}" data-panel="products">
-      <h3 style="margin-top:0">All offices</h3>
-      <div class="tscroll"><table class="stack"><thead><tr><th>Product</th><th>State</th><th>Change</th></tr></thead><tbody>${prodRows}</tbody></table></div>
-      <p class="muted">Offices follow the All offices setting unless set individually here.</p>
-      ${locProdBlocks.join("")}
+      ${officeSwitcher}
+      <h3 style="margin-top:0">${selLoc ? esc(selLoc.name) : "All offices"}</h3>
+      <div class="tscroll"><table class="stack"><thead><tr><th>Product</th><th>State</th><th>Change</th></tr></thead><tbody>${selLoc ? selLocRows : prodRows}</tbody></table></div>
+      ${selLoc ? "" : `<p class="muted">Offices follow the All offices setting unless you pick an office above and set it on its own.</p>`}
       <p class="muted">Changes apply right away. When a service is off, the client sees it as locked on their side, and their only option there is a button to ask you to turn it on.</p></div>
     <div class="card tab-panel${tab === "users" ? " active" : ""}" data-panel="users">
       <div class="tscroll"><table class="stack"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th>Last login</th><th></th></tr></thead><tbody>${memberRows || `<tr><td colspan="6" class="muted">No logins yet.</td></tr>`}</tbody></table></div>
@@ -1219,7 +1227,11 @@ export async function productTogglePost(env, request, user, customerId) {
       await onOtpToggledOn(env, Number(customerId), locationId, user.id);
     }
   }
-  return redirect(`/admin/customers/${customerId}?tab=products`);
+  // Back to the Products tab with the same office still selected, so
+  // a per-office toggle does not bounce the admin to All offices.
+  return redirect(locationId
+    ? `/admin/customers/${customerId}?tab=products&office=${locationId}`
+    : `/admin/customers/${customerId}?tab=products`);
 }
 
 export async function inviteCustomerUserPost(env, request, user, customerId) {
