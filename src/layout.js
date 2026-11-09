@@ -91,6 +91,8 @@ form.js-wizard .wstep.active{display:block}
 .wiz-progress{position:relative;margin:22px 4px 26px}
 .wiz-track{position:absolute;left:13px;right:13px;top:13px;height:4px;background:#dde3ea;border-radius:2px}
 .wiz-fill{height:100%;width:0;background:var(--teal);border-radius:2px;transition:width .35s ease}
+.paid-meter{height:6px;background:#dde3ea;border-radius:3px;overflow:hidden;margin:10px 0 2px}
+.paid-meter>div{height:100%;background:var(--teal);border-radius:3px}
 .wiz-nodes{position:relative;display:flex;justify-content:space-between}
 .wiz-node{display:flex;flex-direction:column;align-items:center;gap:6px;width:25%}
 .wiz-node .dot{width:27px;height:27px;border-radius:50%;background:#fff;border:2px solid #c3cedb;color:var(--muted);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700}

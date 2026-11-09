@@ -1053,29 +1053,40 @@ async function projectPageView(env, request, user, loc, prod) {
   let moneyCard = "";
   if (loaded) {
     const dep = depositState(quote, money);
+    const depInv = money ? money.deposit : null;
     const depRow = dep === "none" ? ""
-      : `<tr><td class="muted">Deposit</td><td>${money.deposit ? `${fmtMoney(money.deposit.amount_cents)} · ${money.deposit.status === "paid" ? "Paid" : "Unpaid"}` : ""}</td></tr>`;
+      : `<tr><td class="muted">Deposit</td><td>${depInv ? `${fmtMoney(depInv.amount_cents)} <span class="pill ${depInv.status === "paid" ? "on" : "warn"}">${depInv.status === "paid" ? "Paid" : "Unpaid"}</span>${depInv.due_date ? `<div class="muted">Due ${esc(fmtDateUS(depInv.due_date))}</div>` : ""}<div><a href="/app/invoices/${depInv.id}">View deposit invoice INV-${1000 + depInv.id}</a></div>` : ""}</td></tr>`;
     moneyCard = `<div class="card"><h3 style="margin-top:0">Money</h3><div class="tscroll"><table class="stack"><tbody>
       <tr><td class="muted">Quote total</td><td><strong>${fmtMoney(loaded.total)}</strong></td></tr>${depRow}
       <tr><td class="muted">Paid so far</td><td>${fmtMoney(money ? money.paidSum : 0)} of ${fmtMoney(loaded.total)} (${pct}%)</td></tr>
-      </tbody></table></div>
+      </tbody></table></div>${loaded.total > 0 ? `<div class="paid-meter"><div style="width:${pct}%"></div></div>` : ""}
       <p class="muted" style="margin-bottom:0">Quotes and invoices live on your <a href="/app/billing">Billing</a> page.</p></div>`;
   }
-  let scheduleCard = "";
-  const schedBits = [];
-  if (project && project.scheduled_date) schedBits.push(`<p style="margin:0 0 6px"><strong>Scheduled:</strong> ${esc(fmtDateUS(project.scheduled_date))}</p>`);
+  // Project details: the schedule and the support window as plain
+  // rows, in the same table shape as the Money card. Only rendered
+  // when at least one row applies.
+  let detailsCard = "";
+  const detailRows = [];
+  if (project && project.scheduled_date) {
+    detailRows.push(`<tr><td class="muted">Scheduled for</td><td>${esc(fmtDateUS(project.scheduled_date))}</td></tr>`);
+  }
   if (stage === "support" && project) {
     const left = supportRemaining(project);
-    schedBits.push(`<p style="margin:0"><strong>Support window:</strong> ${left} of ${Math.max(1, Number(project.support_days || 30))} days left (runs to ${esc(fmtDateUS(supportEndDate(project)))}).</p>`);
+    detailRows.push(`<tr><td class="muted">Support window</td><td>${left} of ${Math.max(1, Number(project.support_days || 30))} days left</td></tr>`);
+    detailRows.push(`<tr><td class="muted">Support ends</td><td>${esc(fmtDateUS(supportEndDate(project)))}</td></tr>`);
+  } else if (project && !project.work_complete_date && stage !== "finished" && stage !== "declined") {
+    detailRows.push(`<tr><td class="muted">Post-install support</td><td>${Math.max(1, Number(project.support_days || 30))} days, starts when the work is marked complete</td></tr>`);
   }
   if (stage === "finished" && project && project.work_complete_date) {
-    schedBits.push(`<p style="margin:0">Work was completed on ${esc(fmtDateUS(project.work_complete_date))}.</p>`);
+    detailRows.push(`<tr><td class="muted">Work completed</td><td>${esc(fmtDateUS(project.work_complete_date))}</td></tr>`);
   }
-  if (schedBits.length) scheduleCard = `<div class="card">${schedBits.join("")}</div>`;
+  if (detailRows.length) {
+    detailsCard = `<div class="card"><h3 style="margin-top:0">Project details</h3><div class="tscroll"><table class="stack"><tbody>${detailRows.join("")}</tbody></table></div></div>`;
+  }
 
   // This office's tickets: the channel the work runs through.
   const { results: ticketRows } = await db.prepare(
-    "SELECT * FROM tickets WHERE location_id = ? ORDER BY updated_at DESC LIMIT 8").bind(loc.id).all().catch(() => ({ results: [] }));
+    "SELECT * FROM tickets WHERE location_id = ? ORDER BY updated_at DESC LIMIT 5").bind(loc.id).all().catch(() => ({ results: [] }));
   const ticketList = (ticketRows || []).map((t) =>
     `<tr><td><a href="/app/locations/${loc.id}/tickets/${t.id}">${esc(t.title)}</a></td><td><span class="pill ${t.status === "closed" ? "" : "on"}">${esc(t.status.replace("_", " "))}</span></td><td>${esc(fmtDateUS(t.updated_at))}</td></tr>`).join("");
   const ticketsCard = `<div class="card"><h3 style="margin-top:0">Tickets at this office</h3>
@@ -1089,10 +1100,14 @@ async function projectPageView(env, request, user, loc, prod) {
     const keys = [`generated/quote-${quote.id}.html`, `generated/quote-${quote.id}-sow`];
     for (const inv of (money ? money.invoices : [])) keys.push(`generated/invoice-${inv.id}.html`);
     const placeholders = keys.map(() => "?").join(",");
+    // The generated keys are unique to this quote and its invoices,
+    // so matching on them (scoped to the organization) names exactly
+    // this project's paperwork, wherever in the org it was filed.
     const { results: docRows } = await db.prepare(
-      `SELECT * FROM documents WHERE location_id = ? AND r2_key IN (${placeholders}) ORDER BY created_at`).bind(loc.id, ...keys).all().catch(() => ({ results: [] }));
+      `SELECT d.* FROM documents d JOIN locations l ON l.id = d.location_id
+       WHERE l.customer_id = ? AND d.r2_key IN (${placeholders}) ORDER BY d.created_at`).bind(loc.customer_id, ...keys).all().catch(() => ({ results: [] }));
     const docList = (docRows || []).map((d) =>
-      `<tr><td>${d.r2_key ? `<a href="/app/documents/${d.id}/view" target="_blank" rel="noopener">${esc(d.name)}</a>` : esc(d.name)}</td><td>${esc(fmtDateUS(d.created_at))}</td></tr>`).join("");
+      `<tr><td>${esc(d.name)}</td><td>${esc(fmtDateUS(d.created_at))}</td><td>${d.r2_key ? `<a href="/app/documents/${d.id}/view" target="_blank" rel="noopener">View</a>` : ""}</td></tr>`).join("");
     docsCard = `<div class="card"><h3 style="margin-top:0">Project paperwork</h3>
       ${docList ? `<div class="tscroll"><table class="stack"><tbody>${docList}</tbody></table></div>` : `<p class="muted">Paperwork filed for this project shows up here: the accepted quote, the Statement of Work, and the invoices.</p>`}
       <p style="margin-bottom:0"><a href="/app/locations/${loc.id}/documents">Open Documents for this office</a></p></div>`;
@@ -1123,11 +1138,20 @@ async function projectPageView(env, request, user, loc, prod) {
   const bar = stage === "pre"
     ? `<div class="card"><p style="margin:0">Quote in preparation. FlossByte is putting the quote together; it will show up here when it is sent.</p></div>`
     : `<div class="card">${progressBar(steps)}</div>`;
+  // Next step: the one thing the customer can act on at this stage,
+  // as a card with a button when there is an obvious destination.
+  const nextBtn = stage === "accepted" || stage === "waiting_deposit"
+    ? `<p style="margin:12px 0 0"><a class="btn small" href="/app/billing">Open Billing</a></p>`
+    : stage === "support"
+      ? `<p style="margin:12px 0 0"><a class="btn small secondary" href="/app/locations/${loc.id}/documents">Open project documents</a></p>`
+      : "";
+  const nextStepCard = `<div class="card"><p class="muted" style="margin:0 0 4px;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.5px">Next step</p>
+    <p style="margin:0">${nextStepLine(stage, { scheduledDate: project ? project.scheduled_date : null, supportEnd: project ? supportEndDate(project) : null })}</p>${nextBtn}</div>`;
   const body = `${await locNav(db, loc, "project")}<h1>${esc(name)}</h1>
     <p>${pill} <span class="muted">One-Time Project at ${esc(loc.name)}</span></p>
     ${bar}
-    <div class="card"><p style="margin:0">${nextStepLine(stage, { scheduledDate: project ? project.scheduled_date : null, supportEnd: project ? supportEndDate(project) : null })}</p></div>
-    ${moneyCard}${scheduleCard}${docsCard}${ticketsCard}${controls}`;
+    ${nextStepCard}
+    ${moneyCard}${detailsCard}${docsCard}${ticketsCard}${controls}`;
   const qs = new URL(request.url).searchParams;
   return page({ title: name, user, body, flash: qs.get("msg") || undefined, error: qs.get("err") || undefined });
 }
