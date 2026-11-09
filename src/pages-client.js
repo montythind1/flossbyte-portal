@@ -494,8 +494,8 @@ export async function appHome(env, request, user) {
     + (lastCheck && lastCheck.last ? ` · checked ${relTime(lastCheck.last)}` : "");
   const chip = "background:#F2F6FA;border:1px solid #DDE5EE;color:#0A1628;border-radius:99px;padding:6px 12px;font-weight:600;font-size:13px;text-decoration:none;white-space:nowrap";
   const chips = [
-    billing && billing.quotes_waiting ? `<a href="/app/billing" style="${chip}">${billing.quotes_waiting} quote${billing.quotes_waiting > 1 ? "s" : ""} waiting</a>` : "",
-    billing && billing.unpaid ? `<a href="/app/billing" style="${chip}">${billing.unpaid} unpaid invoice${billing.unpaid > 1 ? "s" : ""}</a>` : "",
+    billing && billing.quotes_waiting ? `<a href="/app/billing?btab=quotes" style="${chip}">${billing.quotes_waiting} quote${billing.quotes_waiting > 1 ? "s" : ""} waiting</a>` : "",
+    billing && billing.unpaid ? `<a href="/app/billing?btab=invoices" style="${chip}">${billing.unpaid} unpaid invoice${billing.unpaid > 1 ? "s" : ""}</a>` : "",
     totTickets ? `<span style="${chip}">${totTickets} open ticket${totTickets > 1 ? "s" : ""}</span>` : "",
   ].filter(Boolean).join("");
   const band = `<div class="card" style="margin-bottom:16px">
@@ -1157,7 +1157,7 @@ async function projectPageView(env, request, user, loc, prod) {
   // Next step: the one thing the customer can act on at this stage,
   // as a card with a button when there is an obvious destination.
   const nextBtn = stage === "accepted" || stage === "waiting_deposit"
-    ? `<p style="margin:12px 0 0"><a class="btn small" href="/app/billing">Open Billing</a></p>`
+    ? `<p style="margin:12px 0 0"><a class="btn small" href="/app/billing?btab=invoices">Open Billing</a></p>`
     : stage === "support"
       ? `<p style="margin:12px 0 0"><a class="btn small secondary" href="/app/locations/${loc.id}/documents">Open project documents</a></p>`
       : "";
@@ -3437,7 +3437,7 @@ export async function quoteViewPage(env, request, user, quoteId) {
       }
     }
     statusBlock = `<div class="notice"><strong>Accepted</strong> by ${esc(quote.accepted_by || "")} on ${esc(fmtDateUS((quote.accepted_at || "")))}.
-      ${deposit > 0 ? `The deposit invoice is on your <a href="/app/billing">Billing</a> page.` : ""}${planNote}</div>${planForm}`;
+      ${deposit > 0 ? `The deposit invoice is on your <a href="/app/billing?btab=invoices">Billing</a> page.` : ""}${planNote}</div>${planForm}`;
   } else if (quote.status === "declined") {
     statusBlock = `<div class="notice">This quote was declined. If that was a mistake, call FlossByte at (669) 237-2264.</div>`;
   } else if (user.role === "customer_admin") {
@@ -3527,7 +3527,7 @@ export async function quoteDeclinePost(env, request, user, quoteId) {
   await env.DB.prepare(
     "UPDATE quotes SET status = 'declined', updated_at = datetime('now') WHERE id = ?").bind(quoteId).run();
   await audit(env.DB, user.id, "quote_decline", "quote", quoteId, null);
-  return redirect("/app/billing?msg=" + encodeURIComponent("Quote declined."));
+  return redirect("/app/billing?btab=quotes&msg=" + encodeURIComponent("Quote declined."));
 }
 
 // POST /app/quotes/:id/plan-pay — sends the customer admin to a
@@ -3662,11 +3662,21 @@ export async function billingPage(env, request, user) {
     <p class="muted" style="margin:8px 0 0">A monthly payment did not go through. Please call FlossByte at (669) 237-2264.</p>` : ""}</div>`;
   }
   const rail = await railLocs(env, user);
-  const quotesHtml = await quotesSection(env, org);
-  const invoicesHtml = await invoicesSection(env, org);
+  // Quotes and Invoices split into sub-tabs (Montek, 2026-11-09):
+  // the same chip switcher as the Services office selector, chosen
+  // with ?btab=. With no explicit choice the page lands on Quotes
+  // while a sent quote is waiting on the customer, otherwise on
+  // Invoices. The summary strip and the plan card are billing-wide
+  // and stay above the switcher on both sub-tabs.
+  const btabParam = new URL(request.url).searchParams.get("btab");
+  const btab = ["quotes", "invoices"].includes(btabParam) ? btabParam
+    : (sums && sums.quotes_waiting > 0 ? "quotes" : "invoices");
+  const billingSwitcher = `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:16px"><span class="muted" style="font-weight:600">Show:</span><a class="btn small ${btab === "quotes" ? "" : "secondary"}" href="/app/billing?btab=quotes" style="text-decoration:none">Quotes</a><a class="btn small ${btab === "invoices" ? "" : "secondary"}" href="/app/billing?btab=invoices" style="text-decoration:none">Invoices</a></div>`;
+  const quotesHtml = btab === "quotes" ? await quotesSection(env, org) : "";
+  const invoicesHtml = btab === "invoices" ? await invoicesSection(env, org) : "";
   const body = `${orgRail(user, "billing", cust ? cust.name : "My Portal", rail)}<h1 style="margin-bottom:2px">Billing</h1>
     <p class="muted" style="margin:0 0 14px">${esc(cust ? cust.name : "")} · quotes and invoices for the whole organization</p>
-    ${strip}${planCard}${quotesHtml}${invoicesHtml}`;
+    ${strip}${planCard}${billingSwitcher}${quotesHtml}${invoicesHtml}`;
   const msg = new URL(request.url).searchParams.get("msg");
   return page({ title: "Billing", user, body, flash: msg || undefined, error: new URL(request.url).searchParams.get("err") || undefined });
 }
