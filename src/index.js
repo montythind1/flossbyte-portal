@@ -225,6 +225,8 @@ async function route(request, env) {
   if (m && method === "GET") return client.topologyPage(env, request, user, Number(m[1]));
   m = path.match(/^\/app\/locations\/(\d+)\/network$/);
   if (m && method === "GET") return client.networkPage(env, request, user, Number(m[1]));
+  m = path.match(/^\/app\/locations\/(\d+)\/office-it$/);
+  if (m && method === "GET") return client.officeItLanding(env, request, user, Number(m[1]));
   m = path.match(/^\/app\/locations\/(\d+)\/wifi$/);
   if (m && method === "POST") return client.wifiAddPost(env, request, user, Number(m[1]));
   m = path.match(/^\/app\/locations\/(\d+)\/wifi\/delete$/);

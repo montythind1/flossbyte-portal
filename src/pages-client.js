@@ -169,7 +169,7 @@ function locNav(loc, active, fill) {
     <a class="rail-back" href="/app">&larr; Overview</a>
     <div class="rail-context"><div class="rc-t">${esc(loc.name)}</div><div class="rc-s">${esc(loc.customer_name)}</div></div>
     ${item("overview", base, "Overview", "grid")}
-    <a class="rail-item${["network", "equipment", "topology"].includes(active) ? " active" : ""}" href="${base}/network">${icon("topology")}Office IT</a>
+    <a class="rail-item${["network", "equipment", "topology"].includes(active) ? " active" : ""}" href="${base}/office-it">${icon("topology")}Office IT</a>
     ${item("tickets", base + "/tickets", "Tickets", "ticket")}${item("documents", base + "/documents", "Documents", "folder")}
     ${item("ask", base + "/ask", "Genius", "chat")}</aside><div class="shell-main${fill ? " gfill-main" : ""}"><script>(function(){var r=document.querySelector('.rail');if(!r)return;var a=r.querySelector('.rail-item.active');if(!a)return;if(r.scrollWidth>r.clientWidth){r.scrollLeft=Math.max(0,a.offsetLeft+a.clientWidth/2-r.clientWidth/2);}})();</script>`;
 }
@@ -213,11 +213,86 @@ async function railLocs(env, user) {
   return out;
 }
 
-function lockedTile(user, loc, productName, productKey) {
-  const body = `${locNav(loc, "")}<div class="card"><h2>${esc(productName)}</h2>
-    <p><span class="pill off">Not included</span></p>
-    <p class="muted">This service is not turned on for this office.</p>
-    ${productKey ? requestForm(loc, productKey) : ""}</div>`;
+// ---------- Locked service: the "Available to add" card ----------
+// One pattern for every service that is off for an office: a neutral
+// badge (never red; off is a plan state, not an error), one line that
+// the service is not in this office's plan yet, what the office would
+// get, and a request button. productRequestPost records each request
+// in the audit log (action 'product_request', entity 'location',
+// detail = product name), so the card reads that log back and shows
+// the requested state to every login for the office, on every visit,
+// with no new table.
+const SERVICE_POINTS = {
+  wifi: [
+    "Live internet and WiFi status for this office, on one page.",
+    "Outage alerts to FlossByte, so a dropped connection is spotted early.",
+    "Firewall, switch, and access point health in one place.",
+  ],
+  managed_it: [
+    "Every computer, printer, and network device for this office, tracked in one place.",
+    "Support tickets to FlossByte from inside the portal, with replies in the same thread.",
+    "License and warranty dates watched, with a warning before anything lapses.",
+  ],
+  flossverify: [
+    "Insurance eligibility checked before the appointment, not at check-in.",
+    "A clear benefit breakdown, saved where the office can find it.",
+    "Fewer billing surprises for patients after the visit.",
+  ],
+  hipaa_security: [
+    "A security assessment of this office against the HIPAA security rules.",
+    "Findings in plain language, each one with its fix.",
+    "Remediation tracked here until every item is closed.",
+  ],
+  voip: [
+    "This office's phone system run by FlossByte: handsets, call flow, and voicemail.",
+    "Changes handled by FlossByte, with no phone vendor to chase.",
+    "Phones set up on the office internet connection, tuned for call quality.",
+  ],
+  one_time_project: [
+    "One-off jobs, like a new office setup or a server move, quoted up front.",
+    "The work tracked here, with its documents in one place.",
+    "A ticket door that stays open for the next job.",
+  ],
+};
+
+function servicePoints(productName, productKey) {
+  if (productName === "WiFi & Internet") return SERVICE_POINTS.wifi;
+  return SERVICE_POINTS[productKey] || SERVICE_POINTS.managed_it;
+}
+
+// The Office IT tab a locked page belongs to, so the tabs and the rail
+// still work from a locked page instead of dead-ending the visit.
+const LOCKED_TAB = { "WiFi & Internet": "network", "Equipment": "equipment", "Network map": "topology" };
+
+// When this office last asked FlossByte for a product, or null.
+async function latestProductRequest(db, locationId, productKey) {
+  if (!productKey) return null;
+  try {
+    const prod = await db.prepare("SELECT name FROM products WHERE key = ?").bind(productKey).first();
+    if (!prod) return null;
+    const row = await db.prepare(
+      "SELECT created_at FROM audit_log WHERE action = 'product_request' AND entity = 'location' AND entity_id = ? AND detail = ? ORDER BY id DESC LIMIT 1")
+      .bind(locationId, prod.name).first();
+    return row ? row.created_at : null;
+  } catch { return null; }
+}
+
+async function lockedTile(env, user, loc, productName, productKey) {
+  const tab = LOCKED_TAB[productName] || "";
+  const requestedAt = await latestProductRequest(env.DB, loc.id, productKey);
+  const points = servicePoints(productName, productKey).map((p) => `<li>${p}</li>`).join("");
+  const action = requestedAt
+    ? `<p style="margin:14px 0 0"><span class="pill on">Requested ${esc(fmtDateUS(requestedAt))}</span></p>
+    <p class="muted" style="margin-top:8px">FlossByte will follow up about turning this service on.</p>`
+    : `<p class="muted">Request it and we will send a quote. There is no charge to ask.</p>${productKey ? requestForm(loc, productKey) : ""}`;
+  const head = tab
+    ? `${locNav(loc, tab)}<h1>${esc(productName)}</h1>${locTabs(loc, tab)}`
+    : locNav(loc, productName === "Tickets" ? "tickets" : "");
+  const body = `${head}<div class="card">${tab ? "" : `<h2>${esc(productName)}</h2>`}
+    <p><span class="pill add">Available to add</span></p>
+    <p class="muted">${esc(productName)} is not part of this office's plan yet. Here is what it adds:</p>
+    <ul style="margin:8px 0 4px;padding-left:18px">${points}</ul>
+    ${action}</div>`;
   return page({ title: productName, user, body });
 }
 
@@ -246,7 +321,17 @@ export async function productRequestPost(env, request, user, locationId) {
   const f = await request.formData();
   const key = String(f.get("product") || "");
   const prod = await env.DB.prepare("SELECT * FROM products WHERE key = ?").bind(key).first();
-  if (prod) {
+  // Send the person back to the page they asked from: a location page
+  // now shows the requested state on the card itself, while the
+  // Services page keeps its flash message.
+  let back = "/app/services?msg=" + encodeURIComponent("Request sent. FlossByte will be in touch about it.");
+  try {
+    const ref = new URL(request.headers.get("Referer") || "");
+    if (ref.origin === new URL(request.url).origin && ref.pathname.startsWith("/app/locations/")) back = ref.pathname;
+  } catch { /* no usable referer: the Services page default stands */ }
+  // One open request per office and service: a repeat submit from a
+  // stale page does not email FlossByte twice.
+  if (prod && !(await latestProductRequest(env.DB, locationId, key))) {
     await audit(env.DB, user.id, "product_request", "location", locationId, prod.name);
     const mail = productRequestEmail(env, {
       customerName: loc.customer_name, locationName: loc.name, productName: prod.name,
@@ -254,7 +339,7 @@ export async function productRequestPost(env, request, user, locationId) {
     });
     await alertFlossByte(env, "product_request", mail);
   }
-  return redirect("/app/services?msg=" + encodeURIComponent("Request sent. FlossByte will be in touch about it."));
+  return redirect(back);
 }
 
 // ---------- Entry: /app ----------
@@ -585,11 +670,25 @@ export async function servicesPage(env, request, user) {
     const states = await productStates(db, org, loc.id);
     const inc = states.filter((p) => p.enabled);
     const avail = states.filter((p) => !p.enabled);
+    // Requests already made for this office, from the same audit log
+    // the locked-service card reads: product name -> latest date.
+    const requested = {};
+    try {
+      const { results: reqRows } = await db.prepare(
+        "SELECT detail, created_at FROM audit_log WHERE action = 'product_request' AND entity = 'location' AND entity_id = ? ORDER BY id").bind(loc.id).all();
+      for (const r of reqRows || []) requested[r.detail] = r.created_at;
+    } catch { /* no request history readable: rows just show the button */ }
     const glabel = (t) => `<div style="font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);padding:12px 0 2px">${t}</div>`;
     const rowIn = (p) => `<div style="display:flex;justify-content:space-between;align-items:center;gap:14px;padding:9px 0;border-bottom:1px solid #EEF2F7"><span style="font-weight:600">${esc(p.name)}</span><span class="pill on">Included</span></div>`;
-    const rowOut = (p) => `<div class="svc-row">
-      <div class="svc-txt"><div style="font-weight:600">${esc(p.name)}</div><div class="muted">${esc(PRODUCT_PLAIN[p.key] || p.description || "")}</div></div>
-      <div class="svc-act"><span class="pill off">Not included</span>${requestForm(loc, p.key, true)}</div></div>`;
+    const rowOut = (p) => {
+      const reqAt = requested[p.name];
+      const act = reqAt
+        ? `<span class="pill on">Requested ${esc(fmtDateUS(reqAt))}</span>`
+        : `<span class="pill add">Available to add</span>${requestForm(loc, p.key, true)}`;
+      return `<div class="svc-row">
+      <div class="svc-txt"><div style="font-weight:600">${esc(p.name)}</div><div class="muted">${esc(PRODUCT_PLAIN[p.key] || p.description || "")}</div>${reqAt ? `<div class="muted">FlossByte will follow up.</div>` : ""}</div>
+      <div class="svc-act">${act}</div></div>`;
+    };
     const both = inc.length > 0 && avail.length > 0;
     card = `<div class="card">
       ${both ? glabel("Included") : ""}${inc.map(rowIn).join("")}
@@ -800,7 +899,7 @@ export async function productPage(env, request, user, locationId, productKey) {
   const prod = await env.DB.prepare("SELECT * FROM products WHERE key = ?").bind(productKey).first();
   if (!prod) return denied(user, 404);
   const on = await productEnabled(env.DB, loc.customer_id, locationId, productKey);
-  if (!on) return lockedTile(user, loc, prod.name, prod.key);
+  if (!on) return await lockedTile(env, user, loc, prod.name, prod.key);
   if (productKey === "managed_it") return redirect(`/app/locations/${locationId}/equipment`);
   const states = await productStates(env.DB, loc.customer_id, locationId);
   const state = states.find((s) => s.key === productKey);
@@ -809,6 +908,29 @@ export async function productPage(env, request, user, locationId, productKey) {
     <p class="muted">${esc(prod.description || "")}</p>
     <p class="muted">Work for this service shows up here as it gets scheduled. Questions: call (669) 237-2264.</p></div>`;
   return page({ title: prod.name, user, body });
+}
+
+// ---------- Office IT landing ----------
+// The rail's Office IT link lands here first, so nobody opens the
+// section on a locked or empty page when another tab has the office's
+// data. WiFi & Internet wins when the office has synced network data;
+// otherwise Equipment, which holds records for every office on the
+// lane. When the lane is off entirely, every tab shows the same
+// "Available to add" card, and the first tab is as good as any.
+export async function officeItLanding(env, request, user, locationId) {
+  const { loc, error } = await guard(env, user, locationId);
+  if (error) return denied(user, error);
+  const base = `/app/locations/${locationId}`;
+  if (await laneOn(env.DB, loc.customer_id, locationId)) {
+    let hasNet = false;
+    try {
+      const row = await env.DB.prepare("SELECT COUNT(*) AS n FROM network_snapshots WHERE location_id = ?").bind(locationId).first();
+      hasNet = !!(row && Number(row.n) > 0);
+    } catch { hasNet = false; }
+    if (hasNet) return redirect(`${base}/network`);
+    return redirect(`${base}/equipment`);
+  }
+  return redirect(`${base}/network`);
 }
 
 // ---------- Equipment ----------
@@ -889,7 +1011,7 @@ function healthCard(h) {
 export async function equipmentPage(env, request, user, locationId) {
   const { loc, error } = await guard(env, user, locationId);
   if (error) return denied(user, error);
-  if (!(await laneOn(env.DB, loc.customer_id, locationId))) return lockedTile(user, loc, "Equipment", "managed_it");
+  if (!(await laneOn(env.DB, loc.customer_id, locationId))) return await lockedTile(env, user, loc, "Equipment", "managed_it");
   const q = new URL(request.url).searchParams;
   const search = (q.get("q") || "").trim();
   const vendor = (q.get("vendor") || "").trim();
@@ -1000,7 +1122,7 @@ export async function equipmentPage(env, request, user, locationId) {
 export async function equipmentDetailPage(env, request, user, locationId, equipmentId) {
   const { loc, error } = await guard(env, user, locationId);
   if (error) return denied(user, error);
-  if (!(await laneOn(env.DB, loc.customer_id, locationId))) return lockedTile(user, loc, "Equipment", "managed_it");
+  if (!(await laneOn(env.DB, loc.customer_id, locationId))) return await lockedTile(env, user, loc, "Equipment", "managed_it");
   const row = await env.DB.prepare("SELECT * FROM equipment WHERE id = ? AND location_id = ?").bind(equipmentId, locationId).first();
   if (!row) return denied(user, 404);
   const scope = await locationScope(env.DB, user, locationId);
@@ -1183,7 +1305,7 @@ export async function equipmentDetailPage(env, request, user, locationId, equipm
 export async function equipmentPrintPage(env, request, user, locationId) {
   const { loc, error } = await guard(env, user, locationId);
   if (error) return denied(user, error);
-  if (!(await laneOn(env.DB, loc.customer_id, locationId))) return lockedTile(user, loc, "Equipment", "managed_it");
+  if (!(await laneOn(env.DB, loc.customer_id, locationId))) return await lockedTile(env, user, loc, "Equipment", "managed_it");
   const { results } = await env.DB.prepare("SELECT * FROM equipment WHERE location_id = ?").bind(locationId).all();
   const renames = await loadRenames(env.DB, locationId);
   const rows = (results || []).sort((a, b) => (BUCKET_RANK[kindBucket(a)] - BUCKET_RANK[kindBucket(b)]) || displayName(a, renames).localeCompare(displayName(b, renames)));
@@ -1290,7 +1412,7 @@ export async function backupTokenPost(env, request, user, locationId) {
 export async function topologyPage(env, request, user, locationId) {
   const { loc, error } = await guard(env, user, locationId);
   if (error) return denied(user, error);
-  if (!(await laneOn(env.DB, loc.customer_id, locationId))) return lockedTile(user, loc, "Network map", "managed_it");
+  if (!(await laneOn(env.DB, loc.customer_id, locationId))) return await lockedTile(env, user, loc, "Network map", "managed_it");
   let hasParent = false;
   try {
     const cols = await env.DB.prepare("PRAGMA table_info(equipment)").all();
@@ -1544,7 +1666,7 @@ export async function topologyPage(env, request, user, locationId) {
 export async function networkPage(env, request, user, locationId) {
   const { loc, error } = await guard(env, user, locationId);
   if (error) return denied(user, error);
-  if (!(await laneOn(env.DB, loc.customer_id, locationId))) return lockedTile(user, loc, "WiFi & Internet", "managed_it");
+  if (!(await laneOn(env.DB, loc.customer_id, locationId))) return await lockedTile(env, user, loc, "WiFi & Internet", "managed_it");
   let hasTable = false;
   try {
     hasTable = !!(await env.DB.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'network_snapshots'").first());
@@ -1805,7 +1927,7 @@ async function saveWifiList(env, locationId, networks) {
 export async function wifiAddPost(env, request, user, locationId) {
   const { loc, error } = await guard(env, user, locationId);
   if (error) return denied(user, error);
-  if (!(await laneOn(env.DB, loc.customer_id, locationId))) return lockedTile(user, loc, "WiFi & Internet", "managed_it");
+  if (!(await laneOn(env.DB, loc.customer_id, locationId))) return await lockedTile(env, user, loc, "WiFi & Internet", "managed_it");
   if (user.kind !== "flossbyte") return denied(user, 403);
   const f = await request.formData();
   const name = String(f.get("name") || "").trim();
@@ -1822,7 +1944,7 @@ export async function wifiAddPost(env, request, user, locationId) {
 export async function wifiDeletePost(env, request, user, locationId) {
   const { loc, error } = await guard(env, user, locationId);
   if (error) return denied(user, error);
-  if (!(await laneOn(env.DB, loc.customer_id, locationId))) return lockedTile(user, loc, "WiFi & Internet", "managed_it");
+  if (!(await laneOn(env.DB, loc.customer_id, locationId))) return await lockedTile(env, user, loc, "WiFi & Internet", "managed_it");
   if (user.kind !== "flossbyte") return denied(user, 403);
   const f = await request.formData();
   const name = String(f.get("name") || "").trim();
@@ -1835,7 +1957,7 @@ export async function wifiDeletePost(env, request, user, locationId) {
 export async function equipmentPost(env, request, user, locationId) {
   const { loc, error } = await guard(env, user, locationId);
   if (error) return denied(user, error);
-  if (!(await laneOn(env.DB, loc.customer_id, locationId))) return lockedTile(user, loc, "Equipment", "managed_it");
+  if (!(await laneOn(env.DB, loc.customer_id, locationId))) return await lockedTile(env, user, loc, "Equipment", "managed_it");
   const scope = await locationScope(env.DB, user, locationId);
   if (!(user.kind === "flossbyte" || scope === "admin")) return denied(user, 403);
   const f = await request.formData();
@@ -1868,7 +1990,7 @@ function datalist(id, values) {
 async function loadEquipment(env, user, locationId, equipmentId) {
   const { loc, error } = await guard(env, user, locationId);
   if (error) return { error: denied(user, error) };
-  if (!(await laneOn(env.DB, loc.customer_id, locationId))) return { error: lockedTile(user, loc, "Equipment", "managed_it") };
+  if (!(await laneOn(env.DB, loc.customer_id, locationId))) return { error: await lockedTile(env, user, loc, "Equipment", "managed_it") };
   const scope = await locationScope(env.DB, user, locationId);
   if (!(user.kind === "flossbyte" || scope === "admin")) return { error: denied(user, 403) };
   const row = await env.DB.prepare("SELECT * FROM equipment WHERE id = ? AND location_id = ?").bind(equipmentId, locationId).first();
@@ -1980,7 +2102,7 @@ const STATUS_LABEL = { open: "Open", in_progress: "In progress", waiting: "Waiti
 export async function ticketsPage(env, request, user, locationId) {
   const { loc, error } = await guard(env, user, locationId);
   if (error) return denied(user, error);
-  if (!(await laneOn(env.DB, loc.customer_id, locationId))) return lockedTile(user, loc, "Tickets", "managed_it");
+  if (!(await laneOn(env.DB, loc.customer_id, locationId))) return await lockedTile(env, user, loc, "Tickets", "managed_it");
   const device = (new URL(request.url).searchParams.get("device") || "").trim().slice(0, 120);
   const { results } = await env.DB.prepare(
     "SELECT * FROM tickets WHERE location_id = ? ORDER BY (status = 'closed'), updated_at DESC").bind(locationId).all();
@@ -2001,7 +2123,7 @@ export async function ticketsPage(env, request, user, locationId) {
 export async function ticketCreatePost(env, request, user, locationId) {
   const { loc, error } = await guard(env, user, locationId);
   if (error) return denied(user, error);
-  if (!(await laneOn(env.DB, loc.customer_id, locationId))) return lockedTile(user, loc, "Tickets", "managed_it");
+  if (!(await laneOn(env.DB, loc.customer_id, locationId))) return await lockedTile(env, user, loc, "Tickets", "managed_it");
   const f = await request.formData();
   const res = await env.DB.prepare(
     "INSERT INTO tickets (location_id, title, priority, created_by) VALUES (?, ?, ?, ?)")
@@ -2110,7 +2232,7 @@ export async function chatPoll(env, request, user, locationId) {
 export async function ticketDetailPage(env, request, user, locationId, ticketId) {
   const { loc, error } = await guard(env, user, locationId);
   if (error) return denied(user, error);
-  if (!(await laneOn(env.DB, loc.customer_id, locationId))) return lockedTile(user, loc, "Tickets", "managed_it");
+  if (!(await laneOn(env.DB, loc.customer_id, locationId))) return await lockedTile(env, user, loc, "Tickets", "managed_it");
   const t = await env.DB.prepare("SELECT * FROM tickets WHERE id = ? AND location_id = ?").bind(ticketId, locationId).first();
   if (!t) return denied(user, 404);
   const { results } = await env.DB.prepare(

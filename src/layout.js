@@ -140,6 +140,7 @@ table.stack form.row{flex-wrap:wrap}
 .pill.on{background:#e0f5ef;color:var(--ok)}
 .pill.off{background:#f3e2e0;color:var(--bad)}
 .pill.warn{background:var(--warn-bg);color:var(--warn)}
+.pill.add{background:#e2f2ee;color:#0d6e5f}
 .notice{background:var(--warn-bg);border:1px solid #f0d9a8;border-radius:10px;padding:14px 16px;margin-bottom:18px}
 .error{background:#fbeae9;border:1px solid #efc4c1;color:var(--bad);border-radius:10px;padding:12px 16px;margin-bottom:16px}
 .muted{color:var(--muted);font-size:14px}
