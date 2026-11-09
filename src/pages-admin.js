@@ -801,13 +801,17 @@ export async function customerPage(env, request, user, customerId) {
       actions = `<span class="muted">Accepted ${fmtDateUS(qt.accepted_at || "")}${qt.accepted_by ? " by " + esc(qt.accepted_by) : ""}. Invoiced ${fmtMoney(qt.invoiced_cents)} of ${fmtMoney(qt.total_cents)}.</span>`
         + (qt.invoiced_cents < qt.total_cents ? ` <form method="post" action="/admin/customers/${customerId}/quotes/${qt.id}/final" style="display:inline"><button class="btn small" type="submit">Invoice the rest</button></form>` : "");
     }
-    const sowForm = `<form method="post" action="/admin/customers/${customerId}/quotes/${qt.id}/sow" enctype="multipart/form-data" style="display:inline"><input type="file" name="sow" accept="application/pdf,.pdf" required style="width:auto;display:inline;max-width:190px"><button class="btn small secondary" type="submit">${qt.sow_r2_key ? "Replace SOW" : "Attach SOW"}</button></form>`;
+    const sowForm = `<form method="post" action="/admin/customers/${customerId}/quotes/${qt.id}/sow" enctype="multipart/form-data" style="display:inline"><input type="file" name="sow" accept="application/pdf,.pdf" required style="width:auto;display:inline;max-width:190px"><button class="btn small secondary" type="submit">${qt.sow_r2_key ? "Replace Statement of Work" : "Attach Statement of Work"}</button></form>`;
     const sowBlock = `<div style="margin-top:6px">${qt.sow_r2_key
-      ? `<span class="muted">SOW: ${esc(qt.sow_name || "Statement of Work.pdf")}${qt.sow_accepted_at ? ` (accepted ${fmtDateUS(qt.sow_accepted_at)}${qt.sow_accepted_by ? " by " + esc(qt.sow_accepted_by) : ""})` : ""}</span> <form method="post" action="/admin/customers/${customerId}/quotes/${qt.id}/sow-remove" style="display:inline"><button class="btn small secondary" type="submit">Remove</button></form> ${sowForm}`
-      : `<span class="muted">No SOW attached.</span> ${sowForm}`}</div>`;
+      ? `<span class="muted">Statement of Work: ${esc(qt.sow_name || "Statement of Work.pdf")}${qt.sow_accepted_at ? ` (accepted ${fmtDateUS(qt.sow_accepted_at)}${qt.sow_accepted_by ? " by " + esc(qt.sow_accepted_by) : ""})` : ""}</span> <form method="post" action="/admin/customers/${customerId}/quotes/${qt.id}/sow-remove" style="display:inline"><button class="btn small secondary" type="submit">Remove</button></form> ${sowForm}`
+      : `<span class="muted">No Statement of Work attached.</span> ${sowForm}`}</div>`;
+    const docForm = `<form method="post" action="/admin/customers/${customerId}/quotes/${qt.id}/quote-doc" enctype="multipart/form-data" style="display:inline"><input type="file" name="quote_doc" accept="application/pdf,.pdf" required style="width:auto;display:inline;max-width:190px"><button class="btn small secondary" type="submit">${qt.qdoc_r2_key ? "Replace quote document" : "Attach quote document"}</button></form>`;
+    const docBlock = `<div style="margin-top:6px">${qt.qdoc_r2_key
+      ? `<span class="muted">Quote document: ${esc(qt.qdoc_name || "Quote.pdf")}${qt.qdoc_accepted_at ? ` (accepted ${fmtDateUS(qt.qdoc_accepted_at)}${qt.qdoc_accepted_by ? " by " + esc(qt.qdoc_accepted_by) : ""})` : ""}</span> <form method="post" action="/admin/customers/${customerId}/quotes/${qt.id}/quote-doc-remove" style="display:inline"><button class="btn small secondary" type="submit">Remove</button></form> ${docForm}`
+      : `<span class="muted">No quote document attached.</span> ${docForm}`}</div>`;
     return `<tr><td>${esc(qt.title)}</td><td>${qt.kind === "plan" ? "Service plan" : "Project"}</td>
       <td class="num">${fmtMoney(qt.total_cents)}</td><td>${qt.deposit_percent ? qt.deposit_percent + "%" : "None"}</td>
-      <td>${statusPill}</td><td>${actions}${sowBlock}</td></tr>`;
+      <td>${statusPill}</td><td>${actions}${sowBlock}${docBlock}</td></tr>`;
   }).join("");
   const invoiceRows = (invoiceList || []).map((inv) => {
     const actions = inv.status === "unpaid"
@@ -850,7 +854,7 @@ export async function customerPage(env, request, user, customerId) {
   // quote" panel (the folded add-form pattern) instead of sitting
   // open under the list; with no quotes yet it starts open, under
   // the "Build the first one below" empty state.
-  const newQuoteForm = `<form method="post" action="/admin/customers/${customerId}/quotes">
+  const newQuoteForm = `<form method="post" action="/admin/customers/${customerId}/quotes" enctype="multipart/form-data">
         <label>Quote title <span class="req">*</span></label><input name="title" required placeholder="For example: Network refresh, Phase 1">
         <div class="row"><span style="flex:1;min-width:160px"><label>Type</label>
           <select id="quoteKind" name="kind"><option value="project">One-time project</option><option value="plan">Service plan (MSP)</option></select></span>
@@ -860,6 +864,9 @@ export async function customerPage(env, request, user, customerId) {
         <template id="quoteItemTemplate">${itemRow}</template>
         <p style="margin-top:10px"><button class="btn small secondary" type="button" id="addQuoteItem">+ Add line item</button></p>
         <p style="margin-top:6px">Total: <strong id="quoteTotalLive">$0.00</strong></p>
+        <label style="margin-top:12px">Quote document (PDF, optional)</label>
+        <input type="file" name="quote_doc" accept="application/pdf,.pdf">
+        <p class="muted" style="margin:4px 0 0">If this quote already exists as a PDF, for example one exported from Xero, attach it here. The client sees it on the quote and accepts it with the quote. The line items above stay the record for the total and the deposit, so a single line with the full amount is enough when the PDF carries the detail.</p>
         <label style="margin-top:12px">Terms shown on the quote</label>
         <textarea id="quoteTerms" name="terms" rows="3">${esc(PROJECT_TERMS)}</textarea>
         <p style="margin-top:12px"><button class="btn" type="submit">Save draft quote</button></p>
@@ -994,6 +1001,16 @@ export async function quoteCreatePost(env, request, user, customerId) {
   const kind = String(f.get("kind") || "project") === "plan" ? "plan" : "project";
   const deposit = Math.max(0, Math.min(100, Math.round(Number(f.get("deposit_percent") || 0) || 0)));
   const terms = String(f.get("terms") || "").trim();
+  // Optional quote document chosen on the create form. Validated
+  // before anything is written, so a bad file means no half-created
+  // quote; a good one is stored right after the quote exists.
+  const docFile = f.get("quote_doc");
+  const hasDoc = !!(docFile && docFile.size);
+  if (hasDoc) {
+    const isPdf = /pdf$/i.test(docFile.type || "") || /\.pdf$/i.test(docFile.name || "");
+    if (!isPdf) return redirect(`/admin/customers/${customerId}?tab=billing&btab=quotes&err=` + encodeURIComponent("The quote document has to be a PDF."));
+    if (docFile.size > 10 * 1024 * 1024) return redirect(`/admin/customers/${customerId}?tab=billing&btab=quotes&err=` + encodeURIComponent("That file is over the 10 MB limit."));
+  }
   const res = await env.DB.prepare(
     "INSERT INTO quotes (customer_id, title, kind, status, deposit_percent, terms, created_by) VALUES (?, ?, ?, 'draft', ?, ?, ?)")
     .bind(customerId, title, kind, deposit, terms || null, user.id).run();
@@ -1006,6 +1023,15 @@ export async function quoteCreatePost(env, request, user, customerId) {
     await env.DB.prepare(
       "INSERT INTO quote_items (quote_id, description, qty, unit_price_cents, sort) VALUES (?, ?, ?, ?, ?)")
       .bind(quoteId, desc, qty, parseDollarsToCents(prices[i]), i).run();
+  }
+  if (hasDoc) {
+    const key = `quotes/${quoteId}/doc-${Date.now()}.pdf`;
+    if (env.DOCS) {
+      await env.DOCS.put(key, docFile.stream(), { httpMetadata: { contentType: "application/pdf" } });
+    }
+    await env.DB.prepare("UPDATE quotes SET qdoc_r2_key = ?, qdoc_name = ?, qdoc_mime = 'application/pdf', qdoc_size = ?, updated_at = datetime('now') WHERE id = ?")
+      .bind(env.DOCS ? key : null, String(docFile.name || "Quote.pdf"), docFile.size, quoteId).run();
+    await audit(env.DB, user.id, "quote_doc_attach", "quote", quoteId, String(docFile.name || ""));
   }
   await audit(env.DB, user.id, "quote_create", "quote", quoteId, title);
   return redirect(`/admin/customers/${customerId}?tab=billing&btab=quotes&msg=` + encodeURIComponent("Draft quote saved. Send it when you are ready."));
@@ -1100,7 +1126,48 @@ export async function quoteSowRemovePost(env, request, user, customerId, quoteId
       .bind(quoteId).run();
     await audit(env.DB, user.id, "quote_sow_remove", "quote", quoteId, "");
   }
-  return redirect(`/admin/customers/${customerId}?tab=billing&btab=quotes&msg=` + encodeURIComponent("SOW removed."));
+  return redirect(`/admin/customers/${customerId}?tab=billing&btab=quotes&msg=` + encodeURIComponent("Statement of Work removed."));
+}
+
+// POST /admin/customers/:cid/quotes/:qid/quote-doc — attach (or
+// replace) the one quote document PDF on a quote: the PDF of the
+// quote itself (for example exported from Xero), stored in R2 next
+// to the SOW. The customer sees it on the quote page next to the
+// SOW, and accepting the quote accepts it with the quote.
+export async function quoteDocPost(env, request, user, customerId, quoteId) {
+  const back = (q) => redirect(`/admin/customers/${customerId}?tab=billing&btab=quotes&${q}`);
+  const quote = await env.DB.prepare("SELECT * FROM quotes WHERE id = ? AND customer_id = ?")
+    .bind(quoteId, customerId).first();
+  if (!quote) return back("err=" + encodeURIComponent("Quote not found."));
+  const f = await request.formData();
+  const file = f.get("quote_doc");
+  if (!file || !file.size) return back("err=" + encodeURIComponent("Choose a PDF file first."));
+  const isPdf = /pdf$/i.test(file.type || "") || /\.pdf$/i.test(file.name || "");
+  if (!isPdf) return back("err=" + encodeURIComponent("The quote document has to be a PDF."));
+  if (file.size > 10 * 1024 * 1024) return back("err=" + encodeURIComponent("That file is over the 10 MB limit."));
+  const key = `quotes/${quoteId}/doc-${Date.now()}.pdf`;
+  if (env.DOCS) {
+    if (quote.qdoc_r2_key) { try { await env.DOCS.delete(quote.qdoc_r2_key); } catch { /* replaced anyway */ } }
+    await env.DOCS.put(key, file.stream(), { httpMetadata: { contentType: "application/pdf" } });
+  }
+  await env.DB.prepare("UPDATE quotes SET qdoc_r2_key = ?, qdoc_name = ?, qdoc_mime = 'application/pdf', qdoc_size = ?, updated_at = datetime('now') WHERE id = ?")
+    .bind(env.DOCS ? key : null, String(file.name || "Quote.pdf"), file.size, quoteId).run();
+  await audit(env.DB, user.id, "quote_doc_attach", "quote", quoteId, String(file.name || ""));
+  return back("msg=" + encodeURIComponent("Quote document attached to the quote."));
+}
+
+// POST /admin/customers/:cid/quotes/:qid/quote-doc-remove
+export async function quoteDocRemovePost(env, request, user, customerId, quoteId) {
+  const quote = await env.DB.prepare("SELECT * FROM quotes WHERE id = ? AND customer_id = ?")
+    .bind(quoteId, customerId).first();
+  if (quote && quote.qdoc_r2_key && env.DOCS) { try { await env.DOCS.delete(quote.qdoc_r2_key); } catch { /* gone either way */ } }
+  if (quote) {
+    await env.DB.prepare(
+      "UPDATE quotes SET qdoc_r2_key = NULL, qdoc_name = NULL, qdoc_mime = NULL, qdoc_size = NULL, qdoc_accepted_at = NULL, qdoc_accepted_by = NULL, updated_at = datetime('now') WHERE id = ?")
+      .bind(quoteId).run();
+    await audit(env.DB, user.id, "quote_doc_remove", "quote", quoteId, "");
+  }
+  return redirect(`/admin/customers/${customerId}?tab=billing&btab=quotes&msg=` + encodeURIComponent("Quote document removed."));
 }
 
 export async function invoiceCreatePost(env, request, user, customerId) {

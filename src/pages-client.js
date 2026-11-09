@@ -1105,12 +1105,13 @@ async function projectPageView(env, request, user, loc, prod) {
     <p style="margin-bottom:0"><a href="/app/locations/${loc.id}/tickets">Open the tickets page</a></p></div>`;
 
   // The paperwork the flow filed for this project: the accepted
-  // quote, the SOW, and the copies of this quote's invoices. The
+  // quote, the SOW, the quote document, and the copies of this
+  // quote's invoices. The
   // card renders only once at least one document is actually filed
   // (from acceptance onward); before that there is nothing to show.
   let docsCard = "";
   if (quote) {
-    const keys = [`generated/quote-${quote.id}.html`, `generated/quote-${quote.id}-sow`];
+    const keys = [`generated/quote-${quote.id}.html`, `generated/quote-${quote.id}-sow`, `generated/quote-${quote.id}-doc`];
     for (const inv of (money ? money.invoices : [])) keys.push(`generated/invoice-${inv.id}.html`);
     const placeholders = keys.map(() => "?").join(",");
     // The generated keys are unique to this quote and its invoices,
@@ -1245,6 +1246,30 @@ export async function quoteSowView(env, request, user, quoteId) {
     headers: {
       "Content-Type": quote.sow_mime || "application/pdf",
       "Content-Disposition": `inline; filename="${String(quote.sow_name || "Statement of Work.pdf").replace(/"/g, "")}"`,
+    },
+  });
+}
+
+// GET /app/quotes/:id/quote-doc — the quote document attached to a
+// quote, streamed to anyone who can see the quote (admins, and the
+// org's own logins). Same serving pattern as the SOW above.
+export async function quoteDocView(env, request, user, quoteId) {
+  const db = env.DB;
+  let quote = null;
+  if (user.kind === "flossbyte") {
+    quote = await db.prepare("SELECT * FROM quotes WHERE id = ?").bind(quoteId).first();
+  } else {
+    const org = await clientOrgId(env, user);
+    if (org === null) return denied(user, 403);
+    quote = await db.prepare("SELECT * FROM quotes WHERE id = ? AND customer_id = ?").bind(quoteId, org).first();
+  }
+  if (!quote || !quote.qdoc_r2_key || !env.DOCS) return denied(user, 404);
+  const obj = await env.DOCS.get(quote.qdoc_r2_key);
+  if (!obj) return denied(user, 404);
+  return new Response(obj.body, {
+    headers: {
+      "Content-Type": quote.qdoc_mime || "application/pdf",
+      "Content-Disposition": `inline; filename="${String(quote.qdoc_name || "Quote.pdf").replace(/"/g, "")}"`,
     },
   });
 }
@@ -3441,11 +3466,18 @@ export async function quoteViewPage(env, request, user, quoteId) {
   } else if (quote.status === "declined") {
     statusBlock = `<div class="notice">This quote was declined. If that was a mistake, call FlossByte at (669) 237-2264.</div>`;
   } else if (user.role === "customer_admin") {
+    // The agreement names exactly what acceptance covers: the quote,
+    // plus the attached quote document and/or the attached Statement
+    // of Work when they are on the quote.
+    const attachParts = [];
+    if (quote.qdoc_r2_key) attachParts.push("the attached quote document");
+    if (quote.sow_r2_key) attachParts.push("the attached Statement of Work");
+    const acceptSuffix = attachParts.length ? " and " + attachParts.join(" and ") : "";
     statusBlock = `<div class="card"><h3>Accept this quote</h3>
       <form method="post" action="/app/quotes/${quote.id}/accept">
         <label>Your full name <span class="req">*</span></label><input name="signer_name" required>
         <p><label style="display:flex;gap:8px;align-items:flex-start"><input type="checkbox" name="agree" value="yes" required style="width:auto;margin-top:4px">
-        <span>I agree to the terms below and accept this quote${quote.sow_r2_key ? " and the attached Statement of Work" : ""} for our organization.</span></label></p>
+        <span>I agree to the terms below and accept this quote${acceptSuffix} for our organization.</span></label></p>
         <button class="btn" type="submit">Accept quote</button></form>
       <form method="post" action="/app/quotes/${quote.id}/decline" style="margin-top:10px">
         <button class="btn small secondary" type="submit">Decline</button></form></div>`;
@@ -3455,10 +3487,14 @@ export async function quoteViewPage(env, request, user, quoteId) {
   const sowBlock = quote.sow_r2_key ? `<div class="card"><h3 style="margin-top:0">Statement of Work</h3>
     <p style="margin:0 0 10px">This quote has a Statement of Work attached: <strong>${esc(quote.sow_name || "Statement of Work.pdf")}</strong>.${quote.sow_accepted_at ? ` It was accepted by ${esc(quote.sow_accepted_by || "")} on ${esc(fmtDateUS(quote.sow_accepted_at))}, together with the quote.` : " Accepting the quote accepts the SOW with it."}</p>
     <p style="margin:0"><a class="btn small secondary" href="/app/quotes/${quote.id}/sow" target="_blank" rel="noopener">View the SOW</a></p></div>` : "";
+  const docBlock = quote.qdoc_r2_key ? `<div class="card"><h3 style="margin-top:0">Quote document</h3>
+    <p style="margin:0 0 10px">The full quote document is attached: <strong>${esc(quote.qdoc_name || "Quote.pdf")}</strong>. It carries the detail behind the summary line on this page.${quote.qdoc_accepted_at ? ` It was accepted by ${esc(quote.qdoc_accepted_by || "")} on ${esc(fmtDateUS(quote.qdoc_accepted_at))}, together with the quote.` : " Accepting the quote accepts the quote document with it."}</p>
+    <p style="margin:0"><a class="btn small secondary" href="/app/quotes/${quote.id}/quote-doc" target="_blank" rel="noopener">View the quote document</a></p></div>` : "";
   const rail = await railLocs(env, user);
   const body = `${orgRail(user, "billing", "My Portal", rail)}<p><a href="/app/billing">&larr; Billing</a></p><h1>${esc(quote.title)}</h1>
     <p class="muted">${quote.kind === "plan" ? "Service plan" : "Project"} quote from FlossByte. Total <strong>${fmtMoney(total)}</strong>${deposit > 0 ? `, with a ${quote.deposit_percent}% deposit of <strong>${fmtMoney(deposit)}</strong> due on acceptance and ${fmtMoney(total - deposit)} after that.` : "."}</p>
     <p><button class="btn small secondary" type="button" onclick="window.print()">Print / save as PDF</button></p>
+    ${docBlock}
     ${sowBlock}
     ${statusBlock}
     <div class="card" style="padding:8px 14px"><div class="tscroll"><table class="stack"><thead><tr><th>Description</th><th class="num">Qty</th><th class="num">Price</th><th class="num">Amount</th></tr></thead>
@@ -3483,11 +3519,17 @@ export async function quoteAcceptPost(env, request, user, quoteId) {
   await env.DB.prepare(
     "UPDATE quotes SET status = 'accepted', accepted_at = datetime('now'), accepted_by = ?, updated_at = datetime('now') WHERE id = ?")
     .bind(signer, quoteId).run();
-  // An attached SOW is accepted with the quote: the same signature
-  // covers both, and the record says so.
+  // Attached documents are accepted with the quote: the same
+  // signature covers the SOW and the quote document, and the
+  // record says so for each one that is on the quote.
   if (quote.sow_r2_key) {
     await env.DB.prepare(
       "UPDATE quotes SET sow_accepted_at = datetime('now'), sow_accepted_by = ? WHERE id = ?")
+      .bind(signer, quoteId).run().catch(() => {});
+  }
+  if (quote.qdoc_r2_key) {
+    await env.DB.prepare(
+      "UPDATE quotes SET qdoc_accepted_at = datetime('now'), qdoc_accepted_by = ? WHERE id = ?")
       .bind(signer, quoteId).run().catch(() => {});
   }
   const deposit = Math.round(total * (quote.deposit_percent || 0) / 100);
@@ -3500,8 +3542,13 @@ export async function quoteAcceptPost(env, request, user, quoteId) {
     if (depInv) await sendInvoiceIssued(env, depInv).catch(() => {});
     invoiceNote = " The deposit invoice is on your Billing page; work is scheduled once it is paid.";
   }
-  await audit(env.DB, user.id, "quote_accept", "quote", quoteId,
-    quote.sow_r2_key ? `signed by ${signer}; quote and SOW accepted` : `signed by ${signer}`);
+  const acceptedNames = ["quote"];
+  if (quote.qdoc_r2_key) acceptedNames.push("quote document");
+  if (quote.sow_r2_key) acceptedNames.push("SOW");
+  const acceptDetail = acceptedNames.length > 1
+    ? `signed by ${signer}; ${acceptedNames.slice(0, -1).join(", ")} and ${acceptedNames[acceptedNames.length - 1]} accepted`
+    : `signed by ${signer}`;
+  await audit(env.DB, user.id, "quote_accept", "quote", quoteId, acceptDetail);
   {
     const cust = await env.DB.prepare("SELECT name FROM customers WHERE id = ?").bind(org).first();
     const mail = quoteAcceptedNoticeEmail(env, {
@@ -3509,8 +3556,9 @@ export async function quoteAcceptPost(env, request, user, quoteId) {
     });
     await alertFlossByte(env, "quote_accepted", mail);
   }
-  // One-Time Project flow: file the accepted paperwork (SOW + quote
-  // copy) into Documents and send the acceptance stage email when a
+  // One-Time Project flow: file the accepted paperwork (SOW, quote
+  // document, and quote copy) into Documents and send the acceptance
+  // stage email when a
   // project is bound to this quote. Best-effort inside projects.js.
   await onQuoteAccepted(env, quoteId, signer);
   const planNote = quote.kind === "plan" && stripeOn(env) && deposit === 0

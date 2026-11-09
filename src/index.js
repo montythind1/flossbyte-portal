@@ -182,6 +182,10 @@ async function route(request, env) {
     if (m && method === "POST") return admin.quoteSowPost(env, request, user, Number(m[1]), Number(m[2]));
     m = path.match(/^\/admin\/customers\/(\d+)\/quotes\/(\d+)\/sow-remove$/);
     if (m && method === "POST") return admin.quoteSowRemovePost(env, request, user, Number(m[1]), Number(m[2]));
+    m = path.match(/^\/admin\/customers\/(\d+)\/quotes\/(\d+)\/quote-doc$/);
+    if (m && method === "POST") return admin.quoteDocPost(env, request, user, Number(m[1]), Number(m[2]));
+    m = path.match(/^\/admin\/customers\/(\d+)\/quotes\/(\d+)\/quote-doc-remove$/);
+    if (m && method === "POST") return admin.quoteDocRemovePost(env, request, user, Number(m[1]), Number(m[2]));
     m = path.match(/^\/admin\/customers\/(\d+)\/invoices$/);
     if (m && method === "POST") return admin.invoiceCreatePost(env, request, user, Number(m[1]));
     m = path.match(/^\/admin\/customers\/(\d+)\/invoices\/(\d+)\/(paid|void|remind)$/);
@@ -216,6 +220,8 @@ async function route(request, env) {
   if (m && method === "POST") return client.quoteAcceptPost(env, request, user, Number(m[1]));
   m = path.match(/^\/app\/quotes\/(\d+)\/sow$/);
   if (m && method === "GET") return client.quoteSowView(env, request, user, Number(m[1]));
+  m = path.match(/^\/app\/quotes\/(\d+)\/quote-doc$/);
+  if (m && method === "GET") return client.quoteDocView(env, request, user, Number(m[1]));
   m = path.match(/^\/app\/locations\/(\d+)\/project-controls$/);
   if (m && method === "POST") return client.projectControlsPost(env, request, user, Number(m[1]));
   m = path.match(/^\/app\/quotes\/(\d+)\/decline$/);

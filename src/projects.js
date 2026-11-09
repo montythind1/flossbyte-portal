@@ -41,11 +41,16 @@ export async function ensureProjectSchema(db) {
         updated_at TEXT NOT NULL DEFAULT (datetime('now'))
       )`).run();
     await db.prepare("CREATE INDEX IF NOT EXISTS idx_projects_customer ON projects (customer_id)").run();
-    // SOW attachment and SOW acceptance live on the quote itself.
+    // SOW attachment and SOW acceptance live on the quote itself, and
+    // so does the quote document: the PDF of the quote itself (for
+    // example exported from Xero) that the customer accepts with the
+    // portal quote, whose numbers stay the record the money math reads.
     // SQLite has no ADD COLUMN IF NOT EXISTS; a duplicate-column error
     // just means the column is already there.
     for (const col of ["sow_r2_key TEXT", "sow_name TEXT", "sow_mime TEXT", "sow_size INTEGER",
-                       "sow_accepted_at TEXT", "sow_accepted_by TEXT"]) {
+                       "sow_accepted_at TEXT", "sow_accepted_by TEXT",
+                       "qdoc_r2_key TEXT", "qdoc_name TEXT", "qdoc_mime TEXT", "qdoc_size INTEGER",
+                       "qdoc_accepted_at TEXT", "qdoc_accepted_by TEXT"]) {
       try { await db.prepare(`ALTER TABLE quotes ADD COLUMN ${col}`).run(); } catch { /* already there */ }
     }
     projectSchemaEnsured = true;
@@ -316,7 +321,7 @@ export function quoteCopyHtml(quote, items, total, customerName) {
   const rows = (items || []).map((i) =>
     `<tr><td>${esc(i.description)}</td><td class="num">${esc(String(i.qty))}</td><td class="num">${fmtMoney(i.unit_price_cents)}</td><td class="num">${fmtMoney(Math.round(i.qty * i.unit_price_cents))}</td></tr>`).join("");
   const accepted = quote.status === "accepted"
-    ? `<p>Accepted by ${esc(quote.accepted_by || "")} on ${esc(fmtDateUS(quote.accepted_at || ""))}.${quote.sow_accepted_at ? " The attached Statement of Work was accepted with this quote." : ""}</p>` : "";
+    ? `<p>Accepted by ${esc(quote.accepted_by || "")} on ${esc(fmtDateUS(quote.accepted_at || ""))}.${quote.qdoc_accepted_at ? " The attached quote document was accepted with this quote." : ""}${quote.sow_accepted_at ? " The attached Statement of Work was accepted with this quote." : ""}</p>` : "";
   const deposit = Number(quote.deposit_percent || 0) > 0
     ? `<p class="muted">Deposit: ${quote.deposit_percent}% (${fmtMoney(Math.round(total * quote.deposit_percent / 100))}) due on acceptance.</p>` : "";
   return docShell(`Quote: ${quote.title}`, `
@@ -380,10 +385,11 @@ export async function fileInvoiceCopy(env, inv) {
   } catch { /* filing is best-effort; it never blocks billing */ }
 }
 
-// On quote acceptance: file the SOW as-is and a copy of the quote
-// into the project's office (or the first office for a project quote
-// with no project switched on yet), and send the acceptance stage
-// email when a live project is bound to this quote.
+// On quote acceptance: file the SOW and the quote document as-is
+// and a copy of the quote into the project's office (or the first
+// office for a project quote with no project switched on yet), and
+// send the acceptance stage email when a live project is bound to
+// this quote.
 export async function onQuoteAccepted(env, quoteId, signerName) {
   try {
     const db = env.DB;
@@ -416,6 +422,18 @@ export async function onQuoteAccepted(env, quoteId, signerName) {
           });
         }
       }
+      if (loadedQuote.qdoc_r2_key && env.DOCS) {
+        const obj = await env.DOCS.get(loadedQuote.qdoc_r2_key).catch(() => null);
+        if (obj) {
+          await putFiledDoc(env, {
+            locationId: fileLoc.id,
+            name: loadedQuote.qdoc_name || "Quote.pdf",
+            r2Key: `generated/quote-${quoteId}-doc`,
+            body: obj.body, size: obj.size || loadedQuote.qdoc_size || null,
+            mime: loadedQuote.qdoc_mime || "application/pdf", uploadedBy,
+          });
+        }
+      }
       const cust = await db.prepare("SELECT name FROM customers WHERE id = ?").bind(loadedQuote.customer_id).first().catch(() => null);
       const html = quoteCopyHtml(loaded.quote, loaded.items, loaded.total, cust ? cust.name : "");
       await putFiledDoc(env, {
@@ -429,8 +447,14 @@ export async function onQuoteAccepted(env, quoteId, signerName) {
       const dep = depositState(loaded.quote, money);
       const depAmount = money && money.deposit ? fmtMoney(money.deposit.amount_cents)
         : fmtMoney(Math.round(loaded.total * (Number(loadedQuote.deposit_percent || 0)) / 100));
+      const acceptedParts = ["the quote"];
+      if (loadedQuote.qdoc_r2_key) acceptedParts.push("the quote document");
+      if (loadedQuote.sow_r2_key) acceptedParts.push("the Statement of Work");
+      const acceptedWhat = acceptedParts.length > 1
+        ? acceptedParts.slice(0, -1).join(", ") + " and " + acceptedParts[acceptedParts.length - 1]
+        : acceptedParts[0];
       const lines = [
-        `${esc(signerName || "Your practice admin")} accepted the quote${loadedQuote.sow_r2_key ? " and the Statement of Work" : ""} for <strong>${esc(projectName(project, loaded.quote))}</strong>. The accepted paperwork is filed in this office's Documents.`,
+        `${esc(signerName || "Your practice admin")} accepted ${acceptedWhat} for <strong>${esc(projectName(project, loaded.quote))}</strong>. The accepted paperwork is filed in this office's Documents.`,
         dep === "waiting"
           ? `A deposit invoice of ${depAmount} is on the Billing page. Work is scheduled once the deposit is paid.`
           : dep === "paid"
