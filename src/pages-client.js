@@ -13,6 +13,7 @@ import { buildGeniusContext, geniusAnswer, geniusFooter, isExactLookupQuestion, 
 import { chatReady, getOpenThread, threadMessages, addChatMessage, startChat, endChat, renderChatMessages, notifyChatStarted, setTyping, clearTyping, getTyping } from "./chat.js";
 import { stripeOn, createInvoiceCheckout, createPlanCheckout, getPlanState, cardFeeCents } from "./stripe.js";
 import { sendInvoiceIssued } from "./reminders.js";
+import { loadLinks } from "./links.js";
 
 function orgOrigin(env) { return env.APP_ORIGIN || "https://portal.flossbyte.com"; }
 
@@ -940,12 +941,17 @@ export async function equipmentPage(env, request, user, locationId) {
     const kind = deviceKind(e);
     const bn = baseName(e);
     const renamed = (e.external_id && renames[e.external_id]) || (e.mac && renames[e.mac]);
-    const sub = [kind !== title ? kind : "", e.vendor, e.model && e.model !== title ? e.model : "", e.serial ? "Serial " + e.serial : "", e.firmware ? "Firmware " + e.firmware : "", !renamed && bn && bn !== title ? `Network name: ${bn}` : ""].filter(Boolean).join(" · ");
+    // The syncs stamp their own brand into the vendor column
+    // ("UniFi" on network rows, "Atera" on agent rows); that is a
+    // source label, not a maker, and the office does not need it on
+    // the row. Real makers (Dell, Lenovo, ASUS) still show.
+    const vendorShown = e.vendor && !/^(unifi|atera|sophos)$/i.test(String(e.vendor).trim()) ? e.vendor : "";
+    const sub = [kind !== title ? kind : "", vendorShown, e.model && e.model !== title ? e.model : "", e.serial ? "Serial " + e.serial : "", e.firmware ? "Firmware " + e.firmware : "", !renamed && bn && bn !== title ? `Network name: ${bn}` : ""].filter(Boolean).join(" · ");
     const statusPill = e.status === "online" ? `<span class="pill on">Online</span>`
       : e.status === "offline" ? `<span class="pill off">Offline</span>` : `<span class="pill">${esc(e.status)}</span>`;
     const lastSeen = e.status === "offline" && e.last_seen_at ? `<br><span class="muted" style="font-size:12px">Last seen ${esc(relTime(e.last_seen_at))}</span>` : "";
     const mode = e.ip_mode === "static" ? ` <span class="pill">Static</span>` : e.ip_mode === "dhcp" ? ` <span class="pill">DHCP</span>` : "";
-    return `<tr><td><div style="display:flex;gap:10px;align-items:flex-start">${kindTile(e)}<div><a href="/app/locations/${locationId}/equipment/${e.id}" style="font-weight:700;color:inherit;text-decoration:none">${esc(title)}</a>${sub ? `<br><span class="muted">${esc(sub)}</span>` : ""}</div></div></td>
+    return `<tr class="eqrow" data-href="/app/locations/${locationId}/equipment/${e.id}"><td><div style="display:flex;gap:10px;align-items:flex-start">${kindTile(e)}<div><a href="/app/locations/${locationId}/equipment/${e.id}" style="font-weight:700;color:inherit;text-decoration:none">${esc(title)}</a>${sub ? `<br><span class="muted">${esc(sub)}</span>` : ""}</div></div></td>
       <td>${statusPill}${lastSeen}</td><td>${e.ip_address ? esc(e.ip_address) + mode : '<span class="muted">—</span>'}</td>${isFb ? `<td>${pill}</td>` : ""}${canEdit ? `<td><a href="/app/locations/${locationId}/equipment/${e.id}/edit">Edit</a></td>` : ""}</tr>`;
   }).join("");
   // A plain-language "needs attention" strip, only when something is
@@ -985,7 +991,7 @@ export async function equipmentPage(env, request, user, locationId) {
       <a class="btn small secondary" href="/app/locations/${locationId}/equipment.csv">Download CSV</a></form>
     ${chips}
     <div class="card" style="padding:8px 14px"><div class="tscroll"><table class="stack"><thead><tr><th>Device</th><th>Status</th><th>IP address</th>${isFb ? "<th>Next expiry</th>" : ""}${canEdit ? "<th></th>" : ""}</tr></thead>
-    <tbody>${rows || `<tr><td colspan="${colCount}" class="muted">${allRows.length ? "Nothing matches that filter." : "No equipment recorded yet."}</td></tr>`}</tbody></table></div></div>${addForm}`;
+    <tbody>${rows || `<tr><td colspan="${colCount}" class="muted">${allRows.length ? "Nothing matches that filter." : "No equipment recorded yet."}</td></tr>`}</tbody></table></div></div><script>document.querySelectorAll("tr.eqrow").forEach(function(tr){tr.addEventListener("click",function(ev){if(ev.target.closest("a,button,input,select,textarea,label"))return;var h=tr.getAttribute("data-href");if(h)location.href=h;});});</script>${addForm}`;
   return page({ title: "Equipment", user, body });
 }
 
@@ -1043,7 +1049,26 @@ export async function equipmentDetailPage(env, request, user, locationId, equipm
   const upFmt = (sec) => { if (typeof sec !== "number") return ""; const d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600); return d ? `${d}d ${h}h` : `${h}h`; };
   const bn = baseName(row);
   const renamed = (row.external_id && renames[row.external_id]) || (row.mac && renames[row.mac]);
-  const recordLabel = row.source === "unifi" || row.source === "unifi-client" ? "Synced from UniFi" : row.source === "sophos" ? "Synced from Sophos" : row.source === "atera" ? "Synced from Atera" : "Added by FlossByte";
+  // The Record line names every system that actually feeds this
+  // record: its own source, plus any identity links the syncs have
+  // recorded for it (a merged record carries both systems' keys), and
+  // Atera computer detail in the snapshots counts as Atera too. So a
+  // computer kept by both reads "Synced from Atera and UniFi".
+  const srcNames = new Set();
+  const noteSrc = (s) => {
+    if (s === "atera" || s === "atera-device") srcNames.add("Atera");
+    else if (s === "unifi" || s === "unifi-client") srcNames.add("UniFi");
+    else if (s === "sophos") srcNames.add("Sophos");
+  };
+  noteSrc(row.source);
+  if (agentDetail) srcNames.add("Atera");
+  try {
+    const links = await loadLinks(env.DB, locationId);
+    for (const [k, v] of links) if (v === row.id) noteSrc(k.split(":")[0]);
+  } catch { /* the record's own source still names the label */ }
+  const srcList = ["Atera", "UniFi", "Sophos"].filter((n) => srcNames.has(n));
+  const recordLabel = srcList.length > 1 ? `Synced from ${srcList.slice(0, -1).join(", ")} and ${srcList[srcList.length - 1]}`
+    : srcList.length === 1 ? `Synced from ${srcList[0]}` : "Added by FlossByte";
   // Header band: navy, with the handful of facts people actually come
   // for (IP, uptime, last seen) as quiet highlights.
   const quick = [

@@ -125,6 +125,9 @@ th{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.5p
 .pill{display:inline-block;padding:2px 9px;border-radius:999px;font-size:12px;font-weight:600;background:#e7edf3;white-space:nowrap}
 .tscroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
 .tscroll>table{min-width:600px}
+tr.eqrow{cursor:pointer}
+tr.eqrow:hover td{background:#F4F8FB}
+table.stack tr.eqrow:hover{background:#F4F8FB}
 @media (max-width:680px){
 .tscroll{overflow-x:visible}
 .tscroll>table.stack{min-width:0}
