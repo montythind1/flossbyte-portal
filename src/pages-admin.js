@@ -2,7 +2,8 @@
 // pending signups, and (Super Admin only) admin account management.
 import { page, redirect, esc, icon, fmtDateUS, withStatus } from "./layout.js";
 import { createAuthToken, revokeAllSessions, verifyPassword, normalizePhone, splitName, joinName } from "./auth.js";
-import { audit, isSuperAdmin, grantUserAccess, findCustomerByContactEmail, isValidEmail } from "./access.js";
+import { audit, isSuperAdmin, grantUserAccess, findCustomerByContactEmail, isValidEmail, productEnabled } from "./access.js";
+import { onOtpToggledOn, onInvoicePaid } from "./projects.js";
 import { sendEmail, wrap, inviteEmail, newCustomerNoticeEmail, ownershipTransferEmail, quoteSentEmail } from "./email.js";
 import { sendInvoiceIssued, sendInvoiceReminder, sendQuoteReminder, getReminderSettings } from "./reminders.js";
 import { resendInviteEmail } from "./pages-public.js";
@@ -693,7 +694,16 @@ export async function customerPage(env, request, user, customerId) {
   const { results: members } = await db.prepare(
     `SELECT DISTINCT u.id, u.name, u.email, u.status, u.role, ua.is_main_admin, u.last_login_at FROM user_access ua JOIN users u ON u.id = ua.user_id
      WHERE ua.customer_id = ? ORDER BY u.name`).bind(customerId).all();
-  const locRows = (locations || []).map((l) => `<tr><td><a href="/app/locations/${l.id}">${esc(l.name)}</a></td>
+  const otpRows = await db.prepare(
+    "SELECT location_id, enabled FROM customer_products WHERE customer_id = ? AND product = 'one_time_project'")
+    .bind(customerId).all().catch(() => ({ results: [] }));
+  let otpOrgOn = 0; const otpLocMap = new Map();
+  for (const r of otpRows.results || []) {
+    if (r.location_id === null || r.location_id === undefined) otpOrgOn = r.enabled;
+    else otpLocMap.set(Number(r.location_id), r.enabled);
+  }
+  const otpOnFor = (lid) => (otpLocMap.has(Number(lid)) ? otpLocMap.get(Number(lid)) : otpOrgOn) === 1;
+  const locRows = (locations || []).map((l) => `<tr><td><a href="/app/locations/${l.id}">${esc(l.name)}</a>${otpOnFor(l.id) ? ` <a href="/app/locations/${l.id}/products/one_time_project">(project page)</a>` : ""}</td>
     <td>${esc([l.address, l.suite, l.city, l.state, l.zip].filter(Boolean).join(", "))}</td><td>${esc(l.status)}</td>
     <td><form method="post" action="/admin/locations/${l.id}/edit" class="row" data-loc>
       <input name="name" value="${esc(l.name)}" required style="max-width:170px">
@@ -745,9 +755,13 @@ export async function customerPage(env, request, user, customerId) {
       actions = `<span class="muted">Accepted ${fmtDateUS(qt.accepted_at || "")}${qt.accepted_by ? " by " + esc(qt.accepted_by) : ""}. Invoiced ${fmtMoney(qt.invoiced_cents)} of ${fmtMoney(qt.total_cents)}.</span>`
         + (qt.invoiced_cents < qt.total_cents ? ` <form method="post" action="/admin/customers/${customerId}/quotes/${qt.id}/final" style="display:inline"><button class="btn small" type="submit">Invoice the rest</button></form>` : "");
     }
+    const sowForm = `<form method="post" action="/admin/customers/${customerId}/quotes/${qt.id}/sow" enctype="multipart/form-data" style="display:inline"><input type="file" name="sow" accept="application/pdf,.pdf" required style="width:auto;display:inline;max-width:190px"><button class="btn small secondary" type="submit">${qt.sow_r2_key ? "Replace SOW" : "Attach SOW"}</button></form>`;
+    const sowBlock = `<div style="margin-top:6px">${qt.sow_r2_key
+      ? `<span class="muted">SOW: ${esc(qt.sow_name || "Statement of Work.pdf")}${qt.sow_accepted_at ? ` (accepted ${fmtDateUS(qt.sow_accepted_at)}${qt.sow_accepted_by ? " by " + esc(qt.sow_accepted_by) : ""})` : ""}</span> <form method="post" action="/admin/customers/${customerId}/quotes/${qt.id}/sow-remove" style="display:inline"><button class="btn small secondary" type="submit">Remove</button></form> ${sowForm}`
+      : `<span class="muted">No SOW attached.</span> ${sowForm}`}</div>`;
     return `<tr><td>${esc(qt.title)}</td><td>${qt.kind === "plan" ? "Service plan" : "Project"}</td>
       <td class="num">${fmtMoney(qt.total_cents)}</td><td>${qt.deposit_percent ? qt.deposit_percent + "%" : "None"}</td>
-      <td>${statusPill}</td><td>${actions}</td></tr>`;
+      <td>${statusPill}</td><td>${actions}${sowBlock}</td></tr>`;
   }).join("");
   const invoiceRows = (invoiceList || []).map((inv) => {
     const actions = inv.status === "unpaid"
@@ -964,6 +978,46 @@ export async function quoteActionPost(env, request, user, customerId, quoteId, a
   return redirect(`/admin/customers/${customerId}?tab=billing`);
 }
 
+// POST /admin/customers/:cid/quotes/:qid/sow — attach (or replace)
+// the one Statement of Work PDF on a quote. Stored in R2 next to the
+// documents; the customer sees it on the quote page, and accepting
+// the quote accepts the SOW with it.
+export async function quoteSowPost(env, request, user, customerId, quoteId) {
+  const back = (q) => redirect(`/admin/customers/${customerId}?tab=billing&${q}`);
+  const quote = await env.DB.prepare("SELECT * FROM quotes WHERE id = ? AND customer_id = ?")
+    .bind(quoteId, customerId).first();
+  if (!quote) return back("err=" + encodeURIComponent("Quote not found."));
+  const f = await request.formData();
+  const file = f.get("sow");
+  if (!file || !file.size) return back("err=" + encodeURIComponent("Choose a PDF file first."));
+  const isPdf = /pdf$/i.test(file.type || "") || /\.pdf$/i.test(file.name || "");
+  if (!isPdf) return back("err=" + encodeURIComponent("The SOW has to be a PDF."));
+  if (file.size > 10 * 1024 * 1024) return back("err=" + encodeURIComponent("That file is over the 10 MB limit."));
+  const key = `quotes/${quoteId}/sow-${Date.now()}.pdf`;
+  if (env.DOCS) {
+    if (quote.sow_r2_key) { try { await env.DOCS.delete(quote.sow_r2_key); } catch { /* replaced anyway */ } }
+    await env.DOCS.put(key, file.stream(), { httpMetadata: { contentType: "application/pdf" } });
+  }
+  await env.DB.prepare("UPDATE quotes SET sow_r2_key = ?, sow_name = ?, sow_mime = 'application/pdf', sow_size = ?, updated_at = datetime('now') WHERE id = ?")
+    .bind(env.DOCS ? key : null, String(file.name || "Statement of Work.pdf"), file.size, quoteId).run();
+  await audit(env.DB, user.id, "quote_sow_attach", "quote", quoteId, String(file.name || ""));
+  return back("msg=" + encodeURIComponent("SOW attached to the quote."));
+}
+
+// POST /admin/customers/:cid/quotes/:qid/sow-remove
+export async function quoteSowRemovePost(env, request, user, customerId, quoteId) {
+  const quote = await env.DB.prepare("SELECT * FROM quotes WHERE id = ? AND customer_id = ?")
+    .bind(quoteId, customerId).first();
+  if (quote && quote.sow_r2_key && env.DOCS) { try { await env.DOCS.delete(quote.sow_r2_key); } catch { /* gone either way */ } }
+  if (quote) {
+    await env.DB.prepare(
+      "UPDATE quotes SET sow_r2_key = NULL, sow_name = NULL, sow_mime = NULL, sow_size = NULL, sow_accepted_at = NULL, sow_accepted_by = NULL, updated_at = datetime('now') WHERE id = ?")
+      .bind(quoteId).run();
+    await audit(env.DB, user.id, "quote_sow_remove", "quote", quoteId, "");
+  }
+  return redirect(`/admin/customers/${customerId}?tab=billing&msg=` + encodeURIComponent("SOW removed."));
+}
+
 export async function invoiceCreatePost(env, request, user, customerId) {
   const f = await request.formData();
   const title = String(f.get("title") || "").trim();
@@ -990,6 +1044,10 @@ export async function invoiceActionPost(env, request, user, customerId, invoiceI
     await db.prepare("UPDATE invoices SET status = 'paid', paid_at = datetime('now'), paid_method = ?, updated_at = datetime('now') WHERE id = ?")
       .bind(method || null, invoiceId).run();
     await audit(db, user.id, "invoice_paid", "invoice", invoiceId, method || "");
+    // The filed Documents copy flips to the paid version, and a
+    // project invoice sends its payment stage email.
+    const paidInv = await db.prepare("SELECT * FROM invoices WHERE id = ?").bind(invoiceId).first().catch(() => null);
+    if (paidInv) await onInvoicePaid(env, paidInv);
     return redirect(`/admin/customers/${customerId}?tab=billing&msg=` + encodeURIComponent("Invoice marked paid."));
   }
   if (action === "void" && inv.status === "unpaid") {
@@ -1103,6 +1161,12 @@ export async function productTogglePost(env, request, user, customerId) {
   const locationId = f.get("location_id") ? Number(f.get("location_id")) : null;
   const valid = await env.DB.prepare("SELECT key FROM products WHERE key = ?").bind(product).first();
   if (valid) {
+    // One-Time Project turning on carries the flow with it (project
+    // record, activation email); only a real off-to-on transition
+    // counts, so re-saving an already-on switch does not re-email.
+    const wasOn = product === "one_time_project"
+      ? await productEnabled(env.DB, customerId, locationId, "one_time_project").catch(() => false)
+      : false;
     // Manual upsert: SQLite treats NULL location_id as distinct in UNIQUE
     // indexes, so an ON CONFLICT clause would silently duplicate rows.
     const existing = await env.DB.prepare(
@@ -1119,6 +1183,9 @@ export async function productTogglePost(env, request, user, customerId) {
         .bind(customerId, locationId, product, enabled, null).run();
     }
     await audit(env.DB, user.id, enabled ? "product_on" : "product_off", "customer", Number(customerId), product);
+    if (product === "one_time_project" && enabled === 1 && !wasOn) {
+      await onOtpToggledOn(env, Number(customerId), locationId, user.id);
+    }
   }
   return redirect(`/admin/customers/${customerId}?tab=products`);
 }

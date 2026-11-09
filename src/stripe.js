@@ -8,6 +8,7 @@
 
 import { audit } from "./access.js";
 import { sendEmail, wrap } from "./email.js";
+import { onInvoicePaid } from "./projects.js";
 
 export function stripeOn(env) {
   return !!(env.STRIPE_SECRET_KEY && String(env.STRIPE_SECRET_KEY).trim());
@@ -295,6 +296,11 @@ export async function stripeWebhook(env, request) {
             .bind(payMethod === "bank" ? "bank (Stripe)" : "card (Stripe)", invoiceId).run();
           await audit(env.DB, null, "invoice_paid", "invoice", invoiceId,
             "Stripe payment " + (s.payment_intent || ""));
+          // Filed copy flips to the paid version; a project invoice
+          // sends its payment stage email.
+          const paidInv = await env.DB.prepare("SELECT * FROM invoices WHERE id = ?")
+            .bind(invoiceId).first().catch(() => null);
+          if (paidInv) await onInvoicePaid(env, paidInv);
         }
       }
     }
@@ -308,12 +314,16 @@ export async function stripeWebhook(env, request) {
             "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
           const when = new Date(Number(obj.created || 0) * 1000);
           const title = `Monthly plan - ${MONTHS[when.getUTCMonth()]} ${when.getUTCFullYear()}`;
-          await env.DB.prepare(
+          const insRes = await env.DB.prepare(
             `INSERT INTO invoices (customer_id, quote_id, title, kind, amount_cents, status, paid_at, paid_method, created_by)
              VALUES (?, ?, ?, 'standard', ?, 'paid', datetime('now'), ?, NULL)`)
             .bind(found.orgId, found.state.quoteId || null, title, Number(obj.amount_paid || 0),
               found.state.payMethod === "bank" ? "bank (Stripe plan)" : "card (Stripe plan)").run();
           await setState(env.DB, dedupKey, new Date().toISOString());
+          // An already-paid invoice still gets its copy filed.
+          const newInv = await env.DB.prepare("SELECT * FROM invoices WHERE id = ?")
+            .bind(insRes.meta.last_row_id).first().catch(() => null);
+          if (newInv) await onInvoicePaid(env, newInv);
         }
         await savePlanState(env.DB, found.orgId, {
           status: "active", lastPaidAt: new Date().toISOString(),

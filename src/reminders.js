@@ -8,6 +8,7 @@
 // looks at sent quotes and unpaid invoices.
 import { sendEmail, invoiceIssuedEmail, invoiceReminderEmail, quoteReminderEmail } from "./email.js";
 import { audit } from "./access.js";
+import { fileInvoiceCopy } from "./projects.js";
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -70,6 +71,10 @@ async function recipient(db, customerId) {
 
 export async function sendInvoiceIssued(env, inv) {
   const db = env.DB;
+  // Every issued invoice gets its paperwork filed into the office's
+  // Documents (projects.js), whether or not the email below can go
+  // out. Idempotent: the filed copy is keyed to the invoice.
+  await fileInvoiceCopy(env, inv);
   const key = `rem_inv_${inv.id}`;
   const st = await stageOf(db, key);
   if (st.issued) return false;
