@@ -169,14 +169,25 @@ function denied(user, code) {
 
 // App shell openers (see adminNav in pages-admin.js): left rail on
 // desktop, swipeable chip bar on phones; the layout CSS owns the switch.
-function locNav(loc, active, fill) {
+async function locNav(db, loc, active, fill) {
   const base = `/app/locations/${loc.id}`;
   const item = (key, href, label, ic) =>
     `<a class="rail-item${active === key ? " active" : ""}" href="${href}">${icon(ic)}${label}</a>`;
+  // The Project item shows only while this office has a project to
+  // show: a project record exists and the project is live
+  // (otpProjectActive), or it is finished, stored or by the calendar
+  // (an expired window is finished in effect; the project page
+  // finalizes it on view), so the finished record stays one tap away.
+  // An office where the switch was flipped off mid-project, or that
+  // never had a project, gets no item.
+  const proj = await getProjectRow(db, loc.id);
+  const showProject = !!proj && (!!proj.finished || projectExpired(proj) ||
+    (await otpProjectActive(db, loc.customer_id, loc.id)));
   return `<div class="shell${fill ? " gfill-shell" : ""}"><aside class="rail">
     <a class="rail-back" href="/app">&larr; Overview</a>
     <div class="rail-context"><div class="rc-t">${esc(loc.name)}</div><div class="rc-s">${esc(loc.customer_name)}</div></div>
     ${item("overview", base, "Overview", "grid")}
+    ${showProject ? item("project", base + "/products/one_time_project", "Project", "briefcase") : ""}
     <a class="rail-item${["network", "equipment", "topology"].includes(active) ? " active" : ""}" href="${base}/office-it">${icon("topology")}Office IT</a>
     ${item("tickets", base + "/tickets", "Tickets", "ticket")}${item("documents", base + "/documents", "Documents", "folder")}
     ${item("ask", base + "/ask", "Genius", "chat")}</aside><div class="shell-main${fill ? " gfill-main" : ""}"><script>(function(){var r=document.querySelector('.rail');if(!r)return;var a=r.querySelector('.rail-item.active');if(!a)return;if(r.scrollWidth>r.clientWidth){r.scrollLeft=Math.max(0,a.offsetLeft+a.clientWidth/2-r.clientWidth/2);}})();</script>`;
@@ -303,8 +314,8 @@ async function lockedTile(env, user, loc, productName, productKey) {
     <p class="muted" style="margin-top:8px">FlossByte will follow up about turning this service on. Still waiting? Send another request.</p>${productKey ? requestForm(loc, productKey, false, true) : ""}`
     : `<p class="muted">Request it and we will send a quote. There is no charge to ask.</p>${productKey ? requestForm(loc, productKey) : ""}`;
   const head = tab
-    ? `${locNav(loc, tab)}<h1>${esc(productName)}</h1>${locTabs(loc, tab)}`
-    : locNav(loc, productName === "Tickets" ? "tickets" : productKey === "genius" ? "ask" : "");
+    ? `${await locNav(env.DB, loc, tab)}<h1>${esc(productName)}</h1>${locTabs(loc, tab)}`
+    : await locNav(env.DB, loc, productName === "Tickets" ? "tickets" : productKey === "genius" ? "ask" : "");
   const body = `${head}<div class="card">${tab ? "" : `<h2>${esc(productName)}</h2>`}
     <p><span class="pill add">Available to add</span></p>
     <p class="muted">${esc(productName)} is not part of this office's plan yet. Here is what it adds:</p>
@@ -679,7 +690,7 @@ export async function locationOverview(env, request, user, locationId) {
   let ispTile = null;
   if (netSnap) { try { ispTile = JSON.parse(netSnap.payload || "{}").isp || null; } catch { ispTile = null; } }
   const morningHtml = managedOn ? await morningCheckCard(db, loc, ispTile, expiring, netSnap ? netSnap.captured_at : null) : "";
-  const body = `${locNav(loc, "overview")}<h1>${esc(loc.name)}</h1>
+  const body = `${await locNav(env.DB, loc, "overview")}<h1>${esc(loc.name)}</h1>
     ${morningHtml}
     ${expiringHtml}
     ${healthCard(health)}
@@ -974,7 +985,7 @@ export async function productPage(env, request, user, locationId, productKey) {
   if (productKey === "genius") return redirect(`/app/locations/${locationId}/ask`);
   const states = await productStates(env.DB, loc.customer_id, locationId);
   const state = states.find((s) => s.key === productKey);
-  const body = `${locNav(loc, "")}<div class="card"><h2>${esc(prod.name)}</h2>
+  const body = `${await locNav(env.DB, loc, "")}<div class="card"><h2>${esc(prod.name)}</h2>
     <p><span class="pill on">On for this office</span></p>
     <p class="muted">${esc(prod.description || "")}</p>
     <p class="muted">Work for this service shows up here as it gets scheduled. Questions: call (669) 237-2264.</p></div>`;
@@ -1112,7 +1123,7 @@ async function projectPageView(env, request, user, loc, prod) {
   const bar = stage === "pre"
     ? `<div class="card"><p style="margin:0">Quote in preparation. FlossByte is putting the quote together; it will show up here when it is sent.</p></div>`
     : `<div class="card">${progressBar(steps)}</div>`;
-  const body = `${locNav(loc, "")}<h1>${esc(name)}</h1>
+  const body = `${await locNav(db, loc, "project")}<h1>${esc(name)}</h1>
     <p>${pill} <span class="muted">One-Time Project at ${esc(loc.name)}</span></p>
     ${bar}
     <div class="card"><p style="margin:0">${nextStepLine(stage, { scheduledDate: project ? project.scheduled_date : null, supportEnd: project ? supportEndDate(project) : null })}</p></div>
@@ -1390,7 +1401,7 @@ export async function equipmentPage(env, request, user, locationId) {
       <span style="flex:1;min-width:150px"><label>Warranty expires</label><input name="warranty_expires" type="date"></span>
       <button class="btn small" type="submit">Add</button></form></div>` : "";
   const colCount = 3 + (isFb ? 1 : 0) + (canEdit ? 1 : 0);
-  const body = `${locNav(loc, "equipment")}<h1>Equipment</h1>${locTabs(loc, "equipment")}${attention}${tiles}
+  const body = `${await locNav(env.DB, loc, "equipment")}<h1>Equipment</h1>${locTabs(loc, "equipment")}${attention}${tiles}
     <form method="get" class="row" style="margin-bottom:14px">
       <span style="flex:2;min-width:180px"><input name="q" placeholder="Search name, model, serial, IP address" value="${esc(search)}"></span>
       <span style="flex:1;min-width:140px"><select name="vendor"><option value="">All vendors</option>
@@ -1579,7 +1590,7 @@ export async function equipmentDetailPage(env, request, user, locationId, equipm
         ${checked ? `<p class="muted" style="margin:10px 0 0;font-size:12.5px">Checked ${esc(relTime(checked))}.</p>` : ""}</div>`;
     } catch { fwCard = ""; }
   }
-  const body = `${locNav(loc, "equipment")}<p class="flash-print-hide"><a href="/app/locations/${locationId}/equipment">&larr; Equipment</a></p>
+  const body = `${await locNav(env.DB, loc, "equipment")}<p class="flash-print-hide"><a href="/app/locations/${locationId}/equipment">&larr; Equipment</a></p>
     ${header}
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px;align-items:start">
       <div class="card"><h3 style="margin-top:0">Details</h3>${detailRows || '<p class="muted">Nothing else on file for this device.</p>'}
@@ -1602,7 +1613,7 @@ export async function equipmentPrintPage(env, request, user, locationId) {
     const exp = [e.license_expires, e.warranty_expires].filter(Boolean).sort()[0];
     return `<tr><td><b>${esc(displayName(e, renames))}</b></td><td>${esc(deviceKind(e))}</td><td>${esc(e.ip_address || "")}</td><td>${esc(e.serial || "")}</td><td>${esc(e.status)}</td><td>${exp ? esc(fmtDateUS(exp)) : ""}</td></tr>`;
   }).join("");
-  const body = `${locNav(loc, "equipment")}<p class="flash-print-hide"><a href="/app/locations/${locationId}/equipment">&larr; Equipment</a></p>
+  const body = `${await locNav(env.DB, loc, "equipment")}<p class="flash-print-hide"><a href="/app/locations/${locationId}/equipment">&larr; Equipment</a></p>
     <div class="card"><h1 style="margin-top:0">Equipment inventory</h1>
     <p class="muted">${esc(loc.customer_name)} · ${esc(loc.name)} · ${esc(today)} · ${rows.length} devices</p>
     <div class="tscroll"><table class="stack"><thead><tr><th>Device</th><th>Type</th><th>IP address</th><th>Serial</th><th>Status</th><th>Next expiry</th></tr></thead>
@@ -1707,14 +1718,14 @@ export async function topologyPage(env, request, user, locationId) {
     hasParent = (cols.results || []).some((c) => c.name === "parent_mac");
   } catch { hasParent = false; }
   if (!hasParent) {
-    const body = `${locNav(loc, "topology")}<h1>Network map</h1>${locTabs(loc, "topology")}
+    const body = `${await locNav(env.DB, loc, "topology")}<h1>Network map</h1>${locTabs(loc, "topology")}
       <div class="card"><p style="margin:0">The network map needs the latest portal database update before it can draw. Once that update is in, this page builds itself from the hourly sync, with no setup here.</p></div>`;
     return page({ title: "Network map", user, body });
   }
   const { results } = await env.DB.prepare("SELECT * FROM equipment WHERE location_id = ?").bind(locationId).all();
   const all = results || [];
   if (!all.length) {
-    const body = `${locNav(loc, "topology")}<h1>Network map</h1>${locTabs(loc, "topology")}
+    const body = `${await locNav(env.DB, loc, "topology")}<h1>Network map</h1>${locTabs(loc, "topology")}
       <div class="card"><p class="muted" style="margin:0">No equipment recorded yet, so there is nothing to draw. Synced network gear appears here once it is on the <a href="/app/locations/${locationId}/equipment">Equipment</a> list.</p></div>`;
     return page({ title: "Network map", user, body });
   }
@@ -1784,7 +1795,7 @@ export async function topologyPage(env, request, user, locationId) {
     ? `<div class="card" style="border-left:4px solid #b45309"><p style="margin:0"><b>Needs attention.</b> ${all.length} devices, ${online} online${lastSeen ? ` · last checked ${esc(relTime(lastSeen))}` : ""}.</p>
        <p style="margin:6px 0 0"><b>Offline now:</b> ${findLinks}. <span class="muted">Tap a name to find it on the map.</span></p></div>`
     : `<div class="card" style="border-left:4px solid #0A7C6E"><p style="margin:0"><b>Everything is online.</b> All ${all.length} devices are up and connected${lastSeen ? ` · last checked ${esc(relTime(lastSeen))}` : ""}.</p></div>`;
-  const body = `${locNav(loc, "topology")}<h1>Network map</h1>${locTabs(loc, "topology")}
+  const body = `${await locNav(env.DB, loc, "topology")}<h1>Network map</h1>${locTabs(loc, "topology")}
     ${verdict}
     <div class="card" style="padding:0;overflow:hidden">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:12px 14px;border-bottom:1px solid #EEF2F7;flex-wrap:wrap">
@@ -1960,7 +1971,7 @@ export async function networkPage(env, request, user, locationId) {
     hasTable = !!(await env.DB.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'network_snapshots'").first());
   } catch { hasTable = false; }
   if (!hasTable) {
-    const body = `${locNav(loc, "network")}<h1>WiFi &amp; Internet</h1>${locTabs(loc, "network")}
+    const body = `${await locNav(env.DB, loc, "network")}<h1>WiFi &amp; Internet</h1>${locTabs(loc, "network")}
       <div class="card"><p style="margin:0">This page needs the latest portal database update before it can fill in. Once that update is in, this page builds itself from the hourly sync, with no setup here.</p></div>`;
     return page({ title: "WiFi & Internet", user, body });
   }
@@ -2186,13 +2197,13 @@ function wpCopy(b){var c=b.parentElement.querySelector('.wp');if(!c||!navigator.
   }
   const sections = [wifiCard, internetCard, ispCard, backupCard, historyCard, camerasCard, changesCard, techCard].filter(Boolean);
   if (!Object.keys(snaps).length && !isFb) {
-    const body = `${locNav(loc, "network")}<h1>WiFi &amp; Internet</h1>${locTabs(loc, "network")}
+    const body = `${await locNav(env.DB, loc, "network")}<h1>WiFi &amp; Internet</h1>${locTabs(loc, "network")}
       <div class="card"><p class="muted" style="margin:0">Nothing here yet. Once FlossByte connects this office, this page shows its WiFi names and passwords, internet health, and cameras, all kept up to date automatically.</p></div>`;
     return page({ title: "WiFi & Internet", user, body });
   }
   const capLine = captured ? `<p class="muted" style="margin-top:0">Last checked ${esc(relTime(captured))} (${esc(fmtDateUS(captured.slice(0, 10)))}). This page only reads the office's setup; nothing here can change it.</p>` : "";
   const health = await officeHealth(env.DB, locationId);
-  const body = `${locNav(loc, "network")}<h1>WiFi &amp; Internet</h1>${locTabs(loc, "network")}${capLine}${healthCard(health)}${sections.join("")}${anyPass ? wifiScript : ""}`;
+  const body = `${await locNav(env.DB, loc, "network")}<h1>WiFi &amp; Internet</h1>${locTabs(loc, "network")}${capLine}${healthCard(health)}${sections.join("")}${anyPass ? wifiScript : ""}`;
   return page({ title: "WiFi & Internet", user, body });
 }
 
@@ -2310,7 +2321,7 @@ export async function equipmentEditPage(env, request, user, locationId, equipmen
   const currentRename = (row.external_id && renames[row.external_id]) || (row.mac && renames[row.mac]) || "";
   const renameField = `<label>Name shown in the portal</label><input name="display_name" value="${esc(currentRename)}" placeholder="${esc(autoName(row))}">
       <p class="muted" style="margin-top:2px">What the office sees on the Equipment list and the Network map. On the network this device calls itself "${esc(baseName(row) || row.model || "unnamed")}". Set a clearer name here once, like "OP1 computer", and it sticks; the sync never overwrites it. Leave blank to use the automatic name (${esc(autoName(row))}).</p>`;
-  const body = `${locNav(loc, "equipment")}<p><a href="/app/locations/${locationId}/equipment">&larr; Equipment</a></p>
+  const body = `${await locNav(env.DB, loc, "equipment")}<p><a href="/app/locations/${locationId}/equipment">&larr; Equipment</a></p>
     <div class="card"><h2>Edit equipment</h2>
     <form method="post" action="/app/locations/${locationId}/equipment/${row.id}/edit">
       ${fields}
@@ -2396,7 +2407,7 @@ export async function ticketsPage(env, request, user, locationId) {
     "SELECT * FROM tickets WHERE location_id = ? ORDER BY (status = 'closed'), updated_at DESC").bind(locationId).all();
   const rows = (results || []).map((t) => `<tr><td><a href="/app/locations/${locationId}/tickets/${t.id}">${esc(t.title)}</a></td>
     <td><span class="pill">${esc(STATUS_LABEL[t.status] || t.status)}</span></td><td>${esc(t.priority)}</td><td>${esc(fmtDateUS(t.created_at))}</td></tr>`).join("");
-  const body = `${locNav(loc, "tickets")}<h1>Tickets</h1>
+  const body = `${await locNav(env.DB, loc, "tickets")}<h1>Tickets</h1>
     <div class="card" style="padding:8px 14px"><div class="tscroll"><table class="stack"><thead><tr><th>Title</th><th>Status</th><th>Priority</th><th>Opened</th></tr></thead>
     <tbody>${rows || `<tr><td colspan="4" class="muted">No tickets yet.</td></tr>`}</tbody></table></div></div>
     <div class="card"><h3>Open a ticket</h3>
@@ -2534,7 +2545,7 @@ export async function ticketDetailPage(env, request, user, locationId, ticketId)
       <span style="min-width:170px"><select name="status">${Object.entries(STATUS_LABEL).map(([k, v]) => `<option value="${k}" ${t.status === k ? "selected" : ""}>${v}</option>`).join("")}</select></span>
       <span style="min-width:140px"><select name="priority">${["low", "normal", "high", "urgent"].map((p) => `<option ${t.priority === p ? "selected" : ""}>${p}</option>`).join("")}</select></span>
       <button class="btn small secondary" type="submit">Update status</button></form>` : "";
-  const body = `${locNav(loc, "tickets")}<h1>${esc(t.title)}</h1>
+  const body = `${await locNav(env.DB, loc, "tickets")}<h1>${esc(t.title)}</h1>
     <p><span class="pill">${esc(STATUS_LABEL[t.status] || t.status)}</span> <span class="muted">Priority: ${esc(t.priority)} · opened ${esc(fmtDateUS(t.created_at))}</span></p>
     <div class="card">${thread || `<p class="muted">No updates yet.</p>`}
       <form method="post" action="/app/locations/${locationId}/tickets/${ticketId}/update">
@@ -2611,7 +2622,7 @@ export async function documentsPage(env, request, user, locationId) {
     <td>${esc(d.mime || "")}</td><td>${d.size ? Math.round(d.size / 1024) + " KB" : ""}</td>
     <td>${esc(d.uploader || "")}</td><td>${esc(fmtDateUS(d.created_at))}</td><td>${del}</td></tr>`;
   }).join("");
-  const body = `${locNav(loc, "documents")}<h1>Documents</h1>
+  const body = `${await locNav(env.DB, loc, "documents")}<h1>Documents</h1>
     <div class="card" style="padding:8px 14px"><div class="tscroll"><table class="stack"><thead><tr><th>Name</th><th>Type</th><th>Size</th><th>Uploaded by</th><th>Date</th><th></th></tr></thead>
     <tbody>${rows || `<tr><td colspan="6" class="muted">No documents yet.</td></tr>`}</tbody></table></div></div>
     <div class="card"><h3>Upload a document</h3>
@@ -3191,7 +3202,7 @@ export async function askPage(env, request, user, locationId) {
     setInterval(tick, 4000);
   })();
   </script>` : "";
-  const body = `${locNav(loc, "ask", true)}
+  const body = `${await locNav(env.DB, loc, "ask", true)}
   <div class="gpage">
   <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
     <h1 style="margin:0">${openThread ? "FlossByte Support" : "Genius"}</h1>${endBtn}</div>
