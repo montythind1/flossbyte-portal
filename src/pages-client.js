@@ -1062,23 +1062,27 @@ async function projectPageView(env, request, user, loc, prod) {
       </tbody></table></div>${loaded.total > 0 ? `<div class="paid-meter"><div style="width:${pct}%"></div></div>` : ""}
       <p class="muted" style="margin-bottom:0">Quotes and invoices live on your <a href="/app/billing">Billing</a> page.</p></div>`;
   }
-  // Project details: the schedule and the support window as plain
-  // rows, in the same table shape as the Money card. Only rendered
-  // when at least one row applies.
+  // Project details: only the detail that belongs to the stage the
+  // project is on right now, in the same table shape as the Money
+  // card. Stages whose facts already live in the Next step and Money
+  // cards (quote, acceptance, deposit stages) get no card at all;
+  // in particular the future support terms never show up early.
   let detailsCard = "";
   const detailRows = [];
-  if (project && project.scheduled_date) {
-    detailRows.push(`<tr><td class="muted">Scheduled for</td><td>${esc(fmtDateUS(project.scheduled_date))}</td></tr>`);
-  }
-  if (stage === "support" && project) {
+  const dRow = (label, value) => detailRows.push(`<tr><td class="muted">${label}</td><td>${value}</td></tr>`);
+  if (project && stage === "scheduled" && project.scheduled_date) {
+    dRow("Scheduled for", esc(fmtDateUS(project.scheduled_date)));
+  } else if (project && stage === "in_progress") {
+    if (project.scheduled_date) dRow("Scheduled for", esc(fmtDateUS(project.scheduled_date)));
+    if (project.in_progress_at) dRow("Work started", esc(fmtDateUS(project.in_progress_at)));
+  } else if (project && stage === "support") {
     const left = supportRemaining(project);
-    detailRows.push(`<tr><td class="muted">Support window</td><td>${left} of ${Math.max(1, Number(project.support_days || 30))} days left</td></tr>`);
-    detailRows.push(`<tr><td class="muted">Support ends</td><td>${esc(fmtDateUS(supportEndDate(project)))}</td></tr>`);
-  } else if (project && !project.work_complete_date && stage !== "finished" && stage !== "declined") {
-    detailRows.push(`<tr><td class="muted">Post-install support</td><td>${Math.max(1, Number(project.support_days || 30))} days, starts when the work is marked complete</td></tr>`);
-  }
-  if (stage === "finished" && project && project.work_complete_date) {
-    detailRows.push(`<tr><td class="muted">Work completed</td><td>${esc(fmtDateUS(project.work_complete_date))}</td></tr>`);
+    dRow("Support window", `${left} of ${Math.max(1, Number(project.support_days || 30))} days left`);
+    dRow("Support ends", esc(fmtDateUS(supportEndDate(project))));
+  } else if (project && stage === "finished") {
+    if (project.work_complete_date) dRow("Work completed", esc(fmtDateUS(project.work_complete_date)));
+    const end = supportEndDate(project);
+    if (end) dRow("Support ended", esc(fmtDateUS(end)));
   }
   if (detailRows.length) {
     detailsCard = `<div class="card"><h3 style="margin-top:0">Project details</h3><div class="tscroll"><table class="stack"><tbody>${detailRows.join("")}</tbody></table></div></div>`;
@@ -1094,7 +1098,9 @@ async function projectPageView(env, request, user, loc, prod) {
     <p style="margin-bottom:0"><a href="/app/locations/${loc.id}/tickets">Open the tickets page</a></p></div>`;
 
   // The paperwork the flow filed for this project: the accepted
-  // quote, the SOW, and the copies of this quote's invoices.
+  // quote, the SOW, and the copies of this quote's invoices. The
+  // card renders only once at least one document is actually filed
+  // (from acceptance onward); before that there is nothing to show.
   let docsCard = "";
   if (quote) {
     const keys = [`generated/quote-${quote.id}.html`, `generated/quote-${quote.id}-sow`];
@@ -1108,9 +1114,11 @@ async function projectPageView(env, request, user, loc, prod) {
        WHERE l.customer_id = ? AND d.r2_key IN (${placeholders}) ORDER BY d.created_at`).bind(loc.customer_id, ...keys).all().catch(() => ({ results: [] }));
     const docList = (docRows || []).map((d) =>
       `<tr><td>${esc(d.name)}</td><td>${esc(fmtDateUS(d.created_at))}</td><td>${d.r2_key ? `<a href="/app/documents/${d.id}/view" target="_blank" rel="noopener">View</a>` : ""}</td></tr>`).join("");
-    docsCard = `<div class="card"><h3 style="margin-top:0">Project paperwork</h3>
-      ${docList ? `<div class="tscroll"><table class="stack"><tbody>${docList}</tbody></table></div>` : `<p class="muted">Paperwork filed for this project shows up here: the accepted quote, the Statement of Work, and the invoices.</p>`}
-      <p style="margin-bottom:0"><a href="/app/locations/${loc.id}/documents">Open Documents for this office</a></p></div>`;
+    if (docList) {
+      docsCard = `<div class="card"><h3 style="margin-top:0">Project paperwork</h3>
+        <div class="tscroll"><table class="stack"><tbody>${docList}</tbody></table></div>
+        <p style="margin-bottom:0"><a href="/app/locations/${loc.id}/documents">Open Documents for this office</a></p></div>`;
+    }
   }
 
   // FlossByte-only controls: the manual stages and the per-project
