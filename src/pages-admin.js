@@ -840,7 +840,7 @@ export async function customerPage(env, request, user, customerId) {
   const btabParam = q(request).get("btab");
   const btab = ["quotes", "invoices"].includes(btabParam) ? btabParam : "quotes";
   const billingSwitcher = `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:16px"><span class="muted" style="font-weight:600">Show:</span><a class="btn small ${btab === "quotes" ? "" : "secondary"}" href="/admin/customers/${customerId}?tab=billing&btab=quotes" style="text-decoration:none">Quotes</a><a class="btn small ${btab === "invoices" ? "" : "secondary"}" href="/admin/customers/${customerId}?tab=billing&btab=invoices" style="text-decoration:none">Invoices</a></div>`;
-  // The New quote form: two line-item rows to start, more added with
+  // The New quote form: one line-item row to start, more added with
   // the button (cloned from the template, the wizard's pattern), each
   // row removable down to one, and a live total that follows the
   // typing. The server still reads the same item_desc / item_qty /
@@ -856,7 +856,7 @@ export async function customerPage(env, request, user, customerId) {
           <select id="quoteKind" name="kind"><option value="project">One-time project</option><option value="plan">Service plan (MSP)</option></select></span>
           <span style="flex:1;min-width:120px"><label>Deposit % due on acceptance</label><input name="deposit_percent" type="number" min="0" max="100" step="1" value="0"></span></div>
         <label style="margin-top:10px">Line items</label>
-        <div id="quoteItems">${itemRow.repeat(2)}</div>
+        <div id="quoteItems">${itemRow}</div>
         <template id="quoteItemTemplate">${itemRow}</template>
         <p style="margin-top:10px"><button class="btn small secondary" type="button" id="addQuoteItem">+ Add line item</button></p>
         <p style="margin-top:6px">Total: <strong id="quoteTotalLive">$0.00</strong></p>
