@@ -21,6 +21,7 @@
 
 import { normMac } from "./unifi.js";
 import { loadLinks, saveLinks, linkedRow, recordLink, macKey, srcKey } from "./links.js";
+import { reconcileDuplicates, tsOf } from "./merge.js";
 
 function apiBase(env) { return env.ATERA_API_BASE || "https://app.atera.com"; }
 
@@ -317,11 +318,26 @@ export async function runAteraSync(env) {
       if (row) {
         equipmentId = row.id;
         const owned = row.source === "atera";
+        // Status protection: if the office network saw this machine
+        // more recently than the agent did, and recently in absolute
+        // terms, the record stays online. The agent going quiet while
+        // the PC is plainly on the network is an agent problem, not a
+        // device outage; the record only goes offline when every
+        // system's view has gone stale.
+        let effStatus = status;
+        if (!a.online && row.status === "online" && row.last_seen_at) {
+          const seenMs = tsOf(row.last_seen_at);
+          if (seenMs > tsOf(a.lastSeen) && Date.now() - seenMs < 30 * 60 * 1000) effStatus = "online";
+        }
+        // Last seen only ever moves forward, to the freshest sighting
+        // from any system; the agent's older check-in time must not
+        // overwrite the network's newer one.
+        const agentSeen = tsOf(a.lastSeen) > tsOf(row.last_seen_at) ? a.lastSeen : row.last_seen_at;
         await db.prepare(
-          `UPDATE equipment SET status = ?, last_seen_at = COALESCE(?, last_seen_at),
+          `UPDATE equipment SET status = ?, last_seen_at = ?,
              mac = COALESCE(mac, ?), serial = COALESCE(serial, ?), ip_address = COALESCE(?, ip_address),
              model = COALESCE(?, model), updated_at = datetime('now') WHERE id = ?`)
-          .bind(status, a.lastSeen, a.mac || null, a.serial ? String(a.serial) : null, a.ip, a.model, row.id).run();
+          .bind(effStatus, agentSeen, a.mac || null, a.serial ? String(a.serial) : null, a.ip, a.model, row.id).run();
         if (owned) {
           await db.prepare("UPDATE equipment SET name = ?, type = ? WHERE id = ?").bind(a.name, a.type, row.id).run();
         } else {
@@ -420,10 +436,16 @@ export async function runAteraSync(env) {
         if (byIp && byIp.source !== "atera" && !(byIp.source === "atera-device" && byIp.external_id && String(byIp.external_id) !== String(d.id))) row = byIp;
       }
       if (row) {
+        let effMonStatus = status;
+        if (!d.online && row.status === "online" && row.last_seen_at) {
+          const seenMs = tsOf(row.last_seen_at);
+          if (seenMs > tsOf(d.lastSeen) && Date.now() - seenMs < 30 * 60 * 1000) effMonStatus = "online";
+        }
+        const devSeen = tsOf(d.lastSeen) > tsOf(row.last_seen_at) ? d.lastSeen : row.last_seen_at;
         await db.prepare(
-          `UPDATE equipment SET status = ?, last_seen_at = COALESCE(?, last_seen_at),
+          `UPDATE equipment SET status = ?, last_seen_at = ?,
              mac = COALESCE(mac, ?), ip_address = COALESCE(?, ip_address), updated_at = datetime('now') WHERE id = ?`)
-          .bind(status, d.lastSeen, d.mac || null, d.ip, row.id).run();
+          .bind(effMonStatus, devSeen, d.mac || null, d.ip, row.id).run();
         if (row.source === "atera-device") {
           await db.prepare("UPDATE equipment SET name = ?, type = ? WHERE id = ?").bind(d.name, d.type, row.id).run();
         } else {
@@ -520,6 +542,7 @@ export async function runAteraSync(env) {
   }
 
   summary.ok = true;
+  try { summary.reconciled = await reconcileDuplicates(env); } catch { /* the safety net never fails the sync */ }
   return finish(`Atera sync complete. ${summary.inserted + summary.updated} computers mirrored, ${summary.unmappedDevices} waiting on mapping.${summary.monDevices ? ` ${summary.monDevices} monitoring devices mirrored.` : ""}`);
 }
 

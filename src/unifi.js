@@ -13,6 +13,7 @@
 
 import { sendEmail, wrap } from "./email.js";
 import { loadLinks, saveLinks, linkedRow, recordLink, macKey, srcKey } from "./links.js";
+import { reconcileDuplicates, normDeviceName } from "./merge.js";
 
 const TYPE_LABELS = {
   uap: "Access point", usw: "Switch", ugw: "Gateway", uxg: "Gateway",
@@ -528,7 +529,7 @@ export async function runUnifiSync(env) {
     // unadopted: flag it offline so the gap is visible, never delete it.
     for (const [locId, seen] of Object.entries(seenByLocation)) {
       const { results: rows } = await env.DB.prepare(
-        "SELECT id FROM equipment WHERE location_id = ? AND source = 'unifi' AND status != 'offline'")
+        "SELECT id FROM equipment WHERE location_id = ? AND source = 'unifi' AND status != 'offline' AND (last_seen_at IS NULL OR last_seen_at < datetime('now', '-30 minutes'))")
         .bind(Number(locId)).all();
       for (const r of rows || []) {
         if (!seen.has(r.id)) {
@@ -578,6 +579,20 @@ export async function runUnifiSync(env) {
               "SELECT * FROM equipment WHERE location_id = ? AND mac = ?").bind(locationId, mac).first();
           }
           const clientIp = hasIp ? (c.ipAddress || c.ip || null) : null;
+          if (!row && clientIp) {
+            // Before creating a second record for this machine, check
+            // whether another system already keeps it at this address
+            // under the same name. This is the dock case: UniFi sees
+            // the dock's MAC address while Atera reports the PC's
+            // own, so the MAC match above misses even though it is
+            // plainly the same computer.
+            const { results: sameIp } = await env.DB.prepare(
+              "SELECT * FROM equipment WHERE location_id = ? AND ip_address = ?").bind(locationId, String(clientIp)).all();
+            for (const cand of sameIp || []) {
+              if (cand.source === "unifi-client" || cand.source === "unifi") continue;
+              if (normDeviceName(cand.name) === normDeviceName(name)) { row = cand; break; }
+            }
+          }
           if (row && row.source && row.source !== "unifi-client" && row.source !== "manual" && row.location_id === locationId) {
             // Another sync owns this record: contribute network facts
             // only (presence, address, uplink), never rename or steal.
@@ -624,7 +639,7 @@ export async function runUnifiSync(env) {
       for (const locId of readLocations) {
         const seen = seenClientsByLocation[locId] || new Set();
         const { results: rows } = await env.DB.prepare(
-          "SELECT id FROM equipment WHERE location_id = ? AND source = 'unifi-client' AND status != 'offline'")
+          "SELECT id FROM equipment WHERE location_id = ? AND source = 'unifi-client' AND status != 'offline' AND (last_seen_at IS NULL OR last_seen_at < datetime('now', '-30 minutes'))")
           .bind(locId).all();
         for (const r of rows || []) {
           if (!seen.has(r.id)) {
@@ -837,5 +852,6 @@ export async function runUnifiSync(env) {
     if (alertsSent) summary.alertsSent = alertsSent;
     if (newDevices) summary.newDevices = newDevices;
   } catch { /* alerting never breaks the sync */ } }
+  try { summary.reconciled = await reconcileDuplicates(env); } catch { /* the safety net never fails the sync */ }
   return finish();
 }
