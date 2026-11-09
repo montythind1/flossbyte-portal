@@ -6,7 +6,7 @@ import {
   expiringItems, audit, accessibleLocationIds, customerAdminOrg, orgMembers,
   removeUserFromCustomer, grantUserAccess,
 } from "./access.js";
-import { sendEmail, quoteAcceptedNoticeEmail, ticketCreatedNoticeEmail, ticketReplyNoticeEmail, productRequestEmail } from "./email.js";
+import { sendEmail, quoteAcceptedNoticeEmail, ticketCreatedNoticeEmail, ticketReplyNoticeEmail, productRequestEmail, productRequestCustomerEmail } from "./email.js";
 import { splitName, joinName, normalizePhone } from "./auth.js";
 import { issueCollectorToken, collectorTokenState } from "./collector.js";
 import { buildGeniusContext, geniusAnswer, geniusFooter, isExactLookupQuestion, isLiveChatRequest } from "./genius.js";
@@ -221,7 +221,11 @@ async function railLocs(env, user) {
 // in the audit log (action 'product_request', entity 'location',
 // detail = product name), so the card reads that log back and shows
 // the requested state to every login for the office, on every visit,
-// with no new table.
+// with no new table. The requested state is not a dead end: it carries
+// a quiet "Request again" action, and an explicit re-request posts
+// again=1, which records a fresh audit row (detail gains an " (again)"
+// suffix) and emails FlossByte again, unlike an accidental repeat
+// submit of the first request, which stays deduped.
 const SERVICE_POINTS = {
   wifi: [
     "Live internet and WiFi status for this office, on one page.",
@@ -276,8 +280,8 @@ async function latestProductRequest(db, locationId, productKey) {
     const prod = await db.prepare("SELECT name FROM products WHERE key = ?").bind(productKey).first();
     if (!prod) return null;
     const row = await db.prepare(
-      "SELECT created_at FROM audit_log WHERE action = 'product_request' AND entity = 'location' AND entity_id = ? AND detail = ? ORDER BY id DESC LIMIT 1")
-      .bind(locationId, prod.name).first();
+      "SELECT created_at FROM audit_log WHERE action = 'product_request' AND entity = 'location' AND entity_id = ? AND (detail = ? OR detail = ?) ORDER BY id DESC LIMIT 1")
+      .bind(locationId, prod.name, prod.name + " (again)").first();
     return row ? row.created_at : null;
   } catch { return null; }
 }
@@ -288,7 +292,7 @@ async function lockedTile(env, user, loc, productName, productKey) {
   const points = servicePoints(productName, productKey).map((p) => `<li>${p}</li>`).join("");
   const action = requestedAt
     ? `<p style="margin:14px 0 0"><span class="pill on">Requested ${esc(fmtDateUS(requestedAt))}</span></p>
-    <p class="muted" style="margin-top:8px">FlossByte will follow up about turning this service on.</p>`
+    <p class="muted" style="margin-top:8px">FlossByte will follow up about turning this service on. Still waiting? Send another request.</p>${productKey ? requestForm(loc, productKey, false, true) : ""}`
     : `<p class="muted">Request it and we will send a quote. There is no charge to ask.</p>${productKey ? requestForm(loc, productKey) : ""}`;
   const head = tab
     ? `${locNav(loc, tab)}<h1>${esc(productName)}</h1>${locTabs(loc, tab)}`
@@ -302,10 +306,15 @@ async function lockedTile(env, user, loc, productName, productKey) {
 }
 
 // One-click "ask FlossByte for this service" — emails the FlossByte team.
-function requestForm(loc, productKey, inline) {
+// again = an explicit re-request from the requested state: a quieter
+// secondary button posting again=1 to the same endpoint, which
+// productRequestPost treats as a deliberate new request rather than an
+// accidental repeat submit.
+function requestForm(loc, productKey, inline, again) {
   return `<form method="post" action="/app/locations/${loc.id}/request-product" style="${inline ? "margin:0" : "margin-top:12px"}">
-    <input type="hidden" name="product" value="${esc(productKey)}">
-    <button class="btn small" type="submit">Request this service</button></form>`;
+    <input type="hidden" name="product" value="${esc(productKey)}">${again ? `
+    <input type="hidden" name="again" value="1">` : ""}
+    <button class="btn small${again ? " secondary" : ""}" type="submit">${again ? "Request again" : "Request this service"}</button></form>`;
 }
 
 // Alert the FlossByte team: the configured alert address when set,
@@ -325,6 +334,10 @@ export async function productRequestPost(env, request, user, locationId) {
   if (error) return denied(user, error);
   const f = await request.formData();
   const key = String(f.get("product") || "");
+  // An explicit "Request again" (again=1) from the requested state is
+  // a deliberate nudge, not an accidental repeat: it always records a
+  // new request and emails, with "(again)" on the audit detail.
+  const again = String(f.get("again") || "") === "1";
   const prod = await env.DB.prepare("SELECT * FROM products WHERE key = ?").bind(key).first();
   // Send the person back to the page they asked from: a location page
   // now shows the requested state on the card itself, while the
@@ -335,14 +348,40 @@ export async function productRequestPost(env, request, user, locationId) {
     if (ref.origin === new URL(request.url).origin && ref.pathname.startsWith("/app/locations/")) back = ref.pathname;
   } catch { /* no usable referer: the Services page default stands */ }
   // One open request per office and service: a repeat submit from a
-  // stale page does not email FlossByte twice.
-  if (prod && !(await latestProductRequest(env.DB, locationId, key))) {
-    await audit(env.DB, user.id, "product_request", "location", locationId, prod.name);
+  // stale page does not email FlossByte twice. An explicit re-request
+  // (again=1) is the exception: it is a new request event.
+  const existing = prod ? await latestProductRequest(env.DB, locationId, key) : null;
+  if (prod && (again || !existing)) {
+    const isAgain = !!(again && existing);
+    await audit(env.DB, user.id, "product_request", "location", locationId, isAgain ? `${prod.name} (again)` : prod.name);
+    const when = new Intl.DateTimeFormat("en-US", {
+      month: "short", day: "numeric", year: "numeric",
+      hour: "numeric", minute: "2-digit", timeZoneName: "short", timeZone: "America/Los_Angeles",
+    }).format(new Date());
+    // Audience 1: FlossByte admins, with a deep link to the customer's
+    // Products tab, where the switch for this service lives.
     const mail = productRequestEmail(env, {
       customerName: loc.customer_name, locationName: loc.name, productName: prod.name,
-      requestedBy: user.name, link: `${orgOrigin(env)}/admin/customers/${loc.customer_id}`,
+      requestedBy: user.name, requestedByEmail: user.email, when, again: isAgain,
+      link: `${orgOrigin(env)}/admin/customers/${loc.customer_id}?tab=products`,
     });
     await alertFlossByte(env, "product_request", mail);
+    // Audience 2: the organization's own customer admins get a plain
+    // confirmation. Best-effort: a failure here never blocks the
+    // request itself or the FlossByte notice above.
+    try {
+      const { results: cAdmins } = await env.DB.prepare(
+        `SELECT DISTINCT u.name, u.email FROM user_access ua JOIN users u ON u.id = ua.user_id
+         WHERE ua.customer_id = ? AND u.kind = 'customer' AND u.role = 'customer_admin' AND u.status = 'active'`)
+        .bind(loc.customer_id).all();
+      for (const ca of cAdmins || []) {
+        const cMail = productRequestCustomerEmail(env, {
+          name: ca.name, locationName: loc.name, productName: prod.name,
+          requestedBy: user.name, again: isAgain,
+        });
+        await sendEmail(env, { to: ca.email, template: "product_request_customer", ...cMail });
+      }
+    } catch { /* customer confirmation is best-effort */ }
   }
   return redirect(back);
 }
@@ -682,14 +721,16 @@ export async function servicesPage(env, request, user) {
     try {
       const { results: reqRows } = await db.prepare(
         "SELECT detail, created_at FROM audit_log WHERE action = 'product_request' AND entity = 'location' AND entity_id = ? ORDER BY id").bind(loc.id).all();
-      for (const r of reqRows || []) requested[r.detail] = r.created_at;
+      // Re-requests carry an " (again)" suffix on the audit detail;
+      // fold them onto the product name so the latest date wins.
+      for (const r of reqRows || []) requested[(r.detail || "").replace(/ \(again\)$/, "")] = r.created_at;
     } catch { /* no request history readable: rows just show the button */ }
     const glabel = (t) => `<div style="font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);padding:12px 0 2px">${t}</div>`;
     const rowIn = (p) => `<div style="display:flex;justify-content:space-between;align-items:center;gap:14px;padding:9px 0;border-bottom:1px solid #EEF2F7"><span style="font-weight:600">${esc(p.name)}</span><span class="pill on">Included</span></div>`;
     const rowOut = (p) => {
       const reqAt = requested[p.name];
       const act = reqAt
-        ? `<span class="pill on">Requested ${esc(fmtDateUS(reqAt))}</span>`
+        ? `<span class="pill on">Requested ${esc(fmtDateUS(reqAt))}</span>${requestForm(loc, p.key, true, true)}`
         : `<span class="pill add">Available to add</span>${requestForm(loc, p.key, true)}`;
       return `<div class="svc-row">
       <div class="svc-txt"><div style="font-weight:600">${esc(p.name)}</div><div class="muted">${esc(PRODUCT_PLAIN[p.key] || p.description || "")}</div>${reqAt ? `<div class="muted">FlossByte will follow up.</div>` : ""}</div>

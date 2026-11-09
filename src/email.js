@@ -222,14 +222,41 @@ export function ticketReplyNoticeEmail(env, { heading, customerName, locationNam
   };
 }
 
-export function productRequestEmail(env, { customerName, locationName, productName, requestedBy, link }) {
+// FlossByte-side notice for a service request. The button deep-links
+// to the customer's Products tab in the admin console, where the
+// switch for the requested service lives.
+export function productRequestEmail(env, { customerName, locationName, productName, requestedBy, requestedByEmail, when, again, link }) {
+  const heading = again ? "Service requested again" : "New service request";
+  const row = (label, value) => `<tr><td style="padding:5px 16px 5px 0;color:#5B6B82;white-space:nowrap;vertical-align:top">${label}</td><td style="padding:5px 0;font-weight:600">${value}</td></tr>`;
   return {
-    subject: `Service request: ${productName} (${customerName})`,
-    html: wrap("A customer asked about a service they do not have", `
-      <p><strong>${customerName}</strong> / ${locationName}</p>
-      <p>They requested <strong>${productName}</strong>.</p>
-      <p ${MUTED_P}>Requested by ${requestedBy} from their portal.</p>`, { label: "Open the client", url: link }),
-    text: `${customerName} / ${locationName} requested ${productName} (asked by ${requestedBy}). ${link}`,
+    subject: `Service request: ${productName} — ${customerName} (${locationName})`,
+    html: wrap(heading, `
+      <p>${again ? "A customer asked again about a service they do not have yet." : "A customer asked about a service they do not have yet."}</p>
+      <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:6px 0 2px">
+        ${row("Practice:", customerName)}
+        ${row("Office:", locationName)}
+        ${row("Service:", productName)}
+        ${row("Requested by:", `${requestedBy} (${requestedByEmail})`)}
+        ${row("When:", when)}
+      </table>
+      ${button(link, `Open ${customerName} products`)}
+      ${linkFallback(link)}
+      <p ${MUTED_P}>Turning it on there gives the office access right away.</p>`),
+    text: `${heading}: ${customerName} / ${locationName} requested ${productName} (asked by ${requestedBy}, ${requestedByEmail}, ${when}). Turn it on here: ${link}`,
+  };
+}
+
+// Customer-side confirmation for the same request, sent to the
+// organization's customer admins. Plain client language, no admin link.
+export function productRequestCustomerEmail(env, { name, locationName, productName, requestedBy, again }) {
+  return {
+    subject: `We received your request for ${productName} — ${locationName}`,
+    html: wrap("Request received", `
+      <p>Hi ${name},</p>
+      <p>We received ${again ? "your follow-up request" : "the request"} for <strong>${productName}</strong> at <strong>${locationName}</strong> (requested by ${requestedBy}).</p>
+      <p>What happens next: FlossByte will follow up with a quote for turning it on. There is no charge to ask, and nothing about your current services changes unless you approve it.</p>
+      <p ${MUTED_P}>Questions in the meantime: call us at (669) 237-2264 or email hello@flossbyte.com.</p>`),
+    text: `Hi ${name}, we received ${again ? "your follow-up request" : "the request"} for ${productName} at ${locationName} (requested by ${requestedBy}). FlossByte will follow up with a quote; there is no charge to ask. Questions: (669) 237-2264 or hello@flossbyte.com.`,
   };
 }
 
