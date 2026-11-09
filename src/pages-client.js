@@ -14,6 +14,11 @@ import { chatReady, getOpenThread, threadMessages, addChatMessage, startChat, en
 import { stripeOn, createInvoiceCheckout, createPlanCheckout, getPlanState, cardFeeCents } from "./stripe.js";
 import { sendInvoiceIssued } from "./reminders.js";
 import { loadLinks } from "./links.js";
+import {
+  getProjectRow, getOrCreateProject, resolveBoundQuote, projectMoney, depositState,
+  deriveStage, projectSteps, projectName, supportRemaining, supportEndDate, projectExpired,
+  finalizeProject, otpProjectActive, geniusAvailable, onQuoteAccepted, sendProjectStageEmail,
+} from "./projects.js";
 
 function orgOrigin(env) { return env.APP_ORIGIN || "https://portal.flossbyte.com"; }
 
@@ -26,10 +31,13 @@ function fmtMoney(cents) {
 
 // Equipment and Tickets serve both paying lanes: a Managed IT plan, or a
 // one-time project (the portal is the project's record, and the ticket
-// door stays open for the next job).
+// door stays open for the next job). The project lane closes itself
+// when the project finishes: otpProjectActive computes the support
+// window from the project dates, so access ends on the day even
+// before the stored switch is flipped off.
 async function laneOn(db, customerId, locationId) {
   return (await productEnabled(db, customerId, locationId, "managed_it")) ||
-         (await productEnabled(db, customerId, locationId, "one_time_project"));
+         (await otpProjectActive(db, customerId, locationId));
 }
 function daysUntil(dateStr) {
   if (!dateStr) return null;
@@ -720,6 +728,11 @@ export async function servicesPage(env, request, user) {
   let card = `<div class="card"><p class="muted">No offices yet.</p></div>`;
   if (loc) {
     const states = await productStates(db, org, loc.id);
+    // Genius can also reach this office through an active One-Time
+    // Project (the project bundle); show it as Included while that is
+    // the case, matching what the Genius page itself allows.
+    const gState = states.find((p) => p.key === "genius");
+    if (gState && !gState.enabled) gState.enabled = await geniusAvailable(db, org, loc.id);
     const inc = states.filter((p) => p.enabled);
     const avail = states.filter((p) => !p.enabled);
     // Requests already made for this office, from the same audit log
@@ -952,8 +965,9 @@ export async function productPage(env, request, user, locationId, productKey) {
   if (error) return denied(user, error);
   const prod = await env.DB.prepare("SELECT * FROM products WHERE key = ?").bind(productKey).first();
   if (!prod) return denied(user, 404);
+  if (productKey === "one_time_project") return projectPageView(env, request, user, loc, prod);
   const on = productKey === "genius"
-    ? await geniusEnabled(env.DB, loc.customer_id, locationId)
+    ? await geniusAvailable(env.DB, loc.customer_id, locationId)
     : await productEnabled(env.DB, loc.customer_id, locationId, productKey);
   if (!on) return await lockedTile(env, user, loc, prod.name, prod.key);
   if (productKey === "managed_it") return redirect(`/app/locations/${locationId}/equipment`);
@@ -965,6 +979,223 @@ export async function productPage(env, request, user, locationId, productKey) {
     <p class="muted">${esc(prod.description || "")}</p>
     <p class="muted">Work for this service shows up here as it gets scheduled. Questions: call (669) 237-2264.</p></div>`;
   return page({ title: prod.name, user, body });
+}
+
+// ---------- One-Time Project page ----------
+// The project's home for the office: name, progress bar, money,
+// schedule, support countdown, tickets, and the paperwork the flow
+// files into Documents. Stage data comes from projects.js; this is
+// presentation plus the FlossByte-only controls card.
+function progressBar(steps) {
+  if (!steps.length) return "";
+  const doneCount = steps.filter((s) => s.state === "done").length;
+  const pct = steps.length > 1 ? Math.round(100 * doneCount / (steps.length - 1)) : 100;
+  const nodes = steps.map((s, i) => {
+    const cls = s.state === "done" ? " done" : s.state === "current" ? " current" : s.state === "declined" ? " declined" : "";
+    const dot = s.state === "done" ? icon("check") : String(i + 1);
+    return `<div class="wiz-node${cls}"><span class="dot">${dot}</span><span class="nlabel">${esc(s.label)}</span></div>`;
+  }).join("");
+  return `<div class="wiz-progress many"><div class="wiz-track"><div class="wiz-fill" style="width:${pct}%"></div></div><div class="wiz-nodes">${nodes}</div></div>`;
+}
+
+const STAGE_PILL = {
+  pre: "Quote in preparation", waiting_customer: "Waiting on customer", declined: "Declined",
+  accepted: "Accepted", waiting_deposit: "Waiting for deposit", deposit_paid: "Deposit paid",
+  scheduled: "Scheduled", in_progress: "In progress", support: "Post-install support", finished: "Complete",
+};
+
+function nextStepLine(stage, ctx) {
+  switch (stage) {
+    case "pre": return "FlossByte is putting the quote together. It shows up here, and on your Billing page, as soon as it is sent.";
+    case "waiting_customer": return "The quote is waiting on your Billing page. Your practice admin can review it and accept it there.";
+    case "declined": return "This quote was declined, so the project did not go ahead. If that was a mistake, call FlossByte at (669) 237-2264.";
+    case "waiting_deposit": return "The deposit invoice is on your Billing page. Work is scheduled once the deposit is paid.";
+    case "deposit_paid": return "Deposit received. FlossByte confirms the schedule next, and the date shows up here.";
+    case "accepted": return "Accepted. FlossByte confirms the schedule next, and the date shows up here.";
+    case "scheduled": return `Scheduled for ${esc(fmtDateUS(ctx.scheduledDate))}. We will let you know here and by email if anything changes.`;
+    case "in_progress": return "Work is under way at this office. Questions while we are on it: open a ticket here in the portal.";
+    case "support": return `The work is done. Your post-install support window runs to ${esc(fmtDateUS(ctx.supportEnd))}: if something from the install is not right, open a ticket and we will take care of it.`;
+    case "finished": return "This project is complete and closed. The paperwork stays in Documents for this office.";
+    default: return "";
+  }
+}
+
+async function projectPageView(env, request, user, loc, prod) {
+  const db = env.DB;
+  const on = await productEnabled(db, loc.customer_id, loc.id, "one_time_project");
+  let project = await getProjectRow(db, loc.id);
+  if (!on && !(project && project.finished)) return await lockedTile(env, user, loc, prod.name, prod.key);
+  if (on && !project) project = await getOrCreateProject(db, loc);
+  // Converge a window that closed since the last visit: flip the
+  // switch off, mark finished, and send the closing email.
+  if (project && !project.finished && projectExpired(project)) {
+    project = await finalizeProject(env, project, user.id) || project;
+  }
+  const loaded = project ? await resolveBoundQuote(db, project) : null;
+  const quote = loaded ? loaded.quote : null;
+  const money = quote ? await projectMoney(db, quote.id) : null;
+  const stage = deriveStage(project, quote, money);
+  const name = projectName(project, quote);
+  const steps = projectSteps(project, quote, money, stage);
+  const pct = loaded && loaded.total > 0 && money ? Math.round(100 * money.paidSum / loaded.total) : 0;
+
+  let moneyCard = "";
+  if (loaded) {
+    const dep = depositState(quote, money);
+    const depRow = dep === "none" ? ""
+      : `<tr><td class="muted">Deposit</td><td>${money.deposit ? `${fmtMoney(money.deposit.amount_cents)} · ${money.deposit.status === "paid" ? "Paid" : "Unpaid"}` : ""}</td></tr>`;
+    moneyCard = `<div class="card"><h3 style="margin-top:0">Money</h3><div class="tscroll"><table class="stack"><tbody>
+      <tr><td class="muted">Quote total</td><td><strong>${fmtMoney(loaded.total)}</strong></td></tr>${depRow}
+      <tr><td class="muted">Paid so far</td><td>${fmtMoney(money ? money.paidSum : 0)} of ${fmtMoney(loaded.total)} (${pct}%)</td></tr>
+      </tbody></table></div>
+      <p class="muted" style="margin-bottom:0">Quotes and invoices live on your <a href="/app/billing">Billing</a> page.</p></div>`;
+  }
+  let scheduleCard = "";
+  const schedBits = [];
+  if (project && project.scheduled_date) schedBits.push(`<p style="margin:0 0 6px"><strong>Scheduled:</strong> ${esc(fmtDateUS(project.scheduled_date))}</p>`);
+  if (stage === "support" && project) {
+    const left = supportRemaining(project);
+    schedBits.push(`<p style="margin:0"><strong>Support window:</strong> ${left} of ${Math.max(1, Number(project.support_days || 30))} days left (runs to ${esc(fmtDateUS(supportEndDate(project)))}).</p>`);
+  }
+  if (stage === "finished" && project && project.work_complete_date) {
+    schedBits.push(`<p style="margin:0">Work was completed on ${esc(fmtDateUS(project.work_complete_date))}.</p>`);
+  }
+  if (schedBits.length) scheduleCard = `<div class="card">${schedBits.join("")}</div>`;
+
+  // This office's tickets: the channel the work runs through.
+  const { results: ticketRows } = await db.prepare(
+    "SELECT * FROM tickets WHERE location_id = ? ORDER BY updated_at DESC LIMIT 8").bind(loc.id).all().catch(() => ({ results: [] }));
+  const ticketList = (ticketRows || []).map((t) =>
+    `<tr><td><a href="/app/locations/${loc.id}/tickets/${t.id}">${esc(t.title)}</a></td><td><span class="pill ${t.status === "closed" ? "" : "on"}">${esc(t.status.replace("_", " "))}</span></td><td>${esc(fmtDateUS(t.updated_at))}</td></tr>`).join("");
+  const ticketsCard = `<div class="card"><h3 style="margin-top:0">Tickets at this office</h3>
+    ${ticketList ? `<div class="tscroll"><table class="stack"><tbody>${ticketList}</tbody></table></div>` : `<p class="muted">No tickets yet. When work raises questions, they run through tickets so everything stays in one thread.</p>`}
+    <p style="margin-bottom:0"><a href="/app/locations/${loc.id}/tickets">Open the tickets page</a></p></div>`;
+
+  // The paperwork the flow filed for this project: the accepted
+  // quote, the SOW, and the copies of this quote's invoices.
+  let docsCard = "";
+  if (quote) {
+    const keys = [`generated/quote-${quote.id}.html`, `generated/quote-${quote.id}-sow`];
+    for (const inv of (money ? money.invoices : [])) keys.push(`generated/invoice-${inv.id}.html`);
+    const placeholders = keys.map(() => "?").join(",");
+    const { results: docRows } = await db.prepare(
+      `SELECT * FROM documents WHERE location_id = ? AND r2_key IN (${placeholders}) ORDER BY created_at`).bind(loc.id, ...keys).all().catch(() => ({ results: [] }));
+    const docList = (docRows || []).map((d) =>
+      `<tr><td>${d.r2_key ? `<a href="/app/documents/${d.id}/view" target="_blank" rel="noopener">${esc(d.name)}</a>` : esc(d.name)}</td><td>${esc(fmtDateUS(d.created_at))}</td></tr>`).join("");
+    docsCard = `<div class="card"><h3 style="margin-top:0">Project paperwork</h3>
+      ${docList ? `<div class="tscroll"><table class="stack"><tbody>${docList}</tbody></table></div>` : `<p class="muted">Paperwork filed for this project shows up here: the accepted quote, the Statement of Work, and the invoices.</p>`}
+      <p style="margin-bottom:0"><a href="/app/locations/${loc.id}/documents">Open Documents for this office</a></p></div>`;
+  }
+
+  // FlossByte-only controls: the manual stages and the per-project
+  // settings. Customers never see this card.
+  let controls = "";
+  if (user.kind === "flossbyte" && project) {
+    const bound = quote ? `Bound quote: <a href="/app/quotes/${quote.id}">${esc(quote.title)}</a> (${esc(quote.status)})` : "No quote bound yet. The newest sent project quote for this organization binds automatically.";
+    controls = `<div class="card" style="border-color:#b9c8d8"><h3 style="margin-top:0">Project controls (FlossByte only)</h3>
+      <p class="muted">${bound}</p>
+      <form method="post" action="/app/locations/${loc.id}/project-controls">
+        <label>Project name</label><input name="name" value="${esc(project.name || "")}" placeholder="${esc(quote ? quote.title : "One-Time Project")}">
+        <div class="row"><span style="flex:1"><label>Scheduled date</label><input name="scheduled_date" type="date" value="${esc(project.scheduled_date || "")}"></span>
+        <span style="flex:1"><label>Post-install support days</label><input name="support_days" type="number" min="1" max="365" value="${Number(project.support_days || 30)}"></span></div>
+        <p style="margin-top:14px"><button class="btn small" type="submit" name="act" value="save">Save</button>
+        ${project.in_progress_at ? "" : `<button class="btn small secondary" type="submit" name="act" value="in_progress">Mark in progress</button>`}
+        ${project.work_complete_date ? "" : `<button class="btn small secondary" type="submit" name="act" value="complete">Mark work complete</button>`}
+        ${project.finished ? `<button class="btn small secondary" type="submit" name="act" value="restart">Start a new project</button>` : ""}</p>
+      </form>
+      <p class="muted" style="margin-bottom:0">Marking work complete starts the support clock on that date. When the window runs out, the project finishes itself: the switch flips off for this office and the customer admins get the closing email.</p></div>`;
+  }
+
+  const pill = stage === "finished" ? `<span class="pill on">Complete</span>`
+    : stage === "declined" ? `<span class="pill off">Declined</span>`
+    : `<span class="pill on">${esc(STAGE_PILL[stage] || "In progress")}</span>`;
+  const bar = stage === "pre"
+    ? `<div class="card"><p style="margin:0">Quote in preparation. FlossByte is putting the quote together; it will show up here when it is sent.</p></div>`
+    : `<div class="card">${progressBar(steps)}</div>`;
+  const body = `${locNav(loc, "")}<h1>${esc(name)}</h1>
+    <p>${pill} <span class="muted">One-Time Project at ${esc(loc.name)}</span></p>
+    ${bar}
+    <div class="card"><p style="margin:0">${nextStepLine(stage, { scheduledDate: project ? project.scheduled_date : null, supportEnd: project ? supportEndDate(project) : null })}</p></div>
+    ${moneyCard}${scheduleCard}${docsCard}${ticketsCard}${controls}`;
+  const qs = new URL(request.url).searchParams;
+  return page({ title: name, user, body, flash: qs.get("msg") || undefined, error: qs.get("err") || undefined });
+}
+
+// POST /app/locations/:id/project-controls — FlossByte only. The
+// manual stages of a project: name and dates on Save, plus the
+// In progress and Work complete buttons. Each real transition sends
+// its stage email from here, once, through projects.js.
+export async function projectControlsPost(env, request, user, locationId) {
+  if (user.kind !== "flossbyte") return denied(user, 403);
+  const { loc, error } = await guard(env, user, locationId);
+  if (error) return denied(user, error);
+  const project = await getOrCreateProject(env.DB, loc);
+  const f = await request.formData();
+  const act = String(f.get("act") || "save");
+  const back = `/app/locations/${locationId}/products/one_time_project`;
+  if (act === "restart") {
+    await env.DB.prepare(
+      `UPDATE projects SET finished = 0, finished_at = NULL, quote_id = NULL, name = NULL, scheduled_date = NULL,
+       in_progress_at = NULL, work_complete_date = NULL, updated_at = datetime('now') WHERE id = ?`).bind(project.id).run();
+    return redirect(back + "?msg=" + encodeURIComponent("New project started for this office."));
+  }
+  const name = String(f.get("name") || "").trim();
+  const sched = String(f.get("scheduled_date") || "").trim();
+  const days = Math.max(1, Math.min(365, Math.round(Number(f.get("support_days") || 30) || 30)));
+  const prevSched = project.scheduled_date || "";
+  await env.DB.prepare(
+    "UPDATE projects SET name = ?, scheduled_date = ?, support_days = ?, updated_at = datetime('now') WHERE id = ?")
+    .bind(name || null, /^\d{4}-\d{2}-\d{2}$/.test(sched) ? sched : null, days, project.id).run();
+  let fresh = await getProjectRow(env.DB, locationId);
+  if (sched && sched !== prevSched && /^\d{4}-\d{2}-\d{2}$/.test(sched)) {
+    await sendProjectStageEmail(env, fresh, loc, `scheduled_${sched}`, "Work scheduled", [
+      `The work for <strong>${esc(projectName(fresh, null))}</strong> at this office is scheduled for <strong>${esc(fmtDateUS(sched))}</strong>.`,
+      "If that date stops working on your side, call FlossByte at (669) 237-2264 and we will move it.",
+    ]);
+  }
+  if (act === "in_progress" && !fresh.in_progress_at) {
+    await env.DB.prepare("UPDATE projects SET in_progress_at = datetime('now'), updated_at = datetime('now') WHERE id = ?").bind(fresh.id).run();
+    fresh = await getProjectRow(env.DB, locationId);
+    await sendProjectStageEmail(env, fresh, loc, "in_progress", "Work has started", [
+      `Work on <strong>${esc(projectName(fresh, null))}</strong> has started at this office.`,
+      "Questions while the work is under way: open a ticket in the portal and it lands in the same thread as everything else.",
+    ]);
+  }
+  if (act === "complete" && !fresh.work_complete_date) {
+    const today = new Date().toISOString().slice(0, 10);
+    await env.DB.prepare("UPDATE projects SET work_complete_date = ?, updated_at = datetime('now') WHERE id = ?")
+      .bind(today, fresh.id).run();
+    fresh = await getProjectRow(env.DB, locationId);
+    const end = supportEndDate(fresh);
+    await sendProjectStageEmail(env, fresh, loc, `complete_${today}`, "Work complete", [
+      `The work for <strong>${esc(projectName(fresh, null))}</strong> at this office is complete.`,
+      `Your post-install support window runs until <strong>${esc(fmtDateUS(end))}</strong> (${Math.max(1, Number(fresh.support_days || 30))} days). If something from the install is not right in that window, open a ticket in the portal and we will take care of it.`,
+    ]);
+  }
+  return redirect(back + "?msg=" + encodeURIComponent("Project saved."));
+}
+
+// GET /app/quotes/:id/sow — the SOW attached to a quote, streamed to
+// anyone who can see the quote (admins, and the org's own logins).
+export async function quoteSowView(env, request, user, quoteId) {
+  const db = env.DB;
+  let quote = null;
+  if (user.kind === "flossbyte") {
+    quote = await db.prepare("SELECT * FROM quotes WHERE id = ?").bind(quoteId).first();
+  } else {
+    const org = await clientOrgId(env, user);
+    if (org === null) return denied(user, 403);
+    quote = await db.prepare("SELECT * FROM quotes WHERE id = ? AND customer_id = ?").bind(quoteId, org).first();
+  }
+  if (!quote || !quote.sow_r2_key || !env.DOCS) return denied(user, 404);
+  const obj = await env.DOCS.get(quote.sow_r2_key);
+  if (!obj) return denied(user, 404);
+  return new Response(obj.body, {
+    headers: {
+      "Content-Type": quote.sow_mime || "application/pdf",
+      "Content-Disposition": `inline; filename="${String(quote.sow_name || "Statement of Work.pdf").replace(/"/g, "")}"`,
+    },
+  });
 }
 
 // ---------- Office IT landing ----------
@@ -2618,11 +2849,14 @@ async function geniusSeeAll(env, user, loc) {
 
 // Genius is a product like the others: off for an office means the
 // locked "Available to add" card and no answers, on every Genius
-// route. FlossByte logins keep full access regardless, the same
-// exception admins have everywhere else in the portal.
+// route. One bundle exception: an active One-Time Project at the
+// office opens Genius while the job runs (geniusAvailable in
+// projects.js), and the office falls back to its own Genius switch
+// when the project finishes. FlossByte logins keep full access
+// regardless, the same exception admins have everywhere else.
 async function geniusGate(env, user, loc, locationId) {
   if (user.kind === "flossbyte") return true;
-  return geniusEnabled(env.DB, loc.customer_id, locationId);
+  return geniusAvailable(env.DB, loc.customer_id, locationId);
 }
 
 export async function askPage(env, request, user, locationId) {
@@ -3160,17 +3394,21 @@ export async function quoteViewPage(env, request, user, quoteId) {
       <form method="post" action="/app/quotes/${quote.id}/accept">
         <label>Your full name <span class="req">*</span></label><input name="signer_name" required>
         <p><label style="display:flex;gap:8px;align-items:flex-start"><input type="checkbox" name="agree" value="yes" required style="width:auto;margin-top:4px">
-        <span>I agree to the terms below and accept this quote for our organization.</span></label></p>
+        <span>I agree to the terms below and accept this quote${quote.sow_r2_key ? " and the attached Statement of Work" : ""} for our organization.</span></label></p>
         <button class="btn" type="submit">Accept quote</button></form>
       <form method="post" action="/app/quotes/${quote.id}/decline" style="margin-top:10px">
         <button class="btn small secondary" type="submit">Decline</button></form></div>`;
   } else {
     statusBlock = `<div class="card"><p class="muted">This quote is waiting for your practice's admin to review and accept it.</p></div>`;
   }
+  const sowBlock = quote.sow_r2_key ? `<div class="card"><h3 style="margin-top:0">Statement of Work</h3>
+    <p style="margin:0 0 10px">This quote has a Statement of Work attached: <strong>${esc(quote.sow_name || "Statement of Work.pdf")}</strong>.${quote.sow_accepted_at ? ` It was accepted by ${esc(quote.sow_accepted_by || "")} on ${esc(fmtDateUS(quote.sow_accepted_at))}, together with the quote.` : " Accepting the quote accepts the SOW with it."}</p>
+    <p style="margin:0"><a class="btn small secondary" href="/app/quotes/${quote.id}/sow" target="_blank" rel="noopener">View the SOW</a></p></div>` : "";
   const rail = await railLocs(env, user);
   const body = `${orgRail(user, "billing", "My Portal", rail)}<p><a href="/app/billing">&larr; Billing</a></p><h1>${esc(quote.title)}</h1>
     <p class="muted">${quote.kind === "plan" ? "Service plan" : "Project"} quote from FlossByte. Total <strong>${fmtMoney(total)}</strong>${deposit > 0 ? `, with a ${quote.deposit_percent}% deposit of <strong>${fmtMoney(deposit)}</strong> due on acceptance and ${fmtMoney(total - deposit)} after that.` : "."}</p>
     <p><button class="btn small secondary" type="button" onclick="window.print()">Print / save as PDF</button></p>
+    ${sowBlock}
     ${statusBlock}
     <div class="card" style="padding:8px 14px"><div class="tscroll"><table class="stack"><thead><tr><th>Description</th><th class="num">Qty</th><th class="num">Price</th><th class="num">Amount</th></tr></thead>
     <tbody>${itemRows}</tbody></table></div></div>
@@ -3194,6 +3432,13 @@ export async function quoteAcceptPost(env, request, user, quoteId) {
   await env.DB.prepare(
     "UPDATE quotes SET status = 'accepted', accepted_at = datetime('now'), accepted_by = ?, updated_at = datetime('now') WHERE id = ?")
     .bind(signer, quoteId).run();
+  // An attached SOW is accepted with the quote: the same signature
+  // covers both, and the record says so.
+  if (quote.sow_r2_key) {
+    await env.DB.prepare(
+      "UPDATE quotes SET sow_accepted_at = datetime('now'), sow_accepted_by = ? WHERE id = ?")
+      .bind(signer, quoteId).run().catch(() => {});
+  }
   const deposit = Math.round(total * (quote.deposit_percent || 0) / 100);
   let invoiceNote = "";
   if (deposit > 0) {
@@ -3204,7 +3449,8 @@ export async function quoteAcceptPost(env, request, user, quoteId) {
     if (depInv) await sendInvoiceIssued(env, depInv).catch(() => {});
     invoiceNote = " The deposit invoice is on your Billing page; work is scheduled once it is paid.";
   }
-  await audit(env.DB, user.id, "quote_accept", "quote", quoteId, `signed by ${signer}`);
+  await audit(env.DB, user.id, "quote_accept", "quote", quoteId,
+    quote.sow_r2_key ? `signed by ${signer}; quote and SOW accepted` : `signed by ${signer}`);
   {
     const cust = await env.DB.prepare("SELECT name FROM customers WHERE id = ?").bind(org).first();
     const mail = quoteAcceptedNoticeEmail(env, {
@@ -3212,6 +3458,10 @@ export async function quoteAcceptPost(env, request, user, quoteId) {
     });
     await alertFlossByte(env, "quote_accepted", mail);
   }
+  // One-Time Project flow: file the accepted paperwork (SOW + quote
+  // copy) into Documents and send the acceptance stage email when a
+  // project is bound to this quote. Best-effort inside projects.js.
+  await onQuoteAccepted(env, quoteId, signer);
   const planNote = quote.kind === "plan" && stripeOn(env) && deposit === 0
     ? " One more step: set up the monthly payment on this page." : "";
   return redirect(`/app/quotes/${quoteId}?msg=` + encodeURIComponent("Quote accepted. Thank you." + invoiceNote + planNote));

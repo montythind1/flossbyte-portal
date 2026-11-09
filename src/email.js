@@ -300,6 +300,28 @@ View your services: ${link}`,
   };
 }
 
+// One-Time Project stage notice to the org's customer admins: one
+// email per stage transition (turned on, accepted, deposit received,
+// scheduled, started, work complete, finished, paid in full). The
+// subject carries the stage and the office; the body is a few plain
+// lines and a button to the project page. linesHtml entries are
+// trusted portal-built strings (figures and names are escaped by the
+// caller in src/projects.js).
+export function projectStageEmail(env, { name, locationName, headline, linesHtml, link, subjectOverride }) {
+  const firstName = String(name || "").trim().split(/\s+/)[0] || "there";
+  const paras = (linesHtml || []).map((l) => `<p>${l}</p>`).join("");
+  const textLines = (linesHtml || []).map((l) => String(l).replace(/<[^>]+>/g, "")).join("\n\n");
+  return {
+    subject: subjectOverride || `${headline} — ${locationName}`,
+    html: wrap(headline, `
+      <p>Hi ${firstName},</p>
+      ${paras}
+      ${button(link, "View the project")}
+      ${linkFallback(link)}`),
+    text: `Hi ${firstName},\n\n${textLines}\n\nView the project: ${link}`,
+  };
+}
+
 export function quoteAcceptedNoticeEmail(env, { customerName, quoteTitle, acceptedBy, total }) {
   return {
     subject: `Quote accepted: ${customerName}`,

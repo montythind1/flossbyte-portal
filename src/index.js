@@ -9,6 +9,7 @@ import * as client from "./pages-client.js";
 import { collectorReport } from "./collector.js";
 import { stripeWebhook } from "./stripe.js";
 import { runBillingReminders } from "./reminders.js";
+import { ensureProjectSchema, runProjectFinalizer } from "./projects.js";
 import * as admin from "./pages-admin.js";
 import * as places from "./places.js";
 import { runUnifiSync } from "./unifi.js";
@@ -39,6 +40,10 @@ export default {
     // Daily billing reminders (invoice issued/due/overdue, quote
     // follow-ups); the sweep records a day marker, so it runs once.
     jobs.push(runBillingReminders(env));
+    // One-Time Projects whose support window has closed finish
+    // themselves here too (access checks compute expiry from the
+    // dates regardless; this keeps the stored state honest).
+    jobs.push(runProjectFinalizer(env));
     ctx.waitUntil(Promise.allSettled(jobs));
   },
 };
@@ -83,6 +88,9 @@ async function route(request, env) {
   // catalog row and the grandfathered ON rows for existing customers
   // exist before any page reads product state. No-op after first run.
   await ensureGeniusProduct(db);
+  // One-Time Project storage (projects table, quote SOW columns)
+  // converges the same way: created here if missing, no manual step.
+  await ensureProjectSchema(db);
   if (path === "/mfa" && method === "GET") return pub.mfaPage(env, request, user);
   if (path === "/mfa/verify" && method === "POST") return pub.mfaVerifyPost(env, request, user);
   if (path === "/mfa/skip" && method === "POST") return pub.mfaSkipPost(env, request, user);
@@ -170,6 +178,10 @@ async function route(request, env) {
     if (m && method === "POST") return admin.quoteCreatePost(env, request, user, Number(m[1]));
     m = path.match(/^\/admin\/customers\/(\d+)\/quotes\/(\d+)\/(send|delete|final|remind)$/);
     if (m && method === "POST") return admin.quoteActionPost(env, request, user, Number(m[1]), Number(m[2]), m[3]);
+    m = path.match(/^\/admin\/customers\/(\d+)\/quotes\/(\d+)\/sow$/);
+    if (m && method === "POST") return admin.quoteSowPost(env, request, user, Number(m[1]), Number(m[2]));
+    m = path.match(/^\/admin\/customers\/(\d+)\/quotes\/(\d+)\/sow-remove$/);
+    if (m && method === "POST") return admin.quoteSowRemovePost(env, request, user, Number(m[1]), Number(m[2]));
     m = path.match(/^\/admin\/customers\/(\d+)\/invoices$/);
     if (m && method === "POST") return admin.invoiceCreatePost(env, request, user, Number(m[1]));
     m = path.match(/^\/admin\/customers\/(\d+)\/invoices\/(\d+)\/(paid|void|remind)$/);
@@ -202,6 +214,10 @@ async function route(request, env) {
   if (m && method === "GET") return client.quoteViewPage(env, request, user, Number(m[1]));
   m = path.match(/^\/app\/quotes\/(\d+)\/accept$/);
   if (m && method === "POST") return client.quoteAcceptPost(env, request, user, Number(m[1]));
+  m = path.match(/^\/app\/quotes\/(\d+)\/sow$/);
+  if (m && method === "GET") return client.quoteSowView(env, request, user, Number(m[1]));
+  m = path.match(/^\/app\/locations\/(\d+)\/project-controls$/);
+  if (m && method === "POST") return client.projectControlsPost(env, request, user, Number(m[1]));
   m = path.match(/^\/app\/quotes\/(\d+)\/decline$/);
   if (m && method === "POST") return client.quoteDeclinePost(env, request, user, Number(m[1]));
   m = path.match(/^\/app\/quotes\/(\d+)\/plan-pay$/);
