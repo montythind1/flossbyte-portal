@@ -97,10 +97,12 @@ export async function clientsPage(env, request, user) {
        WHERE l.customer_id = ? AND (date(e.license_expires) <= date('now', '+90 days') OR date(e.warranty_expires) <= date('now', '+90 days'))`)
       .bind(c.id).first();
     const { results: prods } = await db.prepare(
-      `SELECT p.key, p.name, COALESCE(cp.enabled, 0) AS enabled
+      `SELECT p.key, p.name, cp.enabled AS enabled
        FROM products p LEFT JOIN customer_products cp ON cp.product = p.key AND cp.customer_id = ? AND cp.location_id IS NULL
        ORDER BY p.key`).bind(c.id).all();
-    const onPills = (prods || []).filter((p) => p.enabled).map((p) => `<span class="pill on">${esc(p.name)}</span>`).join(" ");
+    // Genius with no row is ON (grandfathered); everything else with
+    // no row is off, matching productEnabled/geniusEnabled.
+    const onPills = (prods || []).filter((p) => p.enabled === null || p.enabled === undefined ? p.key === "genius" : !!p.enabled).map((p) => `<span class="pill on">${esc(p.name)}</span>`).join(" ");
     const stats = [
       plural(c.locations, "location"), plural(c.logins, "login"), `${c.equipment} equipment`,
       c.open_tickets ? `<a href="/admin/tickets">${plural(c.open_tickets, "open ticket")}</a>` : "0 open tickets",
@@ -159,7 +161,7 @@ export async function ticketsInboxPage(env, request, user) {
 // ---------- Activity (the audit log, readable) ----------
 const ACTION_LABEL = {
   ticket_create: "Opened a ticket", ticket_status: "Changed a ticket status", equipment_add: "Added equipment",
-  equipment_edit: "Edited equipment", equipment_delete: "Deleted equipment", equipment_merge: "Merged duplicate equipment", document_upload: "Uploaded a document",
+  equipment_edit: "Edited equipment", equipment_delete: "Deleted equipment", equipment_merge: "Merged duplicate equipment", document_upload: "Uploaded a document", document_delete: "Deleted a document",
   quote_accept: "Accepted a quote", quote_create: "Created a quote", quote_send: "Sent a quote",
   quote_decline: "Declined a quote", quote_delete: "Deleted a quote",
   invoice_create: "Created an invoice", invoice_paid: "Marked an invoice paid", invoice_void: "Voided an invoice", stripe_error: "Stripe payment error", reminder_sent: "Sent a reminder", reminder_settings: "Changed reminder settings",
@@ -702,7 +704,11 @@ export async function customerPage(env, request, user, customerId) {
       <input name="zip" value="${esc(l.zip || "")}" placeholder="ZIP" class="f-zip" required style="max-width:84px">
       <button class="btn small" type="submit">Save</button> <button class="btn small secondary" type="button" data-cancel>Cancel</button></form></td></tr>`).join("");
   const prodRows = (products || []).map((p) => {
-    const enabled = p.enabled === null || p.enabled === undefined ? 0 : p.enabled;
+    // Genius has no row until someone sets one, and no row means ON
+    // (it was live for everyone before it had a switch). Every other
+    // product defaults off, as productEnabled does.
+    const enabled = p.enabled === null || p.enabled === undefined
+      ? (p.key === "genius" ? 1 : 0) : p.enabled;
     return `<tr><td><strong>${esc(p.name)}</strong><div class="muted">${esc(p.description || "")}</div></td>
       <td><span class="pill ${enabled ? "on" : "off"}">${enabled ? "On" : "Off"}</span></td>
       <td><form method="post" action="/admin/customers/${customerId}/products" class="row">

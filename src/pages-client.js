@@ -2,7 +2,7 @@
 // on the server; nothing here trusts ids from the browser.
 import { page, redirect, esc, icon, fmtDateUS, withStatus } from "./layout.js";
 import {
-  canAccessLocation, locationScope, getLocation, productEnabled, productStates,
+  canAccessLocation, locationScope, getLocation, productEnabled, geniusEnabled, productStates,
   expiringItems, audit, accessibleLocationIds, customerAdminOrg, orgMembers,
   removeUserFromCustomer, grantUserAccess,
 } from "./access.js";
@@ -253,6 +253,11 @@ const SERVICE_POINTS = {
     "The work tracked here, with its documents in one place.",
     "A ticket door that stays open for the next job.",
   ],
+  genius: [
+    "Answers about this office's own equipment, internet, and backups, pulled from its records.",
+    "Help for the front desk without waiting on a call back.",
+    "When Genius cannot answer, it hands the question to FlossByte as a ticket.",
+  ],
 };
 
 function servicePoints(productName, productKey) {
@@ -287,7 +292,7 @@ async function lockedTile(env, user, loc, productName, productKey) {
     : `<p class="muted">Request it and we will send a quote. There is no charge to ask.</p>${productKey ? requestForm(loc, productKey) : ""}`;
   const head = tab
     ? `${locNav(loc, tab)}<h1>${esc(productName)}</h1>${locTabs(loc, tab)}`
-    : locNav(loc, productName === "Tickets" ? "tickets" : "");
+    : locNav(loc, productName === "Tickets" ? "tickets" : productKey === "genius" ? "ask" : "");
   const body = `${head}<div class="card">${tab ? "" : `<h2>${esc(productName)}</h2>`}
     <p><span class="pill add">Available to add</span></p>
     <p class="muted">${esc(productName)} is not part of this office's plan yet. Here is what it adds:</p>
@@ -647,6 +652,7 @@ const PRODUCT_PLAIN = {
   hipaa_security: "A yearly check that this office meets the HIPAA security rules, with a written report and a fix list.",
   voip: "This office's phones, run over the internet and looked after by us.",
   one_time_project: "One-off jobs, like a new office setup or a server move, quoted up front before work starts.",
+  genius: "Ask questions about this office's equipment, internet, and backups, answered from its own records.",
 };
 
 export async function servicesPage(env, request, user) {
@@ -898,9 +904,12 @@ export async function productPage(env, request, user, locationId, productKey) {
   if (error) return denied(user, error);
   const prod = await env.DB.prepare("SELECT * FROM products WHERE key = ?").bind(productKey).first();
   if (!prod) return denied(user, 404);
-  const on = await productEnabled(env.DB, loc.customer_id, locationId, productKey);
+  const on = productKey === "genius"
+    ? await geniusEnabled(env.DB, loc.customer_id, locationId)
+    : await productEnabled(env.DB, loc.customer_id, locationId, productKey);
   if (!on) return await lockedTile(env, user, loc, prod.name, prod.key);
   if (productKey === "managed_it") return redirect(`/app/locations/${locationId}/equipment`);
+  if (productKey === "genius") return redirect(`/app/locations/${locationId}/ask`);
   const states = await productStates(env.DB, loc.customer_id, locationId);
   const state = states.find((s) => s.key === productKey);
   const body = `${locNav(loc, "")}<div class="card"><h2>${esc(prod.name)}</h2>
@@ -2308,14 +2317,24 @@ export async function documentsPage(env, request, user, locationId) {
   const { loc, error } = await guard(env, user, locationId);
   if (error) return denied(user, error);
   const { results } = await env.DB.prepare(
-    `SELECT d.*, u.name AS uploader FROM documents d LEFT JOIN users u ON u.id = d.uploaded_by
+    `SELECT d.*, u.name AS uploader, u.kind AS uploader_kind FROM documents d LEFT JOIN users u ON u.id = d.uploaded_by
      WHERE d.location_id = ? ORDER BY d.created_at DESC`).bind(locationId).all();
-  const rows = (results || []).map((d) => `<tr><td>${d.r2_key ? `<a href="/app/documents/${d.id}/view" target="_blank" rel="noopener">${esc(d.name)}</a>` : esc(d.name)}</td>
+  // Delete rights follow who uploaded the file: a customer login can
+  // delete documents a customer uploaded, never one FlossByte put
+  // there; FlossByte logins can delete any. documentDeletePost checks
+  // the same rule on the server, so the button is only a shortcut.
+  const rows = (results || []).map((d) => {
+    const canDelete = user.kind === "flossbyte" || d.uploader_kind === "customer";
+    const del = canDelete
+      ? `<form method="post" action="/app/documents/${d.id}/delete" style="display:inline" onsubmit="return confirm('Delete this document? This cannot be undone.')"><button class="btn small secondary" type="submit">Delete</button></form>`
+      : "";
+    return `<tr><td>${d.r2_key ? `<a href="/app/documents/${d.id}/view" target="_blank" rel="noopener">${esc(d.name)}</a>` : esc(d.name)}</td>
     <td>${esc(d.mime || "")}</td><td>${d.size ? Math.round(d.size / 1024) + " KB" : ""}</td>
-    <td>${esc(d.uploader || "")}</td><td>${esc(fmtDateUS(d.created_at))}</td></tr>`).join("");
+    <td>${esc(d.uploader || "")}</td><td>${esc(fmtDateUS(d.created_at))}</td><td>${del}</td></tr>`;
+  }).join("");
   const body = `${locNav(loc, "documents")}<h1>Documents</h1>
-    <div class="card" style="padding:8px 14px"><div class="tscroll"><table class="stack"><thead><tr><th>Name</th><th>Type</th><th>Size</th><th>Uploaded by</th><th>Date</th></tr></thead>
-    <tbody>${rows || `<tr><td colspan="5" class="muted">No documents yet.</td></tr>`}</tbody></table></div></div>
+    <div class="card" style="padding:8px 14px"><div class="tscroll"><table class="stack"><thead><tr><th>Name</th><th>Type</th><th>Size</th><th>Uploaded by</th><th>Date</th><th></th></tr></thead>
+    <tbody>${rows || `<tr><td colspan="6" class="muted">No documents yet.</td></tr>`}</tbody></table></div></div>
     <div class="card"><h3>Upload a document</h3>
       <form method="post" action="/app/locations/${locationId}/documents" enctype="multipart/form-data">
         <label>File <span class="req">*</span></label><input type="file" name="file" required>
@@ -2341,6 +2360,24 @@ export async function documentUploadPost(env, request, user, locationId) {
     .bind(locationId, file.name, env.DOCS ? key : null, file.type || null, file.size, user.id).run();
   await audit(env.DB, user.id, "document_upload", "document", res.meta.last_row_id, file.name);
   return redirect(`/app/locations/${locationId}/documents`);
+}
+
+// Delete a document and its stored file. The rule is who uploaded
+// it, read from documents.uploaded_by: customer logins may delete
+// only documents a customer uploaded (a missing uploader counts as
+// FlossByte's, so older rows are protected); FlossByte logins may
+// delete any document.
+export async function documentDeletePost(env, request, user, documentId) {
+  const doc = await env.DB.prepare(
+    `SELECT d.*, u.kind AS uploader_kind FROM documents d
+     LEFT JOIN users u ON u.id = d.uploaded_by WHERE d.id = ?`).bind(documentId).first();
+  if (!doc) return denied(user, 404);
+  if (!(await canAccessLocation(env.DB, user, doc.location_id))) return denied(user, 403);
+  if (user.kind !== "flossbyte" && doc.uploader_kind !== "customer") return denied(user, 403);
+  if (doc.r2_key && env.DOCS) { try { await env.DOCS.delete(doc.r2_key); } catch { /* row delete still proceeds */ } }
+  await env.DB.prepare("DELETE FROM documents WHERE id = ?").bind(documentId).run();
+  await audit(env.DB, user.id, "document_delete", "document", Number(documentId), doc.name);
+  return redirect(`/app/locations/${doc.location_id}/documents`);
 }
 
 export async function documentView(env, request, user, documentId) {
@@ -2531,9 +2568,19 @@ async function geniusSeeAll(env, user, loc) {
   return scope === "admin";
 }
 
+// Genius is a product like the others: off for an office means the
+// locked "Available to add" card and no answers, on every Genius
+// route. FlossByte logins keep full access regardless, the same
+// exception admins have everywhere else in the portal.
+async function geniusGate(env, user, loc, locationId) {
+  if (user.kind === "flossbyte") return true;
+  return geniusEnabled(env.DB, loc.customer_id, locationId);
+}
+
 export async function askPage(env, request, user, locationId) {
   const { loc, error } = await guard(env, user, locationId);
   if (error) return denied(user, error);
+  if (!(await geniusGate(env, user, loc, locationId))) return await lockedTile(env, user, loc, "Genius", "genius");
   const canEscalate = await laneOn(env.DB, loc.customer_id, locationId);
   const seeAll = await geniusSeeAll(env, user, loc);
   // Live chat: my own open thread at this office, if one is running.
@@ -2937,6 +2984,7 @@ async function runGeniusAsk(env, user, loc, question) {
 export async function askPost(env, request, user, locationId) {
   const { loc, error } = await guard(env, user, locationId);
   if (error) return denied(user, error);
+  if (!(await geniusGate(env, user, loc, locationId))) return redirect(`/app/locations/${locationId}/ask`);
   // Genius is paused while this login has a live chat open here.
   if (user.kind === "customer" && await getOpenThread(env.DB, locationId, user.id)) {
     return redirect(`/app/locations/${locationId}/ask`);
@@ -2953,6 +3001,7 @@ export async function askApiPost(env, request, user, locationId) {
   const json = (obj, status = 200) => new Response(JSON.stringify(obj), { status, headers: { "Content-Type": "application/json" } });
   const { loc, error } = await guard(env, user, locationId);
   if (error) return json({ ok: false }, 403);
+  if (!(await geniusGate(env, user, loc, locationId))) return json({ ok: false, error: "genius_off" }, 403);
   if (user.kind === "customer" && await getOpenThread(env.DB, locationId, user.id)) return json({ ok: false, error: "chat_open" }, 409);
   const f = await request.formData();
   const question = String(f.get("question") || "").trim().slice(0, 1200);
@@ -2964,6 +3013,7 @@ export async function askApiPost(env, request, user, locationId) {
 export async function askEscalatePost(env, request, user, locationId) {
   const { loc, error } = await guard(env, user, locationId);
   if (error) return denied(user, error);
+  if (!(await geniusGate(env, user, loc, locationId))) return redirect(`/app/locations/${locationId}/ask`);
   if (!(await laneOn(env.DB, loc.customer_id, locationId))) return redirect(`/app/locations/${locationId}/ask`);
   const f = await request.formData();
   const messageId = Number(f.get("message_id") || 0);

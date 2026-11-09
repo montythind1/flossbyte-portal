@@ -2,6 +2,7 @@
 // Server-rendered pages plus a document download route. All customer data
 // access is scoped server-side by the signed-in user's user_access rows.
 import { resolveSession } from "./auth.js";
+import { ensureGeniusProduct } from "./access.js";
 import { redirect, errorPage } from "./layout.js";
 import * as pub from "./pages-public.js";
 import * as client from "./pages-client.js";
@@ -78,6 +79,10 @@ async function route(request, env) {
 
   // ----- Signed-in account -----
   if (!user) return redirect("/login");
+  // Genius joined the product catalog after launch; make sure its
+  // catalog row and the grandfathered ON rows for existing customers
+  // exist before any page reads product state. No-op after first run.
+  await ensureGeniusProduct(db);
   if (path === "/mfa" && method === "GET") return pub.mfaPage(env, request, user);
   if (path === "/mfa/verify" && method === "POST") return pub.mfaVerifyPost(env, request, user);
   if (path === "/mfa/skip" && method === "POST") return pub.mfaSkipPost(env, request, user);
@@ -209,6 +214,8 @@ async function route(request, env) {
   if (m && method === "POST") return client.teamEditPost(env, request, user, Number(m[1]));
   m = path.match(/^\/app\/documents\/(\d+)\/view$/);
   if (m && method === "GET") return client.documentView(env, request, user, Number(m[1]));
+  m = path.match(/^\/app\/documents\/(\d+)\/delete$/);
+  if (m && method === "POST") return client.documentDeletePost(env, request, user, Number(m[1]));
   m = path.match(/^\/app\/locations\/(\d+)$/);
   if (m && method === "GET") return client.locationOverview(env, request, user, Number(m[1]));
   m = path.match(/^\/app\/locations\/(\d+)\/products\/([a-z_]+)$/);

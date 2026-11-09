@@ -226,11 +226,65 @@ export async function productEnabled(db, customerId, locationId, productKey) {
   return false;
 }
 
+// ---------- Genius product ----------
+// Genius predates the product switches: it shipped as part of the
+// portal for every office before it had a key in the catalog. Putting
+// it behind the switch must not take it away from offices that already
+// have it, so the catalog row and an explicit ON row for every
+// customer that already exists are ensured lazily here (idempotent,
+// once per isolate), and geniusEnabled treats "no row anywhere" as ON
+// for the same reason. Organizations created later get an explicit
+// row from the create-organization wizard, like every other product:
+// off unless the admin chooses it there or turns it on afterwards.
+export const GENIUS_PRODUCT = {
+  key: "genius",
+  name: "Genius",
+  description: "AI assistant that answers from this practice's own records.",
+};
+let geniusEnsured = false;
+export async function ensureGeniusProduct(db) {
+  if (geniusEnsured) return;
+  try {
+    await db.prepare("INSERT OR IGNORE INTO products (key, name, description) VALUES (?, ?, ?)")
+      .bind(GENIUS_PRODUCT.key, GENIUS_PRODUCT.name, GENIUS_PRODUCT.description).run();
+    // Manual NOT EXISTS instead of ON CONFLICT: SQLite treats a NULL
+    // location_id as distinct in UNIQUE indexes, so a conflict clause
+    // would silently duplicate customer-level rows (same trap the
+    // admin product toggle works around).
+    await db.prepare(
+      `INSERT INTO customer_products (customer_id, location_id, product, enabled, plan_note)
+       SELECT c.id, NULL, ?, 1, NULL FROM customers c
+       WHERE NOT EXISTS (SELECT 1 FROM customer_products cp
+         WHERE cp.customer_id = c.id AND cp.location_id IS NULL AND cp.product = ?)`)
+      .bind(GENIUS_PRODUCT.key, GENIUS_PRODUCT.key).run();
+    geniusEnsured = true;
+  } catch { /* schema not there yet (pre-migration env): retry on the next request */ }
+}
+
+// Like productEnabled, except the no-row default is ON: Genius was
+// live for everyone before the switch existed, so an office with no
+// explicit Genius row keeps it until an admin turns it off.
+export async function geniusEnabled(db, customerId, locationId) {
+  if (locationId) {
+    const loc = await db.prepare(
+      "SELECT enabled FROM customer_products WHERE customer_id = ? AND location_id = ? AND product = ?")
+      .bind(customerId, locationId, GENIUS_PRODUCT.key).first();
+    if (loc) return !!loc.enabled;
+  }
+  const cust = await db.prepare(
+    "SELECT enabled FROM customer_products WHERE customer_id = ? AND location_id IS NULL AND product = ?")
+    .bind(customerId, GENIUS_PRODUCT.key).first();
+  if (cust) return !!cust.enabled;
+  return true;
+}
+
 export async function productStates(db, customerId, locationId) {
   const { results } = await db.prepare("SELECT key, name, description FROM products ORDER BY key").all();
   const states = [];
   for (const p of results || []) {
-    const enabled = await productEnabled(db, customerId, locationId, p.key);
+    const enabled = p.key === GENIUS_PRODUCT.key
+      ? await geniusEnabled(db, customerId, locationId)
+      : await productEnabled(db, customerId, locationId, p.key);
     let note = null;
     const row = await db.prepare(
       `SELECT plan_note FROM customer_products WHERE customer_id = ? AND product = ?
