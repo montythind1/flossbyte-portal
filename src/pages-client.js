@@ -377,13 +377,14 @@ export async function productRequestPost(env, request, user, locationId) {
     // status = 'active' filter silently sent them nothing.
     try {
       const { results: cAdmins } = await env.DB.prepare(
-        `SELECT DISTINCT u.name, u.email FROM user_access ua JOIN users u ON u.id = ua.user_id
+        `SELECT DISTINCT u.id, u.name, u.email FROM user_access ua JOIN users u ON u.id = ua.user_id
          WHERE ua.customer_id = ? AND u.kind = 'customer' AND u.role = 'customer_admin' AND u.status != 'disabled'`)
         .bind(loc.customer_id).all();
       for (const ca of cAdmins || []) {
         const cMail = productRequestCustomerEmail(env, {
           name: ca.name, locationName: loc.name, productName: prod.name,
-          requestedBy: user.name, again: isAgain,
+          requestedBy: user.name, isRequester: ca.id === user.id, when, again: isAgain,
+          link: `${orgOrigin(env)}/app/services?office=${locationId}`,
         });
         await sendEmail(env, { to: ca.email, template: "product_request_customer", ...cMail });
       }

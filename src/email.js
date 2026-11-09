@@ -247,16 +247,56 @@ export function productRequestEmail(env, { customerName, locationName, productNa
 }
 
 // Customer-side confirmation for the same request, sent to the
-// organization's customer admins. Plain client language, no admin link.
-export function productRequestCustomerEmail(env, { name, locationName, productName, requestedBy, again }) {
+// organization's customer admins (each gets their own copy). Same
+// scannable row structure as the FlossByte notice, plain client
+// language, and a button to their own Services page. The wording is
+// requester-aware: nobody is told a request was "requested by"
+// themselves.
+export function productRequestCustomerEmail(env, { name, locationName, productName, requestedBy, isRequester, when, again, link }) {
+  const firstName = String(name || "").trim().split(/\s+/)[0] || "there";
+  const row = (label, value) => `<tr><td style="padding:5px 16px 5px 0;color:#5B6B82;white-space:nowrap;vertical-align:top">${label}</td><td style="padding:5px 0;font-weight:600">${value}</td></tr>`;
+  let intro, introText;
+  if (again && isRequester) {
+    intro = `You asked about <strong>${productName}</strong> again. We've got it.`;
+    introText = `You asked about ${productName} again. We've got it.`;
+  } else if (again) {
+    intro = `${requestedBy} asked about <strong>${productName}</strong> again for this office.`;
+    introText = `${requestedBy} asked about ${productName} again for this office.`;
+  } else {
+    intro = "Thanks, we've got it.";
+    introText = "Thanks, we've got it.";
+  }
+  // The requester never sees a "Requested by" line about themselves;
+  // on a re-request the intro already names the requester, so the row
+  // is only needed for a first request landing with a different admin.
+  const byRow = !isRequester && !again ? row("Requested by:", requestedBy) : "";
+  const byLine = !isRequester && !again ? `\nRequested by: ${requestedBy}` : "";
+  const next = "What happens next: FlossByte will follow up with a quote for turning it on. There is no charge to ask, and nothing about your current services changes unless you approve it.";
   return {
     subject: `We received your request for ${productName} — ${locationName}`,
     html: wrap("Request received", `
-      <p>Hi ${name},</p>
-      <p>We received ${again ? "your follow-up request" : "the request"} for <strong>${productName}</strong> at <strong>${locationName}</strong> (requested by ${requestedBy}).</p>
-      <p>What happens next: FlossByte will follow up with a quote for turning it on. There is no charge to ask, and nothing about your current services changes unless you approve it.</p>
-      <p ${MUTED_P}>Questions in the meantime: call us at (669) 237-2264 or email hello@flossbyte.com.</p>`),
-    text: `Hi ${name}, we received ${again ? "your follow-up request" : "the request"} for ${productName} at ${locationName} (requested by ${requestedBy}). FlossByte will follow up with a quote; there is no charge to ask. Questions: (669) 237-2264 or hello@flossbyte.com.`,
+      <p>Hi ${firstName},</p>
+      <p>${intro}</p>
+      <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:6px 0 2px">
+        ${row("Service:", productName)}
+        ${row("Office:", locationName)}
+        ${row("Requested on:", when)}
+        ${byRow}
+      </table>
+      ${button(link, "View your services")}
+      ${linkFallback(link)}
+      <p ${MUTED_P}>${next}</p>`),
+    text: `Hi ${firstName},
+
+${introText}
+
+Service: ${productName}
+Office: ${locationName}
+Requested on: ${when}${byLine}
+
+${next}
+
+View your services: ${link}`,
   };
 }
 
