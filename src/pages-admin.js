@@ -2,7 +2,7 @@
 // pending signups, and (Super Admin only) admin account management.
 import { page, redirect, esc, icon, fmtDateUS, withStatus } from "./layout.js";
 import { createAuthToken, revokeAllSessions, verifyPassword, normalizePhone, splitName, joinName } from "./auth.js";
-import { audit, isSuperAdmin, grantUserAccess, findCustomerByContactEmail, isValidEmail, productEnabled } from "./access.js";
+import { audit, isSuperAdmin, grantUserAccess, findCustomerByContactEmail, isValidEmail, productEnabled, geniusEnabled } from "./access.js";
 import { onOtpToggledOn, onInvoicePaid } from "./projects.js";
 import { sendEmail, wrap, inviteEmail, newCustomerNoticeEmail, ownershipTransferEmail, quoteSentEmail } from "./email.js";
 import { sendInvoiceIssued, sendInvoiceReminder, sendQuoteReminder, getReminderSettings } from "./reminders.js";
@@ -725,6 +725,35 @@ export async function customerPage(env, request, user, customerId) {
         <input type="hidden" name="product" value="${esc(p.key)}">
         <button class="btn small ${enabled ? "danger" : ""}" name="enabled" value="${enabled ? "0" : "1"}" type="submit">${enabled ? "Turn off" : "Turn on"}</button></form></td></tr>`;
   }).join("");
+  // Per-office switches: same products, one block per office. The
+  // state shown is the office's effective state, resolved exactly the
+  // way the portal resolves it (the office's own row wins, then the
+  // All offices row, then the product default), and the button posts
+  // to the same toggle endpoint with the office's location_id, so
+  // every side effect (project creation, activation email, Genius and
+  // Managed IT resolution) is the existing one.
+  const { results: locProdRows } = await db.prepare(
+    "SELECT location_id, product, enabled FROM customer_products WHERE customer_id = ? AND location_id IS NOT NULL")
+    .bind(customerId).all().catch(() => ({ results: [] }));
+  const locProdSet = new Set((locProdRows || []).map((r) => `${Number(r.location_id)}:${r.product}`));
+  const locProdBlocks = [];
+  for (const l of locations || []) {
+    const rows = [];
+    for (const p of products || []) {
+      const on = p.key === "genius"
+        ? await geniusEnabled(db, customerId, l.id)
+        : await productEnabled(db, customerId, l.id, p.key);
+      const ownRow = locProdSet.has(`${Number(l.id)}:${p.key}`);
+      rows.push(`<tr><td><strong>${esc(p.name)}</strong><div class="muted">${esc(p.description || "")}</div></td>
+        <td><span class="pill ${on ? "on" : "off"}">${on ? "On" : "Off"}</span>${ownRow ? "" : `<div class="muted">From All offices</div>`}</td>
+        <td><form method="post" action="/admin/customers/${customerId}/products" class="row">
+          <input type="hidden" name="product" value="${esc(p.key)}">
+          <input type="hidden" name="location_id" value="${l.id}">
+          <button class="btn small ${on ? "danger" : ""}" name="enabled" value="${on ? "0" : "1"}" type="submit">${on ? "Turn off" : "Turn on"}</button></form></td></tr>`);
+    }
+    locProdBlocks.push(`<h3 style="margin:22px 0 8px">${esc(l.name)}</h3>
+      <div class="tscroll"><table class="stack"><thead><tr><th>Product</th><th>State</th><th>Change</th></tr></thead><tbody>${rows.join("")}</tbody></table></div>`);
+  }
   const memberRows = (members || []).map((m) => `<tr><td>${esc(m.name)}${m.is_main_admin ? ` <span class="pill on">Main admin</span>` : ""}</td><td>${esc(m.email)}</td>
     <td>${esc(m.role)}</td><td><span class="pill">${esc(m.status)}</span></td>
     <td>${m.last_login_at ? esc(fmtDateUS(String(m.last_login_at).slice(0, 10))) : `<span class="muted">Never</span>`}</td>
@@ -856,7 +885,10 @@ export async function customerPage(env, request, user, customerId) {
     <script src="/assets/address-lookup.js"></script>
     <script src="/assets/phone-format.js"></script>
     <div class="card tab-panel${tab === "products" ? " active" : ""}" data-panel="products">
+      <h3 style="margin-top:0">All offices</h3>
       <div class="tscroll"><table class="stack"><thead><tr><th>Product</th><th>State</th><th>Change</th></tr></thead><tbody>${prodRows}</tbody></table></div>
+      <p class="muted">Offices follow the All offices setting unless set individually here.</p>
+      ${locProdBlocks.join("")}
       <p class="muted">Changes apply right away. When a service is off, the client sees it as locked on their side, and their only option there is a button to ask you to turn it on.</p></div>
     <div class="card tab-panel${tab === "users" ? " active" : ""}" data-panel="users">
       <div class="tscroll"><table class="stack"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th>Last login</th><th></th></tr></thead><tbody>${memberRows || `<tr><td colspan="6" class="muted">No logins yet.</td></tr>`}</tbody></table></div>
