@@ -218,8 +218,6 @@ async function route(request, env) {
   if (m && method === "GET") return client.quoteSowView(env, request, user, Number(m[1]));
   m = path.match(/^\/app\/locations\/(\d+)\/project-controls$/);
   if (m && method === "POST") return client.projectControlsPost(env, request, user, Number(m[1]));
-  m = path.match(/^\/app\/locations\/(\d+)\/project-dates$/);
-  if (m && method === "POST") return client.projectDatesPost(env, request, user, Number(m[1]));
   m = path.match(/^\/app\/quotes\/(\d+)\/decline$/);
   if (m && method === "POST") return client.quoteDeclinePost(env, request, user, Number(m[1]));
   m = path.match(/^\/app\/quotes\/(\d+)\/plan-pay$/);

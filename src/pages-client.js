@@ -6,7 +6,7 @@ import {
   expiringItems, audit, accessibleLocationIds, customerAdminOrg, orgMembers,
   removeUserFromCustomer, grantUserAccess,
 } from "./access.js";
-import { sendEmail, quoteAcceptedNoticeEmail, ticketCreatedNoticeEmail, ticketReplyNoticeEmail, productRequestEmail, productRequestCustomerEmail, projectDatesEmail } from "./email.js";
+import { sendEmail, quoteAcceptedNoticeEmail, ticketCreatedNoticeEmail, ticketReplyNoticeEmail, productRequestEmail, productRequestCustomerEmail } from "./email.js";
 import { splitName, joinName, normalizePhone } from "./auth.js";
 import { issueCollectorToken, collectorTokenState } from "./collector.js";
 import { buildGeniusContext, geniusAnswer, geniusFooter, isExactLookupQuestion, isLiveChatRequest } from "./genius.js";
@@ -1121,47 +1121,16 @@ async function projectPageView(env, request, user, loc, prod) {
     }
   }
 
-  // The customer's current date proposal, parsed once for both the
-  // Suggest dates card (customer side) and the reference line in the
-  // FlossByte controls card.
-  let pDates = [];
-  try { const parsed = JSON.parse((project && project.proposed_dates) || "[]"); if (Array.isArray(parsed)) pDates = parsed.filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)); } catch { pDates = []; }
-  const pNote = (project && project.proposed_note) || "";
-  const hasProposal = pDates.length > 0 || !!pNote;
-
-  // Suggest dates: while scheduling is the live step (quote accepted,
-  // deposit settled, no confirmed date yet), the customer can propose
-  // up to three dates that work for their office. A suggestion is
-  // never a booking: FlossByte sets the confirmed date in the
-  // controls card, and that is what the stage emails announce.
-  let suggestCard = "";
-  if (user.kind !== "flossbyte" && project && (stage === "deposit_paid" || stage === "accepted")) {
-    const dateInputs = [0, 1, 2].map((i) =>
-      `<span style="flex:1;min-width:140px"><label>Date ${i + 1}${i === 0 ? "" : " (optional)"}</label><input type="date" name="date${i + 1}" value="${esc(pDates[i] || "")}"></span>`).join("");
-    const sentLine = hasProposal
-      ? `<p style="margin:0 0 10px">You suggested <strong>${esc(pDates.length ? pDates.map((d) => fmtDateUS(d)).join(", ") : "no specific dates")}</strong>.${pNote ? `<br><span class="muted">Your note: ${esc(pNote)}</span>` : ""}<br><span class="muted">FlossByte will confirm the final date.</span></p>`
-      : "";
-    suggestCard = `<div class="card"><h3 style="margin-top:0">Suggest dates</h3>
-      ${sentLine}<p class="muted" style="margin-top:0">Suggest up to three dates that work for your office, or just leave a note about timing. These are suggestions only: FlossByte confirms the final date, and it shows on this page once it is set.</p>
-      <form method="post" action="/app/locations/${loc.id}/project-dates">
-        <div class="row">${dateInputs}</div>
-        <label>Note (optional)</label><input name="note" value="${esc(pNote)}" placeholder="Anything else? For example, Fridays after 5 work best" maxlength="500">
-        <p style="margin:12px 0 0"><button class="btn small" type="submit">${hasProposal ? "Update suggestions" : "Send suggestions"}</button></p>
-      </form></div>`;
-  }
-
   // FlossByte-only controls: the manual stages and the per-project
-  // settings. Customers never see this card.
+  // settings. Customers never see this card. Scheduling is set here
+  // by FlossByte only; customers do not propose dates.
   let controls = "";
   if (user.kind === "flossbyte" && project) {
     const bound = quote ? `Bound quote: <a href="/app/quotes/${quote.id}">${esc(quote.title)}</a> (${esc(quote.status)})` : "No quote bound yet. The newest sent project quote for this organization binds automatically.";
-    const proposalLine = hasProposal
-      ? `<p class="muted" style="margin:10px 0 0">Customer suggested: <strong>${esc(pDates.length ? pDates.map((d) => fmtDateUS(d)).join(", ") : "no specific dates")}</strong>${pNote ? `<br>Note: ${esc(pNote)}` : ""}<br>Sent by ${esc(project.proposed_by || "a customer admin")}${project.proposed_at ? ` on ${esc(fmtDateUS(project.proposed_at))}` : ""}. Suggestions only; the date below is the confirmed one.</p>`
-      : "";
     controls = `<div class="card" style="border-color:#b9c8d8"><h3 style="margin-top:0">Project controls (FlossByte only)</h3>
       <p class="muted">${bound}</p>
       <form method="post" action="/app/locations/${loc.id}/project-controls">
-        <label>Project name</label><input name="name" value="${esc(project.name || "")}" placeholder="${esc(quote ? quote.title : "One-Time Project")}">${proposalLine}
+        <label>Project name</label><input name="name" value="${esc(project.name || "")}" placeholder="${esc(quote ? quote.title : "One-Time Project")}">
         <div class="row"><span style="flex:1"><label>Scheduled date</label><input name="scheduled_date" type="date" value="${esc(project.scheduled_date || "")}"></span>
         <span style="flex:1"><label>Post-install support days</label><input name="support_days" type="number" min="1" max="365" value="${Number(project.support_days || 30)}"></span></div>
         <p style="margin-top:14px"><button class="btn small" type="submit" name="act" value="save">Save</button>
@@ -1191,7 +1160,7 @@ async function projectPageView(env, request, user, loc, prod) {
     <p>${pill} <span class="muted">One-Time Project at ${esc(loc.name)}</span></p>
     ${bar}
     ${nextStepCard}
-    ${suggestCard}${moneyCard}${detailsCard}${docsCard}${ticketsCard}${controls}`;
+    ${moneyCard}${detailsCard}${docsCard}${ticketsCard}${controls}`;
   const qs = new URL(request.url).searchParams;
   return page({ title: name, user, body, flash: qs.get("msg") || undefined, error: qs.get("err") || undefined });
 }
@@ -1211,8 +1180,7 @@ export async function projectControlsPost(env, request, user, locationId) {
   if (act === "restart") {
     await env.DB.prepare(
       `UPDATE projects SET finished = 0, finished_at = NULL, quote_id = NULL, name = NULL, scheduled_date = NULL,
-       in_progress_at = NULL, work_complete_date = NULL, proposed_dates = NULL, proposed_note = NULL,
-       proposed_by = NULL, proposed_at = NULL, updated_at = datetime('now') WHERE id = ?`).bind(project.id).run();
+       in_progress_at = NULL, work_complete_date = NULL, updated_at = datetime('now') WHERE id = ?`).bind(project.id).run();
     return redirect(back + "?msg=" + encodeURIComponent("New project started for this office."));
   }
   const name = String(f.get("name") || "").trim();
@@ -1249,59 +1217,6 @@ export async function projectControlsPost(env, request, user, locationId) {
     ]);
   }
   return redirect(back + "?msg=" + encodeURIComponent("Project saved."));
-}
-
-// POST /app/locations/:id/project-dates — a customer suggests dates
-// for their One-Time Project. Suggestions only: this never touches
-// scheduled_date, which stays FlossByte's to set. The proposal
-// replaces any earlier one on the project row, every submit/update
-// is audited, and the FlossByte team gets one email per submit
-// through the usual alert path (best-effort, like every portal
-// email: a failed send never blocks the submit). The submit is only
-// honored while scheduling is the live step for the project.
-export async function projectDatesPost(env, request, user, locationId) {
-  const { loc, error } = await guard(env, user, locationId);
-  if (error) return denied(user, error);
-  const back = `/app/locations/${locationId}/products/one_time_project`;
-  const project = await getProjectRow(env.DB, loc.id);
-  if (!project || project.finished) return redirect(back);
-  const loaded = await resolveBoundQuote(env.DB, project);
-  const quote = loaded ? loaded.quote : null;
-  const money = quote ? await projectMoney(env.DB, quote.id) : null;
-  const stage = deriveStage(project, quote, money);
-  if (stage !== "deposit_paid" && stage !== "accepted") return redirect(back);
-  const f = await request.formData();
-  const dates = [];
-  for (const key of ["date1", "date2", "date3"]) {
-    const v = String(f.get(key) || "").trim();
-    if (/^\d{4}-\d{2}-\d{2}$/.test(v) && !dates.includes(v)) dates.push(v);
-  }
-  dates.sort();
-  const note = String(f.get("note") || "").trim().slice(0, 500);
-  if (!dates.length && !note) {
-    return redirect(back + "?err=" + encodeURIComponent("Add at least one date, or a short note, so FlossByte knows what timing works for your office."));
-  }
-  let had = false;
-  try { const prev = JSON.parse(project.proposed_dates || "[]"); had = (Array.isArray(prev) && prev.length > 0) || !!project.proposed_note; } catch { had = !!project.proposed_note; }
-  await env.DB.prepare(
-    "UPDATE projects SET proposed_dates = ?, proposed_note = ?, proposed_by = ?, proposed_at = datetime('now'), updated_at = datetime('now') WHERE id = ?")
-    .bind(JSON.stringify(dates), note || null, user.name || user.email, project.id).run();
-  await audit(env.DB, user.id, "project_dates_proposed", "project", project.id,
-    `${had ? "updated: " : ""}${dates.length ? dates.map((d) => fmtDateUS(d)).join(", ") : "no dates"}${note ? " (with note)" : ""}`);
-  const mail = projectDatesEmail(env, {
-    projectName: esc(projectName(project, quote)),
-    customerName: esc(loc.customer_name || ""),
-    locationName: esc(loc.name),
-    dates: dates.map((d) => fmtDateUS(d)),
-    note: esc(note),
-    proposedBy: esc(user.name || user.email),
-    updated: had,
-    link: `${orgOrigin(env)}${back}`,
-  });
-  await alertFlossByte(env, "project_dates_proposed", mail);
-  return redirect(back + "?msg=" + encodeURIComponent(had
-    ? "Your date suggestions are updated. FlossByte will confirm the final date."
-    : "Suggestions sent. FlossByte will confirm the final date."));
 }
 
 // GET /app/quotes/:id/sow — the SOW attached to a quote, streamed to
