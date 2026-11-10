@@ -229,7 +229,13 @@ export function deriveStage(project, quote, money, total) {
   if (project && project.finished) return "finished";
   if (project && project.work_complete_date) return projectExpired(project) ? "finished" : "support";
   if (project && project.in_progress_at) return "in_progress";
-  if (project && project.scheduled_date) return "scheduled";
+  // A date set before the quote is accepted moves nothing yet: the
+  // stage follows the quote until acceptance, then lands here. Once
+  // accepted, a set date means Scheduled even while the deposit is
+  // still outstanding; the deposit stays an open money item (the
+  // Money card, the admin invoice line) instead of holding the
+  // tracker at Waiting for deposit.
+  if (project && project.scheduled_date && quote.status === "accepted") return "scheduled";
   if (quote.status === "accepted") {
     const dep = depositState(quote, money, total);
     if (dep === "waiting") return "waiting_deposit";
@@ -253,22 +259,34 @@ export function projectSteps(project, quote, money, stage, total) {
   }
   const dep = depositState(quote, money, total);
   const accepted = quote.status === "accepted";
+  // Schedule-first order: the admin set a date while the deposit is
+  // still outstanding. deriveStage follows the schedule, so the bar
+  // does too: the deposit steps carry an explicit "open" state
+  // (rendered still outstanding, in the Unpaid amber) instead of
+  // checking off or pinning the bar's current node at Waiting for
+  // deposit. When the deposit lands they check off normally.
+  const bypass = dep === "waiting" && !!(project && project.scheduled_date);
   const steps = [
     { label: "Quote sent", done: true },
     { label: "Waiting on customer", done: accepted },
     { label: "Accepted", done: accepted },
   ];
   if (dep !== "none") {
-    steps.push({ label: "Waiting for deposit", done: dep === "paid" });
-    steps.push({ label: "Deposit paid", done: dep === "paid" });
+    const depFlags = dep === "paid" ? { done: true } : bypass ? { state: "open" } : { done: false };
+    steps.push({ label: "Waiting for deposit", ...depFlags });
+    steps.push({ label: "Deposit paid", ...depFlags });
   }
-  steps.push({ label: "Scheduled", done: !!(project && project.scheduled_date) });
+  // In the bypass the Scheduled node is the current step, not a
+  // check sitting behind two open steps; once the stage moves past
+  // Scheduled it checks off as usual.
+  steps.push({ label: "Scheduled", done: !!(project && project.scheduled_date) && !(bypass && stage === "scheduled") });
   steps.push({ label: "In progress", done: !!(project && project.in_progress_at) });
   steps.push({ label: "Work complete", done: !!(project && project.work_complete_date) });
   steps.push({ label: "Post-install support", done: stage === "finished" });
   steps.push({ label: "Finished", done: stage === "finished" });
   let currentSet = false;
   return steps.map((s) => {
+    if (s.state) return { label: s.label, state: s.state };
     if (s.done) return { label: s.label, state: "done" };
     if (!currentSet) { currentSet = true; return { label: s.label, state: "current" }; }
     return { label: s.label, state: "todo" };
@@ -505,7 +523,12 @@ export async function onInvoicePaid(env, inv) {
       headline = "Deposit received";
       lines = [
         `We received the deposit of ${fmtMoney(inv.amount_cents)} for <strong>${esc(projectName(project, loaded.quote))}</strong>. That is ${pct}% of the quote paid so far.`,
-        "Next step: FlossByte confirms the schedule, and the date will show on the project page.",
+        // Schedule-first order pays second: when the date is
+        // already set, say so instead of promising a schedule
+        // that already happened.
+        project.scheduled_date
+          ? `The work is scheduled for <strong>${esc(fmtDateUS(project.scheduled_date))}</strong>, and the date is on the project page.`
+          : "Next step: FlossByte confirms the schedule, and the date will show on the project page.",
       ];
     } else {
       headline = "Payment received";

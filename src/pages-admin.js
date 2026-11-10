@@ -5,7 +5,7 @@ import { createAuthToken, revokeAllSessions, verifyPassword, normalizePhone, spl
 import { audit, isSuperAdmin, grantUserAccess, findCustomerByContactEmail, isValidEmail, productEnabled, geniusEnabled } from "./access.js";
 import { onOtpToggledOn, onInvoicePaid, ensureProjectForLocation, getProjectRow, resolveBoundQuote, projectMoney, deriveStage, projectName, projectExpired, finalizeProject } from "./projects.js";
 import { sendEmail, wrap, inviteEmail, newCustomerNoticeEmail, ownershipTransferEmail, quoteSentEmail } from "./email.js";
-import { sendInvoiceIssued, sendInvoiceReminder, sendQuoteReminder, getReminderSettings } from "./reminders.js";
+import { sendInvoiceIssued, sendInvoiceReminder, sendQuoteReminder, getReminderSettings, createQuoteBalanceInvoice } from "./reminders.js";
 import { resendInviteEmail } from "./pages-public.js";
 import { runUnifiSync, lastUnifiSync } from "./unifi.js";
 import { runSophosSync, lastSophosSync } from "./sophos.js";
@@ -1184,20 +1184,11 @@ export async function quoteActionPost(env, request, user, customerId, quoteId, a
   }
   if (action === "final") {
     if (quote.status !== "accepted") return redirect(`/admin/customers/${customerId}?tab=billing&btab=quotes&err=` + encodeURIComponent("The quote has to be accepted before the final invoice."));
-    const totals = await db.prepare(
-      `SELECT COALESCE((SELECT SUM(ROUND(qi.qty * qi.unit_price_cents)) FROM quote_items qi WHERE qi.quote_id = q.id), 0) AS total_cents,
-              COALESCE((SELECT SUM(amount_cents) FROM invoices WHERE quote_id = q.id AND status != 'void'), 0) AS invoiced_cents,
-              (SELECT COUNT(*) FROM invoices WHERE quote_id = q.id AND kind = 'deposit' AND status != 'void') AS deposits
-       FROM quotes q WHERE q.id = ?`).bind(quoteId).first();
-    const remaining = (totals ? totals.total_cents : 0) - (totals ? totals.invoiced_cents : 0);
-    if (remaining <= 0) return redirect(`/admin/customers/${customerId}?tab=billing&btab=quotes&err=` + encodeURIComponent("This quote is already fully invoiced."));
-    const isFinal = totals && totals.deposits > 0;
-    const finRes = await db.prepare(
-      "INSERT INTO invoices (customer_id, quote_id, title, kind, amount_cents, created_by) VALUES (?, ?, ?, ?, ?, ?)")
-      .bind(customerId, quoteId, isFinal ? `${quote.title}: final balance` : quote.title, isFinal ? "final" : "standard", remaining, user.id).run();
-    await audit(db, user.id, "invoice_create", "quote", quoteId, `${quote.title} balance ${remaining}`);
-    const finInv = await db.prepare("SELECT * FROM invoices WHERE id = ?").bind(finRes.meta.last_row_id).first().catch(() => null);
-    if (finInv) await sendInvoiceIssued(env, finInv).catch(() => {});
+    // The shared "Invoice the rest" implementation (reminders.js):
+    // a One-Time Project marking Work complete runs the same code,
+    // so the two can never drift apart.
+    const finInv = await createQuoteBalanceInvoice(env, quote, user.id);
+    if (!finInv) return redirect(`/admin/customers/${customerId}?tab=billing&btab=quotes&err=` + encodeURIComponent("This quote is already fully invoiced."));
     return redirect(`/admin/customers/${customerId}?tab=billing&btab=quotes&msg=` + encodeURIComponent("Invoice created for the remaining balance."));
   }
   return redirect(`/admin/customers/${customerId}?tab=billing&btab=quotes`);

@@ -12,7 +12,7 @@ import { issueCollectorToken, collectorTokenState } from "./collector.js";
 import { buildGeniusContext, geniusAnswer, geniusFooter, isExactLookupQuestion, isLiveChatRequest } from "./genius.js";
 import { chatReady, getOpenThread, threadMessages, addChatMessage, startChat, endChat, renderChatMessages, notifyChatStarted, setTyping, clearTyping, getTyping } from "./chat.js";
 import { stripeOn, createInvoiceCheckout, createPlanCheckout, getPlanState, cardFeeCents } from "./stripe.js";
-import { sendInvoiceIssued } from "./reminders.js";
+import { sendInvoiceIssued, createQuoteBalanceInvoice } from "./reminders.js";
 import { loadLinks } from "./links.js";
 import {
   getProjectRow, getOrCreateProject, ensureProjectForLocation, resolveBoundQuote, projectMoney, depositState,
@@ -1005,7 +1005,7 @@ function progressBar(steps) {
   const doneCount = steps.filter((s) => s.state === "done").length;
   const pct = steps.length > 1 ? Math.round(100 * doneCount / (steps.length - 1)) : 100;
   const nodes = steps.map((s, i) => {
-    const cls = s.state === "done" ? " done" : s.state === "current" ? " current" : s.state === "declined" ? " declined" : "";
+    const cls = s.state === "done" ? " done" : s.state === "current" ? " current" : s.state === "declined" ? " declined" : s.state === "open" ? " open" : "";
     const dot = s.state === "done" ? icon("check") : String(i + 1);
     return `<div class="wiz-node${cls}"><span class="dot">${dot}</span><span class="nlabel">${esc(s.label)}</span></div>`;
   }).join("");
@@ -1026,7 +1026,12 @@ function nextStepLine(stage, ctx) {
     case "waiting_deposit": return "The deposit invoice is on your Billing page. Work is scheduled once the deposit is paid.";
     case "deposit_paid": return "Deposit received. FlossByte confirms the schedule next, and the date shows up here.";
     case "accepted": return "Accepted. FlossByte confirms the schedule next, and the date shows up here.";
-    case "scheduled": return `Scheduled for ${esc(fmtDateUS(ctx.scheduledDate))}. We will let you know here and by email if anything changes.`;
+    case "scheduled":
+      // Schedule-first state: the date is set and the deposit is
+      // still outstanding. Name both facts; the normal scheduled
+      // line below is for a deposit that is already in.
+      if (ctx.depWaiting) return `Work is scheduled for ${esc(fmtDateUS(ctx.scheduledDate))}. The deposit of ${esc(fmtMoney(ctx.depAmount))} is still outstanding, and the deposit invoice is on your Billing page.`;
+      return `Scheduled for ${esc(fmtDateUS(ctx.scheduledDate))}. We will let you know here and by email if anything changes.`;
     case "in_progress": return "Work is under way at this office. Questions while we are on it: open a ticket here in the portal.";
     case "support": return `The work is done. Your post-install support window runs to ${esc(fmtDateUS(ctx.supportEnd))}: if something from the install is not right, open a ticket and we will take care of it.`;
     case "finished": return "This project is complete and closed. The paperwork stays in Documents for this office.";
@@ -1157,13 +1162,20 @@ async function projectPageView(env, request, user, loc, prod) {
     : `<div class="card">${progressBar(steps)}</div>`;
   // Next step: the one thing the customer can act on at this stage,
   // as a card with a button when there is an obvious destination.
-  const nextBtn = stage === "accepted" || stage === "waiting_deposit"
+  // Schedule-first state (stage Scheduled, deposit still owed): the
+  // next-step line names the date and the outstanding deposit, and
+  // the action left is paying it.
+  const depWaiting = !!(quote && money) && depositState(quote, money, loaded ? loaded.total : undefined) === "waiting";
+  const depAmount = depWaiting
+    ? (money.deposit ? money.deposit.amount_cents : Math.round((loaded ? loaded.total : 0) * Number(quote.deposit_percent || 0) / 100))
+    : 0;
+  const nextBtn = stage === "accepted" || stage === "waiting_deposit" || (stage === "scheduled" && depWaiting)
     ? `<p style="margin:12px 0 0"><a class="btn small" href="/app/billing?btab=invoices">Open Billing</a></p>`
     : stage === "support"
       ? `<p style="margin:12px 0 0"><a class="btn small secondary" href="/app/locations/${loc.id}/documents">Open project documents</a></p>`
       : "";
   const nextStepCard = `<div class="card"><p class="muted" style="margin:0 0 4px;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.5px">Next step</p>
-    <p style="margin:0">${nextStepLine(stage, { scheduledDate: project ? project.scheduled_date : null, supportEnd: project ? supportEndDate(project) : null })}</p>${nextBtn}</div>`;
+    <p style="margin:0">${nextStepLine(stage, { scheduledDate: project ? project.scheduled_date : null, supportEnd: project ? supportEndDate(project) : null, depWaiting, depAmount })}</p>${nextBtn}</div>`;
   const body = `${await locNav(db, loc, "project")}<h1>${esc(name)}</h1>
     <p>${pill} <span class="muted">One-Time Project at ${esc(loc.name)}</span></p>
     ${bar}
@@ -1228,6 +1240,20 @@ export async function projectControlsPost(env, request, user, locationId) {
     await env.DB.prepare("UPDATE projects SET work_complete_date = ?, updated_at = datetime('now') WHERE id = ?")
       .bind(today, fresh.id).run();
     fresh = await getProjectRow(env.DB, locationId);
+    // The final invoice for the remaining balance issues itself at
+    // Work complete: the same createQuoteBalanceInvoice the Billing
+    // "Invoice the rest" button runs, so a balance already invoiced
+    // by hand, a fully invoiced quote, and a $0 quote all create
+    // nothing, and a still-unpaid deposit does not stop the final
+    // invoice for the rest. Project quotes only (a plan quote bills
+    // through its subscription), and best-effort: it never blocks
+    // the completion or the Work complete email below.
+    try {
+      const bound = await resolveBoundQuote(env.DB, fresh);
+      if (bound && bound.quote.kind === "project") {
+        await createQuoteBalanceInvoice(env, bound.quote, user.id);
+      }
+    } catch { /* the work is complete either way */ }
     const end = supportEndDate(fresh);
     await sendProjectStageEmail(env, fresh, loc, `complete_${today}`, "Work complete", [
       `The work for <strong>${esc(projectName(fresh, null))}</strong> at this office is complete.`,

@@ -105,7 +105,9 @@ form.js-wizard .wstep.active{display:block}
 .wiz-progress.many .nlabel{font-size:11px;line-height:1.25}
 .wiz-node.declined .dot{background:#fff;border-color:var(--bad);color:var(--bad)}
 .wiz-node.declined .nlabel{color:var(--bad);font-weight:700}
-@media (max-width:680px){.wiz-progress.many .nlabel{display:none}.wiz-progress.many .wiz-node.current .nlabel,.wiz-progress.many .wiz-node.declined .nlabel{display:block}}
+.wiz-node.open .dot{background:var(--warn-bg);border-color:var(--warn);color:var(--warn)}
+.wiz-node.open .nlabel{color:var(--warn);font-weight:700}
+@media (max-width:680px){.wiz-progress.many .nlabel{display:none}.wiz-progress.many .wiz-node.current .nlabel,.wiz-progress.many .wiz-node.declined .nlabel,.wiz-progress.many .wiz-node.open .nlabel{display:block}}
 .confirm-box{display:flex;gap:10px;align-items:flex-start;margin-top:16px;cursor:pointer;font-weight:400;padding:2px}
 .confirm-box input{width:19px;height:19px;margin-top:1px;flex:none}
 .confirm-box.error{background:#fdecea;border:1.5px solid var(--bad);border-radius:8px;padding:12px 14px;font-weight:600}

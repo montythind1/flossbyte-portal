@@ -93,6 +93,47 @@ export async function sendInvoiceIssued(env, inv) {
   return true;
 }
 
+// "Invoice the rest": create the invoice for whatever of an
+// accepted quote has not been invoiced yet. This is the ONE
+// implementation behind the Billing "Invoice the rest" button and
+// the final invoice a One-Time Project now creates on its own when
+// the work is marked complete; it lives here, next to
+// sendInvoiceIssued, because issuing an invoice is what this module
+// owns (and reminders.js already imports the filing half from
+// projects.js, so projects.js cannot import it back). The math is
+// the quote total minus every non-void invoice already on the
+// quote; when the quote carries a deposit the invoice is the
+// "final" kind ("{title}: final balance"), otherwise it is a
+// standard invoice for the whole remainder, and like the manual
+// path it sets no due date. Returns the created invoice, or null
+// when there is nothing to create: the quote is not accepted, the
+// remainder works out to $0 (fully invoiced, or a $0 quote), or an
+// open final invoice already covers the rest. Issuing goes through
+// sendInvoiceIssued, so the Documents filing and the
+// invoice-issued email happen exactly as for a hand-made invoice.
+export async function createQuoteBalanceInvoice(env, quote, actorId) {
+  const db = env.DB;
+  if (!quote || quote.status !== "accepted") return null;
+  const totals = await db.prepare(
+    `SELECT COALESCE((SELECT SUM(ROUND(qi.qty * qi.unit_price_cents)) FROM quote_items qi WHERE qi.quote_id = q.id), 0) AS total_cents,
+            COALESCE((SELECT SUM(amount_cents) FROM invoices WHERE quote_id = q.id AND status != 'void'), 0) AS invoiced_cents,
+            (SELECT COUNT(*) FROM invoices WHERE quote_id = q.id AND kind = 'deposit' AND status != 'void') AS deposits,
+            (SELECT COUNT(*) FROM invoices WHERE quote_id = q.id AND kind = 'final' AND status != 'void') AS finals
+     FROM quotes q WHERE q.id = ?`).bind(quote.id).first();
+  if (!totals) return null;
+  const remaining = totals.total_cents - totals.invoiced_cents;
+  if (remaining <= 0) return null;
+  if (totals.finals > 0) return null;
+  const isFinal = totals.deposits > 0;
+  const res = await db.prepare(
+    "INSERT INTO invoices (customer_id, quote_id, title, kind, amount_cents, created_by) VALUES (?, ?, ?, ?, ?, ?)")
+    .bind(quote.customer_id, quote.id, isFinal ? `${quote.title}: final balance` : quote.title, isFinal ? "final" : "standard", remaining, actorId || null).run();
+  await audit(db, actorId || null, "invoice_create", "quote", quote.id, `${quote.title} balance ${remaining}`);
+  const inv = await db.prepare("SELECT * FROM invoices WHERE id = ?").bind(res.meta.last_row_id).first().catch(() => null);
+  if (inv) await sendInvoiceIssued(env, inv).catch(() => {});
+  return inv;
+}
+
 // kind: "reminder" (before the due date), "due" (due today), "overdue".
 export async function sendInvoiceReminder(env, inv, kind, daysLate) {
   const to = await recipient(env.DB, inv.customer_id);
