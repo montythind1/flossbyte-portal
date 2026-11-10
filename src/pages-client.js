@@ -1176,7 +1176,10 @@ async function projectPageView(env, request, user, loc, prod) {
 // POST /app/locations/:id/project-controls — FlossByte only. The
 // manual stages of a project: name and dates on Save, plus the
 // In progress and Work complete buttons. Each real transition sends
-// its stage email from here, once, through projects.js.
+// its stage email from here, once, through projects.js. The form
+// posts here from two places: the project page's controls card and
+// the admin customer page's Locations tab (which passes
+// return_to=admin_locations and lands back on that tab).
 export async function projectControlsPost(env, request, user, locationId) {
   if (user.kind !== "flossbyte") return denied(user, 403);
   const { loc, error } = await guard(env, user, locationId);
@@ -1184,12 +1187,19 @@ export async function projectControlsPost(env, request, user, locationId) {
   const project = await getOrCreateProject(env.DB, loc);
   const f = await request.formData();
   const act = String(f.get("act") || "save");
-  const back = `/app/locations/${locationId}/products/one_time_project`;
+  // The same controls are rendered on the admin customer page
+  // (Locations tab); its form marks itself with return_to so the
+  // admin lands back there instead of on the project page. Only
+  // this one fixed value is honored, never a raw URL.
+  const back = String(f.get("return_to") || "") === "admin_locations"
+    ? `/admin/customers/${loc.customer_id}?tab=locations`
+    : `/app/locations/${locationId}/products/one_time_project`;
+  const backMsg = (m) => back + (back.includes("?") ? "&" : "?") + "msg=" + encodeURIComponent(m);
   if (act === "restart") {
     await env.DB.prepare(
       `UPDATE projects SET finished = 0, finished_at = NULL, quote_id = NULL, name = NULL, scheduled_date = NULL,
        in_progress_at = NULL, work_complete_date = NULL, updated_at = datetime('now') WHERE id = ?`).bind(project.id).run();
-    return redirect(back + "?msg=" + encodeURIComponent("New project started for this office."));
+    return redirect(backMsg("New project started for this office."));
   }
   const name = String(f.get("name") || "").trim();
   const sched = String(f.get("scheduled_date") || "").trim();
@@ -1224,7 +1234,7 @@ export async function projectControlsPost(env, request, user, locationId) {
       `Your post-install support window runs until <strong>${esc(fmtDateUS(end))}</strong> (${Math.max(1, Number(fresh.support_days || 30))} days). If something from the install is not right in that window, open a ticket in the portal and we will take care of it.`,
     ]);
   }
-  return redirect(back + "?msg=" + encodeURIComponent("Project saved."));
+  return redirect(backMsg("Project saved."));
 }
 
 // GET /app/quotes/:id/sow — the SOW attached to a quote, streamed to

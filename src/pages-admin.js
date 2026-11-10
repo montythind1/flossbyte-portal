@@ -3,7 +3,7 @@
 import { page, redirect, esc, icon, fmtDateUS, withStatus } from "./layout.js";
 import { createAuthToken, revokeAllSessions, verifyPassword, normalizePhone, splitName, joinName } from "./auth.js";
 import { audit, isSuperAdmin, grantUserAccess, findCustomerByContactEmail, isValidEmail, productEnabled, geniusEnabled } from "./access.js";
-import { onOtpToggledOn, onInvoicePaid, ensureProjectForLocation } from "./projects.js";
+import { onOtpToggledOn, onInvoicePaid, ensureProjectForLocation, getProjectRow, resolveBoundQuote, projectMoney, deriveStage, projectName, projectExpired, finalizeProject } from "./projects.js";
 import { sendEmail, wrap, inviteEmail, newCustomerNoticeEmail, ownershipTransferEmail, quoteSentEmail } from "./email.js";
 import { sendInvoiceIssued, sendInvoiceReminder, sendQuoteReminder, getReminderSettings } from "./reminders.js";
 import { resendInviteEmail } from "./pages-public.js";
@@ -23,6 +23,15 @@ function parseDollarsToCents(v) {
   const n = parseFloat(String(v || "").replace(/[^0-9.]/g, ""));
   return Number.isFinite(n) ? Math.round(n * 100) : 0;
 }
+// One-Time Project stage labels for the Locations tab project
+// blocks, mirroring STAGE_PILL on the client project page. The
+// stage key comes from deriveStage in projects.js, the same
+// derivation the project page renders.
+const PROJECT_STAGE_LABEL = {
+  pre: "Quote in preparation", waiting_customer: "Waiting on customer", declined: "Declined",
+  accepted: "Accepted", waiting_deposit: "Waiting for deposit", deposit_paid: "Deposit paid",
+  scheduled: "Scheduled", in_progress: "In progress", support: "Post-install support", finished: "Complete",
+};
 // Default quote terms, prefilled in the builder and editable per quote.
 // Draft wording: Montek reviews and adjusts before a quote is sent.
 const PROJECT_TERMS = "The deposit is due before work is scheduled, and scheduling happens once the deposit payment is received. The remaining balance is due when the work above is complete.";
@@ -712,6 +721,64 @@ export async function customerPage(env, request, user, customerId) {
     else otpLocMap.set(Number(r.location_id), r.enabled);
   }
   const otpOnFor = (lid) => (otpLocMap.has(Number(lid)) ? otpLocMap.get(Number(lid)) : otpOrgOn) === 1;
+  // Project blocks for the Locations tab: an office with a project
+  // record gets its tracker state and the same stage controls the
+  // project page carries, so scheduling never requires opening the
+  // client view. Stage and money come from projects.js, the same
+  // derivation the project page renders, and an expired window
+  // converges here exactly as it does there. Offices with no
+  // project record get no block and render exactly as before.
+  const locProjects = new Map();
+  for (const l of locations || []) {
+    let proj = await getProjectRow(db, l.id);
+    if (proj && !proj.finished && projectExpired(proj)) {
+      proj = await finalizeProject(env, proj, user.id) || proj;
+    }
+    if (!proj) continue;
+    const loaded = await resolveBoundQuote(db, proj);
+    const pQuote = loaded ? loaded.quote : null;
+    const pMoney = pQuote ? await projectMoney(db, pQuote.id) : null;
+    const pStage = deriveStage(proj, pQuote, pMoney, loaded ? loaded.total : undefined);
+    locProjects.set(l.id, { proj, quote: pQuote, money: pMoney, stage: pStage, name: projectName(proj, pQuote) });
+  }
+  const projectBlock = (l) => {
+    const pv = locProjects.get(l.id);
+    if (!pv) return "";
+    const { proj, quote, money, stage, name } = pv;
+    const pill = stage === "finished" ? `<span class="pill on">Complete</span>`
+      : stage === "declined" ? `<span class="pill off">Declined</span>`
+      : `<span class="pill on">${esc(PROJECT_STAGE_LABEL[stage] || "In progress")}</span>`;
+    const bound = quote
+      ? `<div class="muted">Bound quote: ${esc(quote.title)} (${esc(quote.status)})</div>`
+      : `<div class="muted">No quote bound yet. The newest sent project quote for this organization binds automatically.</div>`;
+    // Invoice status: once the quote is accepted, the invoices are
+    // what the admin acts on next, so their lines sit directly
+    // under the stage, ahead of the scheduling controls. Same
+    // invoices projectMoney already read (quote_id bound); nothing
+    // is filed or created here.
+    let invLines = "";
+    if (quote && quote.status === "accepted" && money) {
+      const invLine = (inv, label) => `<div style="margin-top:4px">${label} <a href="/admin/customers/${customerId}?tab=billing&btab=invoices">INV-${1000 + inv.id}</a>: ${fmtMoney(inv.amount_cents)} <span class="pill ${inv.status === "paid" ? "on" : "warn"}">${inv.status === "paid" ? "Paid" : "Unpaid"}</span>${inv.due_date ? ` <span class="muted">Due ${esc(fmtDateUS(inv.due_date))}</span>` : ""}</div>`;
+      const lines = [];
+      if (money.deposit) lines.push(invLine(money.deposit, "Deposit invoice"));
+      const finals = (money.invoices || []).filter((i) => i.kind === "final");
+      if (finals.length) lines.push(invLine(finals[finals.length - 1], "Final invoice"));
+      invLines = lines.join("");
+    }
+    return `<tr><td colspan="4"><div style="padding:2px 0 10px">
+      <div><strong>Project:</strong> <a href="/app/locations/${l.id}/products/one_time_project">${esc(name)}</a> ${pill}</div>
+      ${bound}${invLines}
+      <form method="post" action="/app/locations/${l.id}/project-controls" style="margin-top:8px">
+        <input type="hidden" name="return_to" value="admin_locations">
+        <label>Project name</label><input name="name" value="${esc(proj.name || "")}" placeholder="${esc(quote ? quote.title : "One-Time Project")}">
+        <div class="row"><span style="flex:1"><label>Scheduled date</label><input name="scheduled_date" type="date" value="${esc(proj.scheduled_date || "")}"></span>
+        <span style="flex:1"><label>Post-install support days</label><input name="support_days" type="number" min="1" max="365" value="${Number(proj.support_days || 30)}"></span></div>
+        <p style="margin-top:14px"><button class="btn small" type="submit" name="act" value="save">Save</button>
+        ${proj.in_progress_at ? "" : `<button class="btn small secondary" type="submit" name="act" value="in_progress">Mark in progress</button>`}
+        ${proj.work_complete_date ? "" : `<button class="btn small secondary" type="submit" name="act" value="complete">Mark work complete</button>`}
+        ${proj.finished ? `<button class="btn small secondary" type="submit" name="act" value="restart">Start a new project</button>` : ""}</p>
+      </form></div></td></tr>`;
+  };
   const locRows = (locations || []).map((l) => `<tr><td><a href="/app/locations/${l.id}">${esc(l.name)}</a>${otpOnFor(l.id) ? ` <a href="/app/locations/${l.id}/products/one_time_project">(project page)</a>` : ""}</td>
     <td>${esc([l.address, l.suite, l.city, l.state, l.zip].filter(Boolean).join(", "))}</td><td>${esc(l.status)}</td>
     <td><form method="post" action="/admin/locations/${l.id}/edit" class="row" data-loc>
@@ -721,7 +788,7 @@ export async function customerPage(env, request, user, customerId) {
       <input name="city" value="${esc(l.city || "")}" placeholder="City" class="f-city" required style="max-width:120px">
       <input name="state" value="${esc(l.state || "")}" placeholder="State" class="f-state" required style="max-width:64px">
       <input name="zip" value="${esc(l.zip || "")}" placeholder="ZIP" class="f-zip" required style="max-width:84px">
-      <button class="btn small" type="submit">Save</button> <button class="btn small secondary" type="button" data-cancel>Cancel</button></form></td></tr>`).join("");
+      <button class="btn small" type="submit">Save</button> <button class="btn small secondary" type="button" data-cancel>Cancel</button></form></td></tr>${projectBlock(l)}`).join("");
   const prodRows = (products || []).map((p) => {
     // Genius has no row until someone sets one, and no row means ON
     // (it was live for everyone before it had a switch). Every other
