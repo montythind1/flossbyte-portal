@@ -796,7 +796,10 @@ export async function customerPage(env, request, user, customerId) {
       actions = `<form method="post" action="/admin/customers/${customerId}/quotes/${qt.id}/send" style="display:inline"><button class="btn small" type="submit">Send to customer</button></form>
         <form method="post" action="/admin/customers/${customerId}/quotes/${qt.id}/delete" style="display:inline"><button class="btn small danger" type="submit">Delete</button></form>`;
     } else if (qt.status === "sent") {
-      actions = `<span class="muted">Waiting for the client</span> <form method="post" action="/admin/customers/${customerId}/quotes/${qt.id}/remind" style="display:inline"><button class="btn small secondary" type="submit">Send reminder</button></form>`;
+      actions = `<span class="muted">Waiting for the client</span> <form method="post" action="/admin/customers/${customerId}/quotes/${qt.id}/remind" style="display:inline"><button class="btn small secondary" type="submit">Send reminder</button></form>
+        <form method="post" action="/admin/customers/${customerId}/quotes/${qt.id}/delete" style="display:inline"><button class="btn small danger" type="submit">Delete</button></form>`;
+    } else if (qt.status === "declined") {
+      actions = `<form method="post" action="/admin/customers/${customerId}/quotes/${qt.id}/delete" style="display:inline"><button class="btn small danger" type="submit">Delete</button></form>`;
     } else if (qt.status === "accepted") {
       actions = `<span class="muted">Accepted ${fmtDateUS(qt.accepted_at || "")}${qt.accepted_by ? " by " + esc(qt.accepted_by) : ""}. Invoiced ${fmtMoney(qt.invoiced_cents)} of ${fmtMoney(qt.total_cents)}.</span>`
         + (qt.invoiced_cents < qt.total_cents ? ` <form method="post" action="/admin/customers/${customerId}/quotes/${qt.id}/final" style="display:inline"><button class="btn small" type="submit">Invoice the rest</button></form>` : "");
@@ -1093,11 +1096,24 @@ export async function quoteActionPost(env, request, user, customerId, quoteId, a
     return redirect(`/admin/customers/${customerId}?tab=billing&btab=quotes&msg=` + encodeURIComponent("Reminder sent to the customer."));
   }
   if (action === "delete") {
-    if (quote.status !== "draft") return redirect(`/admin/customers/${customerId}?tab=billing&btab=quotes&err=` + encodeURIComponent("Only a draft quote can be deleted."));
+    // Accepted quotes are the record behind invoices and filed
+    // paperwork, so they can never be deleted. Draft, sent, and
+    // declined quotes can. Their attachment files are deleted with
+    // them, so nothing is left orphaned in storage.
+    if (quote.status === "accepted") return redirect(`/admin/customers/${customerId}?tab=billing&btab=quotes&err=` + encodeURIComponent("An accepted quote cannot be deleted, because it has invoices and filed paperwork attached."));
+    if (env.DOCS) {
+      if (quote.sow_r2_key) { try { await env.DOCS.delete(quote.sow_r2_key); } catch { /* gone either way */ } }
+      if (quote.qdoc_r2_key) { try { await env.DOCS.delete(quote.qdoc_r2_key); } catch { /* gone either way */ } }
+    }
+    // A project may be bound to this quote (projects.quote_id is a
+    // foreign key, so the delete would fail outright). Unbind first;
+    // the project re-resolves to the next quote, or to no quote, the
+    // next time its page is opened.
+    await db.prepare("UPDATE projects SET quote_id = NULL, updated_at = datetime('now') WHERE quote_id = ?").bind(quoteId).run().catch(() => {});
     await db.prepare("DELETE FROM quote_items WHERE quote_id = ?").bind(quoteId).run();
     await db.prepare("DELETE FROM quotes WHERE id = ?").bind(quoteId).run();
     await audit(db, user.id, "quote_delete", "quote", quoteId, quote.title);
-    return redirect(`/admin/customers/${customerId}?tab=billing&btab=quotes&msg=` + encodeURIComponent("Draft quote deleted."));
+    return redirect(`/admin/customers/${customerId}?tab=billing&btab=quotes&msg=` + encodeURIComponent(quote.status === "draft" ? "Draft quote deleted." : "Quote deleted."));
   }
   if (action === "final") {
     if (quote.status !== "accepted") return redirect(`/admin/customers/${customerId}?tab=billing&btab=quotes&err=` + encodeURIComponent("The quote has to be accepted before the final invoice."));
