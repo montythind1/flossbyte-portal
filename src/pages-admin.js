@@ -867,6 +867,9 @@ export async function customerPage(env, request, user, customerId) {
         <label style="margin-top:12px">Quote document (PDF, optional)</label>
         <input type="file" name="quote_doc" accept="application/pdf,.pdf">
         <p class="muted" style="margin:4px 0 0">If this quote already exists as a PDF, for example one exported from Xero, attach it here. The client sees it on the quote and accepts it with the quote. The line items above stay the record for the total and the deposit, so a single line with the full amount is enough when the PDF carries the detail.</p>
+        <label style="margin-top:12px">Statement of Work (PDF, optional)</label>
+        <input type="file" name="sow" accept="application/pdf,.pdf">
+        <p class="muted" style="margin:4px 0 0">If this quote has a separate statement of work, attach it here. The client sees it on the quote and accepts it together with the quote.</p>
         <label style="margin-top:12px">Terms shown on the quote</label>
         <textarea id="quoteTerms" name="terms" rows="3">${esc(PROJECT_TERMS)}</textarea>
         <p style="margin-top:12px"><button class="btn" type="submit">Save draft quote</button></p>
@@ -1011,6 +1014,16 @@ export async function quoteCreatePost(env, request, user, customerId) {
     if (!isPdf) return redirect(`/admin/customers/${customerId}?tab=billing&btab=quotes&err=` + encodeURIComponent("The quote document has to be a PDF."));
     if (docFile.size > 10 * 1024 * 1024) return redirect(`/admin/customers/${customerId}?tab=billing&btab=quotes&err=` + encodeURIComponent("That file is over the 10 MB limit."));
   }
+  // Optional Statement of Work chosen on the same form, handled
+  // exactly like the quote document: validated up front, stored
+  // onto the new quote below as its SOW attachment.
+  const sowFile = f.get("sow");
+  const hasSow = !!(sowFile && sowFile.size);
+  if (hasSow) {
+    const isPdf = /pdf$/i.test(sowFile.type || "") || /\.pdf$/i.test(sowFile.name || "");
+    if (!isPdf) return redirect(`/admin/customers/${customerId}?tab=billing&btab=quotes&err=` + encodeURIComponent("The Statement of Work has to be a PDF."));
+    if (sowFile.size > 10 * 1024 * 1024) return redirect(`/admin/customers/${customerId}?tab=billing&btab=quotes&err=` + encodeURIComponent("That file is over the 10 MB limit."));
+  }
   const res = await env.DB.prepare(
     "INSERT INTO quotes (customer_id, title, kind, status, deposit_percent, terms, created_by) VALUES (?, ?, ?, 'draft', ?, ?, ?)")
     .bind(customerId, title, kind, deposit, terms || null, user.id).run();
@@ -1032,6 +1045,15 @@ export async function quoteCreatePost(env, request, user, customerId) {
     await env.DB.prepare("UPDATE quotes SET qdoc_r2_key = ?, qdoc_name = ?, qdoc_mime = 'application/pdf', qdoc_size = ?, updated_at = datetime('now') WHERE id = ?")
       .bind(env.DOCS ? key : null, String(docFile.name || "Quote.pdf"), docFile.size, quoteId).run();
     await audit(env.DB, user.id, "quote_doc_attach", "quote", quoteId, String(docFile.name || ""));
+  }
+  if (hasSow) {
+    const key = `quotes/${quoteId}/sow-${Date.now()}.pdf`;
+    if (env.DOCS) {
+      await env.DOCS.put(key, sowFile.stream(), { httpMetadata: { contentType: "application/pdf" } });
+    }
+    await env.DB.prepare("UPDATE quotes SET sow_r2_key = ?, sow_name = ?, sow_mime = 'application/pdf', sow_size = ?, updated_at = datetime('now') WHERE id = ?")
+      .bind(env.DOCS ? key : null, String(sowFile.name || "Statement of Work.pdf"), sowFile.size, quoteId).run();
+    await audit(env.DB, user.id, "quote_sow_attach", "quote", quoteId, String(sowFile.name || ""));
   }
   await audit(env.DB, user.id, "quote_create", "quote", quoteId, title);
   return redirect(`/admin/customers/${customerId}?tab=billing&btab=quotes&msg=` + encodeURIComponent("Draft quote saved. Send it when you are ready."));
