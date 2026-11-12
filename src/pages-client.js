@@ -18,6 +18,7 @@ import {
   fvReady, fvRange, FV_STATUSES, fmtTime, fmtApptDay, BREAKDOWN_SECTIONS,
   parseBreakdownRows, breakdownHasContent, listRequests, getRequest, getBreakdown,
   countTestRows, countRequests, seedFvTestData, removeFvTestData, fvPill, fvTable,
+  todayISO, addDaysISO,
 } from "./flossverify.js";
 import {
   getProjectRow, getOrCreateProject, ensureProjectForLocation, resolveBoundQuote, projectMoney, depositState,
@@ -3256,8 +3257,60 @@ export async function askAnswer(db, locationId, question) {
       parts.push("Documents on record: " + dc.map((d) => d.name).join(", ") + ".");
     }
   }
+  // FlossVerify: insurance verification questions answered from this
+  // office's own queue, in the same two-week window the FlossVerify
+  // page shows. Member IDs and dates of birth are never printed here;
+  // the answer points at the patient's FlossVerify page instead.
+  try {
+    if (await fvReady(db)) {
+      const locRow = await db.prepare("SELECT customer_id FROM locations WHERE id = ?").bind(locationId).first();
+      if (locRow && (await productEnabled(db, locRow.customer_id, locationId, "flossverify"))) {
+        if (/(member\s*(id|number|#)|date of birth|\bdob\b)/.test(q)) {
+          parts.push("Member IDs and dates of birth live on the patient's own page in the office's FlossVerify list. I do not print them here.");
+        } else if (/(insurance|verif|coverage|eligib|deductible|benefit|patient)/.test(q)) {
+          const rows = await listRequests(db, "r.location_id = ?", [locationId],
+            addDaysISO(todayISO(), -14), addDaysISO(todayISO(), 14));
+          if (rows.length) {
+            const named = rows.filter((r) => {
+              const full = r.patient_name.toLowerCase();
+              const noTest = full.replace(/^test\s+/, "");
+              return q.includes(full) || (noTest.length > 3 && q.includes(noTest));
+            });
+            if (named.length) {
+              for (const r of named.slice(0, 3)) {
+                const bd = await getBreakdown(db, r.id);
+                const lines = [`${r.patient_name} — ${FV_STATUSES[r.status] || r.status} for ${fmtApptDay(r.appt_date)}${r.appt_time ? " at " + fmtTime(r.appt_time) : ""}, ${r.carrier || ""}${r.plan_name ? " " + r.plan_name : ""}.`];
+                if (r.status === "problem" && r.problem_note) lines.push(`Problem: ${r.problem_note}`);
+                if (bd && breakdownHasContent(bd)) {
+                  const rowsMap = parseBreakdownRows(bd);
+                  if (bd.coverage_active != null) lines.push(bd.coverage_active ? "Coverage is active." : "Coverage is NOT active.");
+                  if (bd.deductible_cents != null) lines.push(`Deductible: ${fmtMoney(bd.deductible_met_cents || 0)} of ${fmtMoney(bd.deductible_cents)} met.`);
+                  if (bd.max_cents != null) lines.push(`Annual max left: ${fmtMoney(bd.max_cents - (bd.max_used_cents || 0))}.`);
+                  const pcts = [["pct_preventive", "Preventive"], ["pct_basic", "Basic"], ["pct_major", "Major"]]
+                    .filter(([k]) => rowsMap[k]).map(([k, l]) => `${l} ${rowsMap[k]}`);
+                  if (pcts.length) lines.push(`Plan pays: ${pcts.join(", ")}.`);
+                  if (bd.est_patient_cents != null) lines.push(`Estimated patient portion: ${fmtMoney(bd.est_patient_cents)}.`);
+                }
+                parts.push(lines.join("\n"));
+              }
+            } else {
+              const by = (s) => rows.filter((r) => r.status === s);
+              const seg = (label, list) => list.length
+                ? `${label}: ${list.map((r) => `${r.patient_name} (${fmtApptDay(r.appt_date)})`).join(", ")}` : "";
+              const segs = [seg("Verified", by("verified")), seg("In progress", by("in_progress")),
+                seg("Waiting", by("waiting")), seg("Problems", by("problem"))].filter(Boolean);
+              if (segs.length) parts.push("Insurance verifications at this office (the last two weeks and the next two):\n" +
+                segs.map((s) => `• ${s}`).join("\n"));
+            }
+          } else if (/(insurance|verif)/.test(q)) {
+            parts.push("No insurance verifications are on record for this office in the two weeks either side of today.");
+          }
+        }
+      }
+    }
+  } catch { /* FlossVerify is optional in the records answer */ }
   if (!parts.length) {
-    return "That is not in your portal records yet, so I cannot answer it from your data. Ask about equipment, license or warranty expiry dates, your internet, WiFi, VPN, cameras, recent network changes, tickets, or documents, or open a ticket and we will look into it.";
+    return "That is not in your portal records yet, so I cannot answer it from your data. Ask about equipment, license or warranty expiry dates, your internet, WiFi, VPN, cameras, recent network changes, tickets, documents, or insurance verifications, or open a ticket and we will look into it.";
   }
   return parts.join("\n") + "\n(Answered from your own portal records only.)";
 }

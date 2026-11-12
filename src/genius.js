@@ -2,12 +2,22 @@
 //
 // The boundary is deliberate. This module never queries another
 // location and never receives WiFi passwords, serial numbers, MAC
-// addresses, IP addresses, account numbers, or patient data. pages-client.js first
+// addresses, IP addresses, or account numbers. pages-client.js first
 // checks access to the office, builds the deterministic records answer,
 // and supplies a records-only context for this one location. Genius can
 // explain and connect those facts in plain language; it cannot create
 // new facts. If the model is unavailable or returns something unsafe,
 // the caller keeps the deterministic answer.
+//
+// FlossVerify records (Montek, 2026-11-11: "patient data should be
+// searchable via Genius"): the office's verification queue for this
+// location only IS part of its records: patient names, appointment
+// dates, carriers, statuses, and the coverage facts of a finished
+// breakdown. Identifiers never ride along: member IDs, dates of
+// birth, group numbers, and payer phone numbers are excluded from
+// the context, and questions asking for them stay on the
+// deterministic path, which points to the patient's FlossVerify page
+// instead of printing them.
 //
 // Guessing policy (Montek, 2026-11-07): facts about the office are
 // never guessed. For problem and how-to questions the model may add
@@ -15,6 +25,9 @@
 // always tell records from general guidance; the caller's footer says
 // which kind of answer they got. No tips at all for firewall, server,
 // security, backup-restore, or practice-data topics.
+
+import { productEnabled } from "./access.js";
+import { fvReady, FV_STATUSES, parseBreakdownRows } from "./flossverify.js";
 
 const DEFAULT_MODEL = "@cf/meta/llama-3.1-8b-instruct-fp8-fast";
 const MAX_CONTEXT_CHARS = 18000;
@@ -35,7 +48,11 @@ function parseJson(value) {
 }
 
 export function isExactLookupQuestion(question) {
-  return /(password|passcode|credential|serial|\bmac\b|\bip\b|account number|wi[-\s]?fi\s+(pass|code|key)|network\s+(pass|code|key))/i.test(String(question || ""));
+  return /(password|passcode|credential|serial|\bmac\b|\bip\b|account number|member\s*(id|number|#)|date of birth|\bdob\b|wi[-\s]?fi\s+(pass|code|key)|network\s+(pass|code|key))/i.test(String(question || ""));
+}
+
+function money(cents) {
+  return cents == null ? "" : "$" + (Number(cents) / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 // A typed request for a human ("chat with someone", "I want to chat
@@ -240,6 +257,45 @@ export async function buildGeniusContext(db, loc, options = {}) {
     if (docs && docs.length) sections.push(`Documents on file: ${docs.map((d) => text(d.name, 160)).join(", ")}.`);
   } catch { /* documents are optional context */ }
 
+  // FlossVerify: this office's verification queue, two weeks back to
+  // two weeks ahead, when the product is on here. Names, dates,
+  // carriers, statuses, and finished-breakdown coverage facts only;
+  // member IDs, dates of birth, and group numbers never enter the
+  // context (see the boundary note at the top of this file).
+  try {
+    if ((await fvReady(db)) && loc.customer_id &&
+        (await productEnabled(db, loc.customer_id, locationId, "flossverify"))) {
+      const { results: fvRows } = await db.prepare(
+        `SELECT r.patient_name, r.carrier, r.plan_name, r.appt_date, r.appt_time, r.status,
+                r.problem_note, r.planned_treatment,
+                b.coverage_active, b.deductible_cents, b.deductible_met_cents,
+                b.max_cents, b.max_used_cents, b.est_patient_cents, b.rows_json
+         FROM fv_requests r LEFT JOIN fv_breakdowns b ON b.request_id = r.id
+         WHERE r.location_id = ?
+           AND r.appt_date >= date('now', '-14 days') AND r.appt_date <= date('now', '+14 days')
+         ORDER BY r.appt_date ASC, r.appt_time ASC LIMIT 30`).bind(locationId).all();
+      if (fvRows && fvRows.length) {
+        const lines = fvRows.map((r) => {
+          const bits = [`${text(r.patient_name, 120)} — ${text(r.appt_date, 20)}${r.appt_time ? " " + text(r.appt_time, 10) : ""}`,
+            `${text(r.carrier || "", 80)}${r.plan_name ? " " + text(r.plan_name, 80) : ""}`,
+            `status ${FV_STATUSES[r.status] || text(r.status, 30)}`];
+          if (r.planned_treatment) bits.push(`planned: ${text(r.planned_treatment, 120)}`);
+          if (r.status === "problem" && r.problem_note) bits.push(`problem: ${text(r.problem_note, 240)}`);
+          if (r.coverage_active != null) bits.push(r.coverage_active ? "coverage active" : "coverage NOT active");
+          if (r.deductible_cents != null) bits.push(`deductible ${money(r.deductible_met_cents || 0)} of ${money(r.deductible_cents)} met`);
+          if (r.max_cents != null) bits.push(`annual max left ${money(r.max_cents - (r.max_used_cents || 0))}`);
+          const rowsMap = parseBreakdownRows(r);
+          const pcts = [["pct_preventive", "preventive"], ["pct_basic", "basic"], ["pct_major", "major"]]
+            .filter(([k]) => rowsMap[k]).map(([k, l]) => `${l} ${text(rowsMap[k], 30)}`);
+          if (pcts.length) bits.push(`plan pays ${pcts.join(", ")}`);
+          if (r.est_patient_cents != null) bits.push(`estimated patient portion ${money(r.est_patient_cents)}`);
+          return `- ${bits.join("; ")}`;
+        });
+        sections.push(`Insurance verifications (FlossVerify) at this office:\n${lines.join("\n")}`);
+      }
+    }
+  } catch { /* FlossVerify is optional context */ }
+
   let history = [];
   if (options.userId) {
     try {
@@ -265,7 +321,7 @@ export function buildGeniusMessages({ question, context, history, recordsAnswer 
     "Never guess a fact about this office: not a device status, a cause of a problem, a date, a name, or whether something was done. If the records do not contain a fact, say that plainly.",
     `For a problem or how-to question, after the records-based answer you may add ONE separate section headed exactly "${TIP_LABEL}" with general guidance: simple, safe, reversible checks anyone can do (look at a power light, confirm a cable is plugged in, clear a paper jam, close and reopen an app, restart the affected printer or computer). Phrase tips as general possibilities ("often", "usually", "you can check"), never as facts about this office.`,
     "Offer no general tip when the question asks for a fact about the office, and no tip at all for firewall, server, network or security settings, backup restores, passwords, deleting data, or the practice-management system's data. For those, say the records do not cover it and suggest sending the conversation to FlossByte.",
-    "Never provide or request passwords, passcodes, serial numbers, MAC addresses, IP addresses, account numbers, API keys, or patient information. Those exact values are intentionally absent from your context; the portal's exact records answer handles those questions separately.",
+    "Never provide or request passwords, passcodes, serial numbers, MAC addresses, IP addresses, account numbers, API keys, or patient identifiers such as member IDs or dates of birth. Those exact values are intentionally absent from your context; the portal's exact records answer handles those questions separately. The insurance verification records in your context (patient names, appointment dates, insurance companies, verification statuses, and coverage facts) are ordinary office records: answer questions about them from the records like anything else.",
     "Do not claim that you changed a setting, contacted anyone, opened a ticket, or fixed anything. You only answer questions.",
     "Keep the answer concise: a direct answer first, then the few record-based details or safe next steps that help. Use short paragraphs or a short bullet list.",
   ].join(" ");
