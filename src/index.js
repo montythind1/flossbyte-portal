@@ -116,6 +116,7 @@ async function route(request, env) {
     if (path === "/admin/admins" && method === "POST") return admin.createAdminPost(env, request, user);
     if (path === "/admin/tickets" && method === "GET") return admin.ticketsInboxPage(env, request, user);
     if (path === "/admin/chats" && method === "GET") return admin.chatsPage(env, request, user);
+    if (path === "/admin/flossverify" && method === "GET") return admin.flossverifyInboxPage(env, request, user);
     m = path.match(/^\/admin\/chats\/(\d+)$/);
     if (m && method === "GET") return admin.chatThreadPage(env, request, user, Number(m[1]));
     m = path.match(/^\/admin\/chats\/(\d+)\/poll$/);
@@ -305,6 +306,19 @@ async function route(request, env) {
   if (m && method === "GET") return client.chatPoll(env, request, user, Number(m[1]));
   m = path.match(/^\/app\/locations\/(\d+)\/chat\/typing$/);
   if (m && method === "POST") return client.chatTypingPost(env, request, user, Number(m[1]));
+  m = path.match(/^\/app\/locations\/(\d+)\/flossverify$/);
+  if (m && method === "GET") return client.flossverifyPage(env, request, user, Number(m[1]));
+  m = path.match(/^\/app\/locations\/(\d+)\/flossverify\/new$/);
+  if (m && method === "GET") return client.flossverifyNewPage(env, request, user, Number(m[1]));
+  if (m && method === "POST") return client.flossverifyCreatePost(env, request, user, Number(m[1]));
+  m = path.match(/^\/app\/locations\/(\d+)\/flossverify\/remove-test$/);
+  if (m && method === "POST") return client.flossverifyRemoveTestPost(env, request, user, Number(m[1]));
+  m = path.match(/^\/app\/locations\/(\d+)\/flossverify\/seed$/);
+  if (m && method === "POST") return client.flossverifySeedPost(env, request, user, Number(m[1]));
+  m = path.match(/^\/app\/locations\/(\d+)\/flossverify\/(\d+)$/);
+  if (m && method === "GET") return client.flossverifyDetailPage(env, request, user, Number(m[1]), Number(m[2]));
+  m = path.match(/^\/app\/locations\/(\d+)\/flossverify\/(\d+)\/save$/);
+  if (m && method === "POST") return client.flossverifySavePost(env, request, user, Number(m[1]), Number(m[2]));
 
   return notFound(user);
 }

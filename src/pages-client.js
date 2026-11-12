@@ -15,6 +15,11 @@ import { stripeOn, createInvoiceCheckout, createPlanCheckout, getPlanState, card
 import { sendInvoiceIssued, createQuoteBalanceInvoice } from "./reminders.js";
 import { loadLinks } from "./links.js";
 import {
+  fvReady, fvRange, FV_STATUSES, fmtTime, fmtApptDay, BREAKDOWN_SECTIONS,
+  parseBreakdownRows, breakdownHasContent, listRequests, getRequest, getBreakdown,
+  countTestRows, countRequests, seedFvTestData, removeFvTestData, fvPill, fvTable,
+} from "./flossverify.js";
+import {
   getProjectRow, getOrCreateProject, ensureProjectForLocation, resolveBoundQuote, projectMoney, depositState,
   deriveStage, projectSteps, projectName, supportRemaining, supportEndDate, projectExpired,
   finalizeProject, otpProjectActive, geniusAvailable, onQuoteAccepted, sendProjectStageEmail,
@@ -183,6 +188,7 @@ async function locNav(db, loc, active, fill) {
   // switch came on without the toggle path (the create-organization
   // wizard writes product rows directly) still gets its tracker.
   await ensureProjectForLocation(db, loc.customer_id, loc.id);
+  const fvOn = (await fvReady(db)) && (await productEnabled(db, loc.customer_id, loc.id, "flossverify"));
   const proj = await getProjectRow(db, loc.id);
   const showProject = !!proj && (!!proj.finished || projectExpired(proj) ||
     (await otpProjectActive(db, loc.customer_id, loc.id)));
@@ -193,7 +199,7 @@ async function locNav(db, loc, active, fill) {
     ${showProject ? item("project", base + "/products/one_time_project", "Project", "briefcase") : ""}
     <a class="rail-item${["network", "equipment", "topology"].includes(active) ? " active" : ""}" href="${base}/office-it">${icon("topology")}Office IT</a>
     ${item("tickets", base + "/tickets", "Tickets", "ticket")}${item("documents", base + "/documents", "Documents", "folder")}
-    ${item("ask", base + "/ask", "Genius", "chat")}</aside><div class="shell-main${fill ? " gfill-main" : ""}"><script>(function(){var r=document.querySelector('.rail');if(!r)return;var a=r.querySelector('.rail-item.active');if(!a)return;if(r.scrollWidth>r.clientWidth){r.scrollLeft=Math.max(0,a.offsetLeft+a.clientWidth/2-r.clientWidth/2);}})();</script>`;
+    ${fvOn ? item("flossverify", base + "/flossverify", "FlossVerify", "clipcheck") : ""}${item("ask", base + "/ask", "Genius", "chat")}</aside><div class="shell-main${fill ? " gfill-main" : ""}"><script>(function(){var r=document.querySelector('.rail');if(!r)return;var a=r.querySelector('.rail-item.active');if(!a)return;if(r.scrollWidth>r.clientWidth){r.scrollLeft=Math.max(0,a.offsetLeft+a.clientWidth/2-r.clientWidth/2);}})();</script>`;
 }
 
 // Top tabs inside the Network section: the sidebar picks the place,
@@ -2701,6 +2707,313 @@ export async function ticketStatusPost(env, request, user, locationId, ticketId)
     await audit(env.DB, user.id, "ticket_status", "ticket", Number(ticketId), status);
   }
   return redirect(`/app/locations/${locationId}/tickets/${ticketId}`);
+}
+
+// ---------- FlossVerify ----------
+// The office's insurance verification queue and breakdowns. The list
+// is a plain table (Name / Insurance / Date / Status) over a date
+// range the viewer picks, two weeks back to two weeks ahead, and
+// every row opens the patient's breakdown. The office reads; FlossByte
+// does the checking and fills the breakdown in (by hand today, through
+// an eligibility API later; the record shape is the same either way).
+// Real patient data stays out of this database until it lives
+// somewhere covered by a HIPAA agreement: for now the section runs on
+// invented test patients, flagged is_test and removable in one tap.
+function fvRow(label, valueHtml) {
+  return `<div style="display:flex;justify-content:space-between;gap:16px;padding:10px 0;border-bottom:1px solid #EEF2F7"><span style="color:#45566E;font-weight:600">${label}</span><span style="text-align:right;font-weight:600">${valueHtml}</span></div>`;
+}
+function fvMoney(cents) {
+  return cents == null ? "" : fmtMoney(cents);
+}
+function fvDollars(cents) {
+  return cents == null ? "" : String(cents / 100);
+}
+
+// Shared gate for every FlossVerify page: location access, tables
+// present, product on for this office. Returns { loc } or { response }.
+async function fvGate(env, user, locationId) {
+  const { loc, error } = await guard(env, user, locationId);
+  if (error) return { response: denied(user, error) };
+  if (!(await fvReady(env.DB))) {
+    const body = `${await locNav(env.DB, loc, "flossverify")}<h1>FlossVerify</h1>
+      <div class="card"><p class="muted">FlossVerify is being set up for this office. Check back shortly.</p></div>`;
+    return { response: page({ title: "FlossVerify", user, body }) };
+  }
+  if (!(await productEnabled(env.DB, loc.customer_id, locationId, "flossverify"))) {
+    return { response: await lockedTile(env, user, loc, "FlossVerify", "flossverify") };
+  }
+  return { loc };
+}
+
+function fvRangeForm(base, range, extra) {
+  const q = (from, to) => `${base}?from=${from}&to=${to}`;
+  return `<form method="get" class="row" style="margin-bottom:14px;align-items:flex-end">
+    <span style="flex:1;min-width:140px"><label>From</label><input type="date" name="from" value="${range.from}" min="${range.lo}" max="${range.hi}"></span>
+    <span style="flex:1;min-width:140px"><label>To</label><input type="date" name="to" value="${range.to}" min="${range.lo}" max="${range.hi}"></span>
+    <span><button class="btn small secondary" type="submit">Show</button></span>
+    ${extra || ""}</form>
+    <p class="muted" style="margin:-6px 0 14px">Quick ranges: <a href="${q(range.lo, range.today)}">Last 2 weeks</a> · <a href="${q(range.today, range.hi)}">Next 2 weeks</a> · <a href="${q(range.lo, range.hi)}">Whole window</a> <span style="white-space:nowrap">(2 weeks back to 2 weeks ahead)</span></p>`;
+}
+
+export async function flossverifyPage(env, request, user, locationId) {
+  const g = await fvGate(env, user, locationId);
+  if (g.response) return g.response;
+  const loc = g.loc;
+  const db = env.DB;
+  const base = `/app/locations/${locationId}/flossverify`;
+  const range = fvRange(new URL(request.url).searchParams);
+  const rows = await listRequests(db, "r.location_id = ?", [locationId], range.from, range.to);
+  const total = await countRequests(db, locationId);
+  const testN = await countTestRows(db, locationId);
+  const canManage = user.kind === "flossbyte" || user.role === "customer_admin";
+  const msg = new URL(request.url).searchParams.get("msg");
+  const testBar = testN ? `<div class="card" style="border-color:#F0DDBB;background:#FFF9EE"><p style="margin:0"><span class="pill warn">Test patients</span>
+    <span class="muted">This office's list includes ${testN} invented ${testN === 1 ? "patient" : "patients"} for trying FlossVerify out.</span></p>
+    ${canManage ? `<form method="post" action="${base}/remove-test" style="margin-top:10px"><button class="btn small secondary" type="submit">Remove test patients</button></form>` : ""}</div>` : "";
+  const seedCard = !total && user.kind === "flossbyte" ? `<div class="card"><h3 style="margin-top:0">Try it with test patients</h3>
+    <p class="muted">Load a handful of invented patients (one verified, one in progress, one with a problem, a few waiting) so you can see how the queue and the breakdowns read. They are clearly marked and come out in one tap.</p>
+    <form method="post" action="${base}/seed"><button class="btn small" type="submit">Load test patients</button></form></div>` : "";
+  const body = `${await locNav(db, loc, "flossverify")}<h1>FlossVerify</h1>
+    ${msg ? `<div class="card"><p style="margin:0">${esc(msg)}</p></div>` : ""}
+    ${testBar}${seedCard}
+    ${fvRangeForm(base, range, `<span style="margin-left:auto"><a class="btn small" href="${base}/new">+ Request verification</a></span>`)}
+    ${fvTable(rows, (r) => `${base}/${r.id}`, false)}`;
+  return page({ title: "FlossVerify", user, body });
+}
+
+export async function flossverifyNewPage(env, request, user, locationId) {
+  const g = await fvGate(env, user, locationId);
+  if (g.response) return g.response;
+  const loc = g.loc;
+  const range = fvRange(new URL(request.url).searchParams);
+  const fld = (label, inner, flex) => `<span style="flex:${flex || 1};min-width:160px"><label>${label}</label>${inner}</span>`;
+  const body = `${await locNav(env.DB, loc, "flossverify")}<h1>Request verification</h1>
+    <div class="card"><p class="muted" style="margin-top:0">Tell us who is coming in and what insurance they have. FlossVerify checks the plan before the visit and the breakdown lands on the patient's page.</p>
+    <p class="muted">For now, please enter test patients only. Real patient details move here once FlossVerify's secure storage is in place.</p>
+    <form method="post" action="/app/locations/${locationId}/flossverify/new">
+    <div style="display:flex;gap:10px;flex-wrap:wrap">
+      ${fld("Patient name *", `<input name="patient_name" required>`)}
+      ${fld("Patient date of birth", `<input type="date" name="patient_dob">`)}
+      ${fld("Member ID", `<input name="member_id">`)}
+    </div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px">
+      ${fld("Subscriber name (if different)", `<input name="subscriber_name">`)}
+      ${fld("Subscriber date of birth", `<input type="date" name="subscriber_dob">`)}
+      ${fld("Relationship", `<select name="relationship"><option value="">Self</option><option>Spouse</option><option>Child</option><option>Other</option></select>`)}
+    </div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px">
+      ${fld("Insurance company *", `<input name="carrier" required placeholder="Delta Dental, Cigna, ...">`)}
+      ${fld("Plan name", `<input name="plan_name">`)}
+      ${fld("Group number", `<input name="group_number">`)}
+      ${fld("Payer phone", `<input name="payer_phone">`)}
+    </div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px">
+      ${fld("Appointment date *", `<input type="date" name="appt_date" required value="${range.today}" min="${range.lo}" max="${range.hi}">`)}
+      ${fld("Appointment time", `<input type="time" name="appt_time">`)}
+      ${fld("Provider", `<input name="provider">`)}
+      ${fld("Planned treatment", `<input name="planned_treatment" placeholder="Cleaning, exam, crown, ...">`)}
+    </div>
+    <p style="margin:16px 0 0"><button class="btn" type="submit">Send request</button>
+    <a class="btn secondary" href="/app/locations/${locationId}/flossverify">Cancel</a></p></form></div>`;
+  return page({ title: "Request verification", user, body });
+}
+
+export async function flossverifyCreatePost(env, request, user, locationId) {
+  const g = await fvGate(env, user, locationId);
+  if (g.response) return g.response;
+  const loc = g.loc;
+  const f = await request.formData();
+  const get = (k) => String(f.get(k) || "").trim();
+  const back = (m) => redirect(`/app/locations/${locationId}/flossverify/new?msg=` + encodeURIComponent(m));
+  if (!get("patient_name") || !get("carrier") || !get("appt_date")) {
+    return back("Patient name, insurance company, and appointment date are required. Nothing was saved.");
+  }
+  const res = await env.DB.prepare(
+    `INSERT INTO fv_requests (customer_id, location_id, patient_name, patient_dob, member_id,
+      subscriber_name, subscriber_dob, relationship, carrier, plan_name, group_number, payer_phone,
+      appt_date, appt_time, provider, planned_treatment, status, created_by)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'waiting', ?)`)
+    .bind(loc.customer_id, locationId, get("patient_name"), get("patient_dob") || null, get("member_id") || null,
+      get("subscriber_name") || null, get("subscriber_dob") || null, get("relationship") || null,
+      get("carrier"), get("plan_name") || null, get("group_number") || null, get("payer_phone") || null,
+      get("appt_date"), get("appt_time") || null, get("provider") || null, get("planned_treatment") || null,
+      user.id).run();
+  await audit(env.DB, user.id, "fv_create", "location", locationId, get("patient_name"));
+  return redirect(`/app/locations/${locationId}/flossverify/${res.meta.last_row_id}`);
+}
+
+export async function flossverifyDetailPage(env, request, user, locationId, requestId) {
+  const g = await fvGate(env, user, locationId);
+  if (g.response) return g.response;
+  const loc = g.loc;
+  const db = env.DB;
+  const r = await getRequest(db, requestId);
+  if (!r || r.location_id !== locationId) return denied(user, 404);
+  const bd = await getBreakdown(db, requestId);
+  const isFb = user.kind === "flossbyte";
+  const base = `/app/locations/${locationId}/flossverify`;
+  const rowsMap = parseBreakdownRows(bd);
+  const apptLine = `${fmtApptDay(r.appt_date)}${r.appt_time ? " · " + esc(fmtTime(r.appt_time)) : ""}`;
+  const infoRows = [
+    r.patient_dob ? fvRow("Date of birth", esc(fmtDateUS(r.patient_dob))) : "",
+    r.member_id ? fvRow("Member ID", esc(r.member_id)) : "",
+    r.subscriber_name ? fvRow("Subscriber", esc(r.subscriber_name) + (r.relationship ? ` <span class="muted">(${esc(r.relationship)})</span>` : "")) : "",
+    fvRow("Insurance", esc(r.carrier || "") + (r.plan_name ? ` <span class="muted">${esc(r.plan_name)}</span>` : "")),
+    r.group_number ? fvRow("Group number", esc(r.group_number)) : "",
+    r.payer_phone ? fvRow("Payer phone", esc(r.payer_phone)) : "",
+    fvRow("Appointment", apptLine),
+    r.provider ? fvRow("Provider", esc(r.provider)) : "",
+    r.planned_treatment ? fvRow("Planned treatment", esc(r.planned_treatment)) : "",
+  ].filter(Boolean).join("");
+  let breakdownHtml = "";
+  if (breakdownHasContent(bd)) {
+    const tiles = [];
+    if (bd.coverage_active != null) tiles.push(`<div class="stat"><b>${bd.coverage_active ? "Active" : "Not active"}</b><span>Coverage</span></div>`);
+    if (bd.deductible_cents != null) tiles.push(`<div class="stat"><b>${fvMoney(bd.deductible_met_cents || 0)} of ${fvMoney(bd.deductible_cents)}</b><span>Deductible met</span></div>`);
+    if (bd.max_cents != null) tiles.push(`<div class="stat"><b>${fvMoney(bd.max_cents - (bd.max_used_cents || 0))}</b><span>Annual max left</span></div>`);
+    const sections = BREAKDOWN_SECTIONS.map((s) => {
+      const rows = s.fields.filter(([k]) => String(rowsMap[k] || "").trim())
+        .map(([k, label]) => fvRow(label, esc(rowsMap[k]))).join("");
+      return rows ? `<div class="card"><h3 style="margin-top:0">${esc(s.title)}</h3>${rows}</div>` : "";
+    }).join("");
+    const dateRows = [
+      bd.effective_date ? fvRow("Coverage starts", esc(fmtDateUS(bd.effective_date))) : "",
+      bd.termination_date ? fvRow("Coverage ends", esc(fmtDateUS(bd.termination_date))) : "",
+    ].filter(Boolean).join("");
+    const estRow = bd.est_patient_cents != null
+      ? `<div class="card"><h3 style="margin-top:0">For this visit</h3>${r.planned_treatment ? fvRow("Planned", esc(r.planned_treatment)) : ""}<div style="display:flex;justify-content:space-between;gap:16px;padding:10px 0"><span style="color:#45566E;font-weight:600">Estimated patient portion</span><span style="text-align:right;font-weight:700;color:#00796B;font-size:17px">${fvMoney(bd.est_patient_cents)}</span></div></div>` : "";
+    const verifiedLine = bd.verified_at || bd.verified_by
+      ? `<p class="muted">Verified${bd.verified_by ? " by " + esc(bd.verified_by) : ""}${bd.verified_at ? " · " + esc(fmtDateUS(bd.verified_at)) : ""}${bd.method ? " · " + esc(bd.method) : ""}${bd.payer_ref ? " · Ref " + esc(bd.payer_ref) : ""}</p>` : "";
+    breakdownHtml = `${tiles.length ? `<div class="statgrid">${tiles.join("")}</div>` : ""}
+      ${dateRows ? `<div class="card"><h3 style="margin-top:0">Coverage dates</h3>${dateRows}</div>` : ""}${sections}${estRow}
+      ${bd.notes ? `<div class="card"><h3 style="margin-top:0">Notes</h3><p style="margin:0">${esc(bd.notes)}</p></div>` : ""}${verifiedLine}`;
+  } else if (r.status === "waiting") {
+    breakdownHtml = `<div class="card"><p class="muted" style="margin:0">This visit is in the queue. FlossByte checks the insurance before the appointment, and the breakdown appears here when it is done.</p></div>`;
+  } else if (r.status === "in_progress") {
+    breakdownHtml = `<div class="card"><p class="muted" style="margin:0">FlossByte is checking this insurance now. The breakdown appears here as soon as it is finished.</p></div>`;
+  }
+  const problemCard = r.status === "problem" ? `<div class="card" style="border-color:#F3C2BE;background:#FFF7F6"><p style="margin:0"><span class="pill off">Problem</span></p>
+    <p style="margin:10px 0 0">${esc(r.problem_note || "Something is off with this coverage. FlossByte is looking into it.")}</p>
+    <p class="muted" style="margin:8px 0 0">If the patient has a new insurance card, send a photo of it to FlossByte or call (669) 237-2264.</p></div>` : "";
+  const workCard = isFb ? fvWorkCard(r, bd, rowsMap, user) : "";
+  const body = `${await locNav(db, loc, "flossverify")}
+    <p style="margin:0 0 6px"><a href="${base}">&larr; All verifications</a></p>
+    <div class="card"><div style="display:flex;justify-content:space-between;gap:14px;align-items:flex-start;flex-wrap:wrap">
+      <div><h1 style="margin:0">${esc(r.patient_name)}${r.is_test ? ` <span class="pill warn">Test patient</span>` : ""}</h1>
+      <p class="muted" style="margin:6px 0 0">${apptLine} · ${esc(r.carrier || "")}</p></div>
+      <div style="display:flex;gap:8px;align-items:center">${fvPill(r.status)}<button class="btn small secondary" type="button" onclick="window.print()">Print</button></div>
+    </div></div>
+    ${problemCard}
+    <div class="card"><h3 style="margin-top:0">Patient &amp; insurance</h3>${infoRows}</div>
+    ${breakdownHtml}${workCard}`;
+  return page({ title: r.patient_name, user, body });
+}
+
+// The FlossByte side of the patient page: set the status and record
+// the breakdown. One save writes both, so whoever did the checking
+// (person today, API later) leaves the same record behind.
+function fvWorkCard(r, bd, rowsMap, user) {
+  const sel = (name, cur, opts) => `<select name="${name}">${opts.map(([v, l]) =>
+    `<option value="${v}"${String(cur == null ? "" : cur) === v ? " selected" : ""}>${l}</option>`).join("")}</select>`;
+  const fld = (label, inner, flex) => `<span style="flex:${flex || 1};min-width:150px"><label>${label}</label>${inner}</span>`;
+  const sections = BREAKDOWN_SECTIONS.map((s) => `<h4 style="margin:16px 0 6px">${esc(s.title)}</h4>
+    <div style="display:flex;gap:10px;flex-wrap:wrap">${s.fields.map(([k, label]) =>
+      fld(label, `<input name="bd_${k}" value="${esc(rowsMap[k] || "")}">`)).join("")}</div>`).join("");
+  return `<div class="card"><h3 style="margin-top:0">Verification (FlossByte only)</h3>
+    <form method="post" action="/app/locations/${r.location_id}/flossverify/${r.id}/save">
+    <div style="display:flex;gap:10px;flex-wrap:wrap">
+      ${fld("Status", sel("status", r.status, Object.entries(FV_STATUSES)))}
+      ${fld("Problem note (shown to the office when status is Problem)", `<input name="problem_note" value="${esc(r.problem_note || "")}">`, 2)}
+    </div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px">
+      ${fld("Coverage", sel("coverage_active", bd ? bd.coverage_active : null, [["", "Not recorded"], ["1", "Active"], ["0", "Not active"]]))}
+      ${fld("Coverage starts", `<input type="date" name="effective_date" value="${esc(bd ? bd.effective_date || "" : "")}">`)}
+      ${fld("Coverage ends", `<input type="date" name="termination_date" value="${esc(bd ? bd.termination_date || "" : "")}">`)}
+    </div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px">
+      ${fld("Deductible ($)", `<input name="deductible" inputmode="decimal" value="${fvDollars(bd ? bd.deductible_cents : null)}">`)}
+      ${fld("Deductible met ($)", `<input name="deductible_met" inputmode="decimal" value="${fvDollars(bd ? bd.deductible_met_cents : null)}">`)}
+      ${fld("Annual max ($)", `<input name="max" inputmode="decimal" value="${fvDollars(bd ? bd.max_cents : null)}">`)}
+      ${fld("Max used ($)", `<input name="max_used" inputmode="decimal" value="${fvDollars(bd ? bd.max_used_cents : null)}">`)}
+      ${fld("Estimated patient portion ($)", `<input name="est_patient" inputmode="decimal" value="${fvDollars(bd ? bd.est_patient_cents : null)}">`)}
+    </div>
+    ${sections}
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:16px">
+      ${fld("Checked by way of", sel("method", bd ? bd.method : "", [["", ""], ["Payer portal", "Payer portal"], ["Phone call", "Phone call"], ["Eligibility API", "Eligibility API"]]))}
+      ${fld("Payer reference", `<input name="payer_ref" value="${esc(bd ? bd.payer_ref || "" : "")}">`)}
+      ${fld("Verified by", `<input name="verified_by" value="${esc(bd ? bd.verified_by || "" : "")}" placeholder="${esc(user.name || "")}">`)}
+    </div>
+    <div style="margin-top:10px"><label>Notes</label><textarea name="notes" rows="2">${esc(bd ? bd.notes || "" : "")}</textarea></div>
+    <p style="margin:14px 0 0"><button class="btn" type="submit">Save verification</button></p></form></div>`;
+}
+
+export async function flossverifySavePost(env, request, user, locationId, requestId) {
+  if (user.kind !== "flossbyte") return denied(user, 403);
+  const g = await fvGate(env, user, locationId);
+  if (g.response) return g.response;
+  const r = await getRequest(env.DB, requestId);
+  if (!r || r.location_id !== locationId) return denied(user, 404);
+  const f = await request.formData();
+  const get = (k) => String(f.get(k) || "").trim();
+  const status = FV_STATUSES[get("status")] ? get("status") : r.status;
+  const cents = (v) => {
+    const s = String(v || "").replace(/[^0-9.]/g, "");
+    if (!s) return null;
+    const n = Math.round(parseFloat(s) * 100);
+    return Number.isNaN(n) ? null : n;
+  };
+  await env.DB.prepare("UPDATE fv_requests SET status = ?, problem_note = ?, updated_at = datetime('now') WHERE id = ?")
+    .bind(status, status === "problem" ? get("problem_note") || null : get("problem_note") || null, requestId).run();
+  const rows = {};
+  for (const s of BREAKDOWN_SECTIONS) for (const [k] of s.fields) {
+    const v = get("bd_" + k);
+    if (v) rows[k] = v;
+  }
+  const existing = await getBreakdown(env.DB, requestId);
+  const verifiedAt = status === "verified"
+    ? (existing && existing.verified_at) || new Date().toISOString().replace("T", " ").slice(0, 19)
+    : existing ? existing.verified_at : null;
+  await env.DB.prepare(
+    `INSERT INTO fv_breakdowns (request_id, coverage_active, effective_date, termination_date,
+      deductible_cents, deductible_met_cents, max_cents, max_used_cents, est_patient_cents,
+      rows_json, verified_by, verified_at, method, payer_ref, notes)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(request_id) DO UPDATE SET coverage_active = excluded.coverage_active,
+      effective_date = excluded.effective_date, termination_date = excluded.termination_date,
+      deductible_cents = excluded.deductible_cents, deductible_met_cents = excluded.deductible_met_cents,
+      max_cents = excluded.max_cents, max_used_cents = excluded.max_used_cents,
+      est_patient_cents = excluded.est_patient_cents, rows_json = excluded.rows_json,
+      verified_by = excluded.verified_by, verified_at = excluded.verified_at,
+      method = excluded.method, payer_ref = excluded.payer_ref, notes = excluded.notes,
+      updated_at = datetime('now')`)
+    .bind(requestId,
+      get("coverage_active") === "" ? null : Number(get("coverage_active")),
+      get("effective_date") || null, get("termination_date") || null,
+      cents(f.get("deductible")), cents(f.get("deductible_met")), cents(f.get("max")),
+      cents(f.get("max_used")), cents(f.get("est_patient")),
+      JSON.stringify(rows), get("verified_by") || (status === "verified" ? user.name : null) || null,
+      verifiedAt, get("method") || null, get("payer_ref") || null, get("notes") || null).run();
+  await audit(env.DB, user.id, "fv_update", "location", locationId, `${r.patient_name}: ${FV_STATUSES[status]}`);
+  return redirect(`/app/locations/${locationId}/flossverify/${requestId}`);
+}
+
+export async function flossverifySeedPost(env, request, user, locationId) {
+  if (user.kind !== "flossbyte") return denied(user, 403);
+  const g = await fvGate(env, user, locationId);
+  if (g.response) return g.response;
+  const n = await seedFvTestData(env.DB, g.loc.customer_id, locationId);
+  if (n) await audit(env.DB, user.id, "fv_seed", "location", locationId, `${n} test patients`);
+  return redirect(`/app/locations/${locationId}/flossverify`);
+}
+
+export async function flossverifyRemoveTestPost(env, request, user, locationId) {
+  const g = await fvGate(env, user, locationId);
+  if (g.response) return g.response;
+  if (user.kind !== "flossbyte" && user.role !== "customer_admin") return denied(user, 403);
+  const n = await removeFvTestData(env.DB, locationId);
+  if (n) await audit(env.DB, user.id, "fv_remove_test", "location", locationId, `${n} test patients`);
+  return redirect(`/app/locations/${locationId}/flossverify?msg=` +
+    encodeURIComponent(n ? `Removed ${n} test patients.` : "No test patients to remove."));
 }
 
 // ---------- Documents ----------

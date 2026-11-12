@@ -13,6 +13,7 @@ import { runAteraSync, lastAteraSync } from "./atera.js";
 import { chatReady, getThread, threadMessages, addChatMessage, endChat, briefHtml, renderChatMessages, relTimeChat, notifyCustomerReply, setTyping, clearTyping, getTyping } from "./chat.js";
 import { mergeEquipmentRows } from "./merge.js";
 import { getPlanState } from "./stripe.js";
+import { fvReady, fvRange, FV_STATUSES, listRequests, seedFvTestData, fvTable } from "./flossverify.js";
 
 function origin(env) { return env.APP_ORIGIN || "https://portal.flossbyte.com"; }
 function q(request) { return new URL(request.url).searchParams; }
@@ -46,7 +47,7 @@ function adminNav(active) {
   return `<div class="shell"><aside class="rail">
     <div class="rail-context"><div class="rc-t">FlossByte</div><div class="rc-s">Admin console</div></div>
     ${item("clients", "/admin", "Clients", "users")}${item("tickets", "/admin/tickets", "Tickets", "ticket")}${item("chats", "/admin/chats", "Live chat", "chat")}
-    ${item("admins", "/admin/admins", "Admins", "shield")}
+    ${item("flossverify", "/admin/flossverify", "FlossVerify", "clipcheck")}${item("admins", "/admin/admins", "Admins", "shield")}
     ${item("sync", "/admin/sync", "Device sync", "refresh")}${item("activity", "/admin/activity", "Activity", "activity")}</aside><div class="shell-main">`;
 }
 
@@ -168,6 +169,34 @@ export async function ticketsInboxPage(env, request, user) {
   return page({ title: "Tickets", user, body });
 }
 
+// ---------- FlossVerify inbox (every client's queue, one list) ----------
+// The work view for the done-for-you service: all verification
+// requests across clients in the same table the office sees, plus an
+// Office column and a status filter. Rows open the patient's page,
+// where the breakdown gets filled in.
+export async function flossverifyInboxPage(env, request, user) {
+  const db = env.DB;
+  if (!(await fvReady(db))) {
+    const body = `${adminNav("flossverify")}<h1>FlossVerify</h1>
+      <div class="card"><p class="muted" style="margin:0">The FlossVerify tables are not in the database yet. Once migration 0018 is applied, verification queues show up here.</p></div>`;
+    return page({ title: "FlossVerify", user, body });
+  }
+  const params = q(request);
+  const range = fvRange(params);
+  const status = FV_STATUSES[params.get("status")] ? params.get("status") : "";
+  const rows = await listRequests(db, status ? "r.status = ?" : "1 = 1", status ? [status] : [], range.from, range.to);
+  const statusOpts = [`<option value="">All statuses</option>`]
+    .concat(Object.entries(FV_STATUSES).map(([k, l]) => `<option value="${k}"${status === k ? " selected" : ""}>${l}</option>`)).join("");
+  const body = `${adminNav("flossverify")}<h1>FlossVerify</h1>
+    <form method="get" class="row" style="margin-bottom:14px;align-items:flex-end">
+      <span style="flex:1;min-width:140px"><label>From</label><input type="date" name="from" value="${range.from}" min="${range.lo}" max="${range.hi}"></span>
+      <span style="flex:1;min-width:140px"><label>To</label><input type="date" name="to" value="${range.to}" min="${range.lo}" max="${range.hi}"></span>
+      <span style="flex:1;min-width:140px"><label>Status</label><select name="status">${statusOpts}</select></span>
+      <span><button class="btn small secondary" type="submit">Show</button></span></form>
+    ${fvTable(rows, (r) => `/app/locations/${r.location_id}/flossverify/${r.id}`, true)}`;
+  return page({ title: "FlossVerify", user, body });
+}
+
 // ---------- Activity (the audit log, readable) ----------
 const ACTION_LABEL = {
   ticket_create: "Opened a ticket", ticket_status: "Changed a ticket status", equipment_add: "Added equipment",
@@ -192,6 +221,8 @@ const ACTION_LABEL = {
   monthly_report_send: "Sent the monthly Office IT report", isp_service_update: "Updated internet plan details",
   backup_record: "Recorded a backup result", backup_token: "Issued a backup collector token",
   wifi_save: "Saved a WiFi network", wifi_remove: "Removed a WiFi network",
+  fv_create: "Requested a verification", fv_update: "Updated a verification",
+  fv_seed: "Loaded FlossVerify test patients", fv_remove_test: "Removed FlossVerify test patients",
 };
 export async function activityPage(env, request, user) {
   const { results } = await env.DB.prepare(
@@ -1442,6 +1473,23 @@ export async function productTogglePost(env, request, user, customerId) {
     await audit(env.DB, user.id, enabled ? "product_on" : "product_off", "customer", Number(customerId), product);
     if (product === "one_time_project" && enabled === 1 && !wasOn) {
       await onOtpToggledOn(env, Number(customerId), locationId, user.id);
+    }
+    // FlossVerify turning on fills each office with invented test
+    // patients, so the queue and a finished breakdown can be seen
+    // right away (Montek, 2026-11-11). Seeding skips offices that
+    // already have requests, and a failure here never breaks the
+    // toggle itself.
+    if (product === "flossverify" && enabled === 1) {
+      try {
+        if (await fvReady(env.DB)) {
+          const targets = locationId ? [locationId]
+            : ((await env.DB.prepare("SELECT id FROM locations WHERE customer_id = ?").bind(customerId).all()).results || []).map((l) => l.id);
+          for (const lid of targets) {
+            const n = await seedFvTestData(env.DB, Number(customerId), lid);
+            if (n) await audit(env.DB, user.id, "fv_seed", "location", lid, `${n} test patients`);
+          }
+        }
+      } catch { /* test-data seeding is a convenience, not the toggle */ }
     }
   }
   // Back to the Products tab with the same office still selected, so
